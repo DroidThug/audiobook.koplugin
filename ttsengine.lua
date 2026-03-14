@@ -1612,14 +1612,8 @@ Kills the feeder script and gst-launch, cleans up the FIFO.
 --]]
 function TTSEngine:_stopPersistentPipeline(reason)
     reason = reason or "unknown"
-    -- Log the caller so we can diagnose unexpected pipeline kills.
-    -- debug.traceback is cheap (only fires on pipeline stop, not per-sentence).
-    logger.warn("TTSEngine: _stopPersistentPipeline called, reason=", reason,
-        "pipeline=", self._persistent_pipeline,
-        "gst_pid=", self._pipeline_gst_pid,
-        "is_speaking=", self.is_speaking,
-        "gen=", self.play_generation,
-        "\n  traceback: ", debug.traceback("", 2))
+    logger.warn("TTSEngine: _stopPersistentPipeline, reason=", reason,
+        "gst_pid=", self._pipeline_gst_pid)
     -- Signal feeder to stop (harmless if no feeder is running)
     local sf = io.open(PIPELINE_CTRL_DIR .. "/stop", "w")
     if sf then sf:write("1"); sf:close() end
@@ -1910,9 +1904,8 @@ function TTSEngine:stop()
     -- Always bump generation and clear state, even if not speaking.
     -- This ensures stale scheduled callbacks (launchAndStart, checkProcess,
     -- updateTiming) exit immediately regardless of what state we were in.
-    logger.warn("TTSEngine: stop() called, is_speaking=", self.is_speaking,
-        "gen=", self.play_generation, "persistent=", self._persistent_pipeline,
-        "\n  traceback: ", debug.traceback("", 2))
+    logger.dbg("TTSEngine: stop(), is_speaking=", self.is_speaking,
+        "persistent=", self._persistent_pipeline)
     self.is_speaking = false
     self.is_paused = false
     self.play_generation = (self.play_generation or 0) + 1

@@ -85,6 +85,37 @@ function Audiobook:init()
     
     self.ui.menu:registerToMainMenu(self)
     self:onDispatcherRegisterActions()
+
+    -- Add "Read aloud from here" to the text selection / highlight popup.
+    -- This appears when the user selects a paragraph or multiple words
+    -- (as opposed to the single-word dictionary popup, which is handled
+    -- by onDictButtonsReady).
+    if self.ui.highlight and self.ui.highlight.addToHighlightDialog then
+        self.ui.highlight:addToHighlightDialog("15_read_aloud", function(this)
+            return {
+                text = _("Read aloud from here"),
+                callback = function()
+                    local selected_text = this.selected_text
+                    local context = nil
+                    if selected_text then
+                        context = {
+                            pos0 = selected_text.pos0,
+                            pos1 = selected_text.pos1,
+                        }
+                    end
+                    this:onClose()
+                    UIManager:scheduleIn(0.3, function()
+                        local word = selected_text and selected_text.text
+                        if word then
+                            -- Use the first word for position matching
+                            word = word:match("^%s*(%S+)") or word
+                        end
+                        self:startReadAlongFromWord(word, context)
+                    end)
+                end,
+            }
+        end)
+    end
 end
 
 function Audiobook:onDispatcherRegisterActions()
@@ -135,16 +166,36 @@ function Audiobook:addToMainMenu(menu_items)
                     return self.sync_controller:isPlaying() or self.sync_controller:isPaused()
                 end,
             },
+            -- ── Bluetooth (high priority - needed before first playback) ──
+            {
+                text_func = function()
+                    return BtUI.btMenuLabel(self)
+                end,
+                sub_item_table_func = function()
+                    return BtUI.buildBluetoothMenu(self)
+                end,
+            },
+            {
+                text_func = function()
+                    local val = self:getSetting("bt_disconnect_check", 30)
+                    if val == 0 then
+                        return _("BT disconnect alert: off")
+                    end
+                    return T(_("BT disconnect alert: %1s"), val)
+                end,
+                sub_item_table = BtUI.buildBTDisconnectMenu(self),
+            },
+            -- ── Voice & highlight settings ──
             {
                 text_func = function()
                     if self.tts_engine.backend == self.tts_engine.BACKENDS.PIPER then
                         local model_label = self:getSetting("piper_model_label", "default")
-                        return T(_("Voice settings (Piper — %1)"), model_label)
+                        return T(_("Voice settings (Piper - %1)"), model_label)
                     end
                     local voice_label = self:getSetting("tts_voice_label", "English (GB)")
                     local variant_label = self:getSetting("tts_variant_label", "")
                     if variant_label ~= "" and variant_label ~= "Default (male)" then
-                        voice_label = voice_label .. " — " .. variant_label
+                        voice_label = voice_label .. " - " .. variant_label
                     end
                     return T(_("Voice settings (%1)"), voice_label)
                 end,
@@ -164,6 +215,7 @@ function Audiobook:addToMainMenu(menu_items)
                 end,
                 sub_item_table = MenuBuilder.buildHighlightStyleMenu(self),
             },
+            -- ── Toggles ──
             {
                 text = _("Auto-advance pages"),
                 checked_func = function()
@@ -202,24 +254,6 @@ function Audiobook:addToMainMenu(menu_items)
                 enabled_func = function()
                     return self.tts_engine.backend == self.tts_engine.BACKENDS.PIPER
                         and self.tts_engine.espeak_bin ~= nil
-                end,
-            },
-            {
-                text_func = function()
-                    local val = self:getSetting("bt_disconnect_check", 30)
-                    if val == 0 then
-                        return _("BT disconnect alert: off")
-                    end
-                    return T(_("BT disconnect alert: %1s"), val)
-                end,
-                sub_item_table = BtUI.buildBTDisconnectMenu(self),
-            },
-            {
-                text_func = function()
-                    return BtUI.btMenuLabel(self)
-                end,
-                sub_item_table_func = function()
-                    return BtUI.buildBluetoothMenu(self)
                 end,
             },
         },

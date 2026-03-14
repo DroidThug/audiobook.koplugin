@@ -313,18 +313,7 @@ function HighlightManager:_highlightSentenceRolling(sentence, parsed_data, doc, 
         UIManager:setDirty(self.ui.dialog or "all", "ui")
     end
 
-    -- ── Diagnostic log (to /tmp, lightweight) ────────────────────
-    local df = io.open("/tmp/highlight_diag.log", "a")
-    if df then
-        local got_ws = sel and sel.text and Utils.ws(sel.text) or ""
-        local tag = (got_ws == sent_text) and "OK" or
-                    (#got_ws > #sent_text and "OVER+" .. (#got_ws - #sent_text) or
-                     "UNDER-" .. (#sent_text - #got_ws))
-        df:write(string.format("S%d [%s] sx=%d ex=%d lines=%d-%d exp=[%.60s] got=[%.60s]\n",
-            sentence.index, tag, start_x, end_x, start_line, end_line,
-            sent_text, got_ws))
-        df:close()
-    end
+
 end
 
 --[[--

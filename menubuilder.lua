@@ -120,7 +120,7 @@ function MenuBuilder.buildVoiceSettingsMenu(plugin)
     if plugin.tts_engine.backend == plugin.tts_engine.BACKENDS.ESPEAK then
         table.insert(menu, {
             text_func = function()
-                return T(_("Clause pause (, ; : —): %1s"), plugin:getSetting("clause_pause", 0))
+                return T(_("Clause pause (, ; : -): %1s"), plugin:getSetting("clause_pause", 0))
             end,
             sub_item_table = MenuBuilder.buildClausePauseMenu(plugin),
         })
@@ -332,7 +332,7 @@ function MenuBuilder.buildWordGapMenu(plugin)
     local labels = {
         [0] = _("0 (no extra gap)"),
         [1] = _("1 (10ms)"),
-        [2] = _("2 (20ms — default)"),
+        [2] = _("2 (20ms - default)"),
         [5] = _("5 (50ms)"),
         [10] = _("10 (100ms)"),
         [20] = _("20 (200ms)"),
