@@ -86,6 +86,10 @@ function Audiobook:init()
     self.ui.menu:registerToMainMenu(self)
     self:onDispatcherRegisterActions()
 
+    -- Install SleepCover event override so we can prevent device suspend
+    -- while audio is playing (when the user enables the setting).
+    self:_installSleepCoverOverride()
+
     -- Add "Read aloud from here" to the text selection / highlight popup.
     -- This appears when the user selects a paragraph or multiple words
     -- (as opposed to the single-word dictionary popup, which is handled
@@ -255,6 +259,16 @@ function Audiobook:addToMainMenu(menu_items)
                     return self.tts_engine.backend == self.tts_engine.BACKENDS.PIPER
                         and self.tts_engine.espeak_bin ~= nil
                 end,
+            },
+            {
+                text = _("Keep playing when lid is closed"),
+                checked_func = function()
+                    return self:getSetting("keep_playing_on_lid_close", false)
+                end,
+                callback = function()
+                    self:toggleSetting("keep_playing_on_lid_close", false)
+                end,
+                help_text = _("When enabled, closing the case/cover will not stop audio playback. When disabled (default), playback pauses on lid close and resumes when reopened. Disabling prevents device crashes caused by audio processes running during hardware suspend."),
             },
         },
     }
@@ -675,19 +689,60 @@ function Audiobook:onCloseConfigMenu()
     end
 end
 
--- Pause on device suspend (sleep)
+-- ── Suspend / Resume (lid close, power button) ──────────────────────
+-- On suspend we MUST kill all audio processes (gst-launch, piper) before
+-- the kernel enters hardware sleep.  Merely freezing them with SIGSTOP
+-- leaves them holding audio hardware resources, which can crash the
+-- entire device on some Kobo models.
 function Audiobook:onSuspend()
-    if self.sync_controller:isPlaying() then
-        self._paused_by_menu = true
-        self.sync_controller:pause()
+    if self.sync_controller:isPlaying() or self.sync_controller:isPaused() then
+        -- Save current position so we can resume later
+        self._suspend_sentence_idx = self.sync_controller.reading_sentence_idx
+        self._suspend_was_playing = self.sync_controller:isPlaying()
+
+        -- Hard-kill all audio processes to prevent kernel crash
+        pcall(function() self.tts_engine:forceKillAll() end)
+
+        -- Set sync controller to paused WITHOUT clearing parsed data
+        -- (stop() would destroy everything; we just want a clean audio state)
+        self.sync_controller.state = self.sync_controller.STATE.PAUSED
+        self.sync_controller._user_paused = false
+        if self.sync_controller.playback_bar then
+            self.sync_controller.playback_bar:updatePlayState(false)
+        end
+
+        self._paused_by_suspend = true
+        logger.warn("Audiobook: Suspend — killed audio processes, will resume from sentence",
+            self._suspend_sentence_idx)
     end
 end
 
 function Audiobook:onResume()
-    if self._paused_by_menu then
-        self._paused_by_menu = false
-        if self.sync_controller:isPaused() then
-            self.sync_controller:resume()
+    if self._paused_by_suspend then
+        self._paused_by_suspend = false
+        local sentence_idx = self._suspend_sentence_idx
+        local was_playing = self._suspend_was_playing
+        self._suspend_sentence_idx = nil
+        self._suspend_was_playing = nil
+
+        -- Restart playback from saved position after a delay to let the
+        -- device fully wake up and re-initialize audio hardware.
+        if was_playing and sentence_idx
+                and self.sync_controller.parsed_data then
+            UIManager:scheduleIn(1.5, function()
+                -- readNextSentence increments the index, so subtract 1
+                self.sync_controller.reading_sentence_idx = sentence_idx - 1
+                self.sync_controller.state = self.sync_controller.STATE.PLAYING
+                if self.sync_controller.playback_bar then
+                    self.sync_controller.playback_bar:updatePlayState(true)
+                end
+                -- Reset Piper warm-up flag so prefetch queue restarts cleanly
+                if self.tts_engine.backend == self.tts_engine.BACKENDS.PIPER then
+                    self.sync_controller._piper_warmed_up = false
+                end
+                logger.warn("Audiobook: Resume — restarting from sentence", sentence_idx)
+                self.sync_controller:readNextSentence()
+            end)
         end
     end
 end
@@ -700,6 +755,83 @@ end
 -- without CloseDocument firing first, force-stop everything.
 function Audiobook:onCloseWidget()
     self:stopReadAlong()
+    self:_removeSleepCoverOverride()
+end
+
+--[[--
+Install custom SleepCoverClosed/Opened handlers.
+When "keep playing on lid close" is enabled AND audio is playing, the
+override prevents the device from entering full hardware suspend so
+audio continues uninterrupted.  When the setting is off (or audio isn't
+playing), the original KOReader handlers are called normally.
+--]]
+function Audiobook:_installSleepCoverOverride()
+    if self._orig_sleep_cover_closed then return end  -- already installed
+
+    -- Only install on devices that actually have SleepCover support
+    if not UIManager.event_handlers
+            or not UIManager.event_handlers.SleepCoverClosed then
+        return
+    end
+
+    -- Save original handlers
+    self._orig_sleep_cover_closed = UIManager.event_handlers.SleepCoverClosed
+    self._orig_sleep_cover_opened = UIManager.event_handlers.SleepCoverOpened
+
+    local plugin = self
+
+    UIManager.event_handlers.SleepCoverClosed = function()
+        -- If "keep playing" is on AND we're actively playing, prevent suspend
+        if plugin:getSetting("keep_playing_on_lid_close", false)
+                and (plugin.sync_controller:isPlaying()
+                     or plugin.sync_controller:isPaused()) then
+            if Device.is_cover_closed ~= nil then
+                Device.is_cover_closed = true
+            end
+            plugin._prevented_lid_suspend = true
+            logger.warn("Audiobook: SleepCover closed — keeping audio alive (suspend prevented)")
+            return
+        end
+        -- Setting off or not playing: use original KOReader behavior
+        if plugin._orig_sleep_cover_closed then
+            plugin._orig_sleep_cover_closed()
+        end
+    end
+
+    UIManager.event_handlers.SleepCoverOpened = function()
+        if Device.is_cover_closed ~= nil then
+            Device.is_cover_closed = false
+        end
+        if plugin._prevented_lid_suspend then
+            -- We blocked suspend on close, so there's nothing to resume from
+            plugin._prevented_lid_suspend = false
+            logger.warn("Audiobook: SleepCover opened — no resume needed (suspend was prevented)")
+            return
+        end
+        -- Normal resume path
+        if plugin._orig_sleep_cover_opened then
+            plugin._orig_sleep_cover_opened()
+        end
+    end
+
+    logger.dbg("Audiobook: SleepCover override installed")
+end
+
+--[[--
+Restore original SleepCover handlers.
+Called on plugin teardown to leave KOReader in a clean state.
+--]]
+function Audiobook:_removeSleepCoverOverride()
+    if not self._orig_sleep_cover_closed then return end
+
+    if UIManager.event_handlers then
+        UIManager.event_handlers.SleepCoverClosed = self._orig_sleep_cover_closed
+        UIManager.event_handlers.SleepCoverOpened = self._orig_sleep_cover_opened
+    end
+    self._orig_sleep_cover_closed = nil
+    self._orig_sleep_cover_opened = nil
+    self._prevented_lid_suspend = nil
+    logger.dbg("Audiobook: SleepCover override removed")
 end
 
 -- Handle screen rotation: pause TTS, rebuild the PlaybackBar for the new
