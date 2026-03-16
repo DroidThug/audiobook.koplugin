@@ -20,6 +20,7 @@ local _utils_dir = debug.getinfo(1, "S").source:match("^@(.*/)[^/]*$") or "./"
 local Utils = dofile(_utils_dir .. "utils.lua")
 local MenuBuilder = dofile(_utils_dir .. "menubuilder.lua")
 local BtUI = dofile(_utils_dir .. "btui.lua")
+local BtMediaControl = dofile(_utils_dir .. "btmediacontrol.lua")
 local PLUGIN_PATH = _utils_dir
 
 local Audiobook = WidgetContainer:extend{
@@ -270,6 +271,21 @@ function Audiobook:addToMainMenu(menu_items)
                 end,
                 help_text = _("When enabled, closing the case/cover will not stop audio playback. When disabled (default), playback pauses on lid close and resumes when reopened. Disabling prevents device crashes caused by audio processes running during hardware suspend."),
             },
+            {
+                text = _("BT headset media buttons"),
+                checked_func = function()
+                    return self:getSetting("bt_media_control", true)
+                end,
+                callback = function()
+                    self:toggleSetting("bt_media_control", true)
+                    if self:getSetting("bt_media_control", true) then
+                        BtMediaControl.start(self)
+                    else
+                        BtMediaControl.stop()
+                    end
+                end,
+                help_text = _("When enabled, play/pause/next/prev buttons on a Bluetooth headset or speaker will control TTS playback. The connected device will also show playback status."),
+            },
         },
     }
 end
@@ -371,8 +387,15 @@ function Audiobook:startReadAlong(text, start_pos)
         end
         if self.tts_engine.audio_player_type == "gst-bt" then
             BtUI.startWatcher(self)
+            -- Start listening for BT headset media buttons (play/pause/next/prev)
+            if self:getSetting("bt_media_control", true) then
+                BtMediaControl.start(self)
+            end
         end
     end)
+
+    -- Notify BT device that playback is starting
+    pcall(function() BtMediaControl.sendPlaybackStatus("playing") end)
 
     self.sync_controller:start(page_text)
 end
@@ -554,6 +577,8 @@ end
 function Audiobook:stopReadAlong()
     logger.dbg("Audiobook: Stopping read-along")
     pcall(function() BtUI.stopWatcher(self) end)
+    pcall(function() BtMediaControl.stop() end)
+    pcall(function() BtMediaControl.sendPlaybackStatus("stopped") end)
     pcall(function() self.sync_controller:stop() end)
     pcall(function() self.highlight_manager:clearHighlights() end)
     -- Always kill orphan audio processes, even if we think we're not playing.
@@ -564,10 +589,12 @@ end
 
 function Audiobook:pauseReadAlong()
     self.sync_controller:pause()
+    pcall(function() BtMediaControl.sendPlaybackStatus("paused") end)
 end
 
 function Audiobook:resumeReadAlong()
     self.sync_controller:resume()
+    pcall(function() BtMediaControl.sendPlaybackStatus("playing") end)
 end
 
 
@@ -644,6 +671,52 @@ end
 
 function Audiobook:onAudiobookStop()
     self:stopReadAlong()
+    return true
+end
+
+-- ── BT media button event handlers (AVRCP) ──────────────────────────
+-- These are dispatched by KOReader's input system when the AVRCP evdev
+-- device sends key events (play/pause/next/prev from a BT headset).
+
+function Audiobook:onMediaPlayPause()
+    if self.sync_controller:isPlaying() then
+        self:pauseReadAlong()
+    elseif self.sync_controller:isPaused() then
+        self:resumeReadAlong()
+    end
+    return true
+end
+
+function Audiobook:onMediaPlay()
+    if self.sync_controller:isPaused() then
+        self:resumeReadAlong()
+    end
+    return true
+end
+
+function Audiobook:onMediaPause()
+    if self.sync_controller:isPlaying() then
+        self:pauseReadAlong()
+    end
+    return true
+end
+
+function Audiobook:onMediaStop()
+    self:stopReadAlong()
+    return true
+end
+
+function Audiobook:onMediaNext()
+    if self.sync_controller:isPlaying() or self.sync_controller:isPaused() then
+        self.sync_controller:nextSentence()
+    end
+    return true
+end
+
+function Audiobook:onMediaPrev()
+    if self.sync_controller:isPlaying() or self.sync_controller:isPaused() then
+        self.sync_controller:prevSentence()
+    end
     return true
 end
 

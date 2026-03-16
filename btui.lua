@@ -186,6 +186,13 @@ function BtUI.btQuickConnect(plugin, dev, touchmenu_instance)
                 text = T(_("Connected to %1."), name),
                 timeout = 2,
             })
+            -- Scan for AVRCP media control input device (may appear after connect)
+            UIManager:scheduleIn(2.0, function()
+                local BtMediaControl = dofile(
+                    (debug.getinfo(1, "S").source:match("^@(.*/)[^/]*$") or "./")
+                    .. "btmediacontrol.lua")
+                pcall(BtMediaControl.rescan)
+            end)
         else
             UIManager:show(InfoMessage:new{
                 text = T(_("Connection failed: %1"), err or "unknown"),

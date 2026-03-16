@@ -1049,6 +1049,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         end
 
         self._audio_launched_at = UIManager:getTime()
+        self._total_pause_ms = 0  -- reset accumulated pause time for this sentence
         logger.warn("TTSEngine: play() fed to pipeline, dur=",
             self._expected_play_duration_ms, "ms, gen=", my_gen,
             "piper_q=", self:getPiperQueueSnapshot())
@@ -1098,12 +1099,28 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             - (trailing_gap_ms / 1000)
             + (pipe_buf_ms / 1000) + 0.15
         local engine = self
+        local needed_ms = engine._expected_play_duration_ms
+            - trailing_gap_ms + pipe_buf_ms + 150
         local function fireCompletion()
             if (engine.play_generation or 0) ~= my_gen then return end
             if not engine.is_speaking then return end
             if engine.is_paused then
                 UIManager:scheduleIn(0.5, fireCompletion)
                 return
+            end
+            -- Verify enough real playback time has elapsed (excluding
+            -- time spent paused via SIGSTOP).  Without this check,
+            -- resuming from pause fires completion immediately and
+            -- overlaps the next sentence with the current one.
+            if engine._audio_launched_at then
+                local wall_ms = time.to_ms(UIManager:getTime() - engine._audio_launched_at)
+                local real_ms = wall_ms - (engine._total_pause_ms or 0)
+                if real_ms < needed_ms then
+                    local wait_s = (needed_ms - real_ms) / 1000
+                    if wait_s < 0.2 then wait_s = 0.2 end
+                    UIManager:scheduleIn(wait_s, fireCompletion)
+                    return
+                end
             end
             logger.warn("TTSEngine: Pipeline completion (duration-based,",
                 engine._expected_play_duration_ms, "ms - trailing_gap",
@@ -1442,11 +1459,13 @@ mkfifo "$FIFO"
 # Silence chunk: ~50ms at %dHz 16-bit mono = %d samples × 2 bytes = %d bytes
 dd if=/dev/zero bs=%d count=1 of="$CTRL/s.raw" 2>/dev/null
 # Start gst-launch reading raw PCM from FIFO.
-# sync=true (default) — the sink renders buffers at the timestamp rate.
-# Because the feeder writes silence CONTINUOUSLY (blocked by the pipe at
-# 1x when the buffer is full), the byte-offset timestamps from
-# rawaudioparse stay in sync with the GStreamer clock.  The BT A2DP
-# transport always has data — never suspends.
+# sync=false — let the BT A2DP hardware clock control the playback rate
+# via socket backpressure, instead of GStreamer's pipeline clock.
+# This is CRITICAL for SIGSTOP/SIGCONT pause/resume: with sync=true,
+# CLOCK_MONOTONIC advances during SIGSTOP but audio timestamps don't,
+# so GStreamer sees all buffered audio as "late" on SIGCONT and plays
+# it in a burst (causing choppy audio on the first sentence after
+# unpause).  With sync=false there is no clock to go stale.
 # The Lua caller shrinks the pipe buffer to 16KB via
 # fcntl(F_SETPIPE_SZ) to reduce latency while keeping enough headroom
 # to absorb CPU stalls during Piper synthesis.
@@ -1454,7 +1473,7 @@ gst-launch-1.0 filesrc location="$FIFO" \
   ! rawaudioparse use-sink-caps=false format=pcm pcm-format=s16le sample-rate=%d num-channels=1 \
   ! audioconvert ! audioresample \
   ! "audio/x-raw,format=S16LE,rate=48000,channels=2" \
-  ! mtkbtmwrpcaudiosink >/dev/null 2>/dev/null &
+  ! mtkbtmwrpcaudiosink sync=false >/dev/null 2>/dev/null &
 GST_PID=$!
 # Open FIFO write end — keeps it alive between individual writes.
 # This BLOCKS until gst-launch opens the read end (filesrc start).
@@ -1879,7 +1898,11 @@ function TTSEngine:resume()
         self.is_paused = false
         -- Adjust start time to account for the pause duration
         local pause_duration = UIManager:getTime() - self.pause_time
+        local pause_ms = time.to_ms(pause_duration)
         self.playback_start_time = self.playback_start_time + pause_duration
+        -- Accumulate total pause time so the completion timer knows how
+        -- much real playback time has actually elapsed.
+        self._total_pause_ms = (self._total_pause_ms or 0) + pause_ms
         -- Unfreeze the audio pipeline/process (SIGCONT)
         if self._persistent_pipeline then
             if self._pipeline_gst_pid then
@@ -1893,7 +1916,7 @@ function TTSEngine:resume()
         end
         -- Restart the timing loop (it exited when is_paused was true)
         self:_runTimingLoop()
-        logger.dbg("TTSEngine: Resumed")
+        logger.dbg("TTSEngine: Resumed, pause was", pause_ms, "ms, total_pause=", self._total_pause_ms, "ms")
     end
 end
 
