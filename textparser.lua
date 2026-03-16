@@ -18,6 +18,12 @@ local TextParser = {
     WORD_SEPARATORS = "[%s%p]",
 }
 
+-- Long-sentence splitting thresholds (see benchmark/RESULTS_LONG.md).
+-- Piper on ARM OOMs above ~900 chars; 300 keeps us in the efficient window.
+-- Chunks below 80 chars waste 90%+ of synthesis time on per-request overhead.
+local MAX_CHUNK_CHARS = 300
+local MIN_CHUNK_CHARS = 80
+
 function TextParser:new(o)
     o = o or {}
     setmetatable(o, self)
@@ -147,6 +153,34 @@ function TextParser:parseSentences(text)
         end
     end
 
+    -- Step 3: split long sentences for TTS safety.
+    -- Piper on ARM OOMs above ~900 chars; split anything over MAX_CHUNK_CHARS
+    -- at clause boundaries, then cap at word boundaries if still too long.
+    local expanded = {}
+    local new_index = 1
+    for _, sentence in ipairs(sentences) do
+        if #sentence.text > MAX_CHUNK_CHARS then
+            local chunks = self:splitLongSentence(sentence.text)
+            for j, chunk in ipairs(chunks) do
+                local etype = (j == #chunks) and sentence.end_type or "sentence"
+                table.insert(expanded, {
+                    index = new_index,
+                    text = chunk,
+                    start_pos = 0,
+                    end_pos = 0,
+                    words = {},
+                    end_type = etype,
+                })
+                new_index = new_index + 1
+            end
+        else
+            sentence.index = new_index
+            table.insert(expanded, sentence)
+            new_index = new_index + 1
+        end
+    end
+    sentences = expanded
+
     -- Recalculate start/end positions relative to original text
     local search_from = 1
     for _, sentence in ipairs(sentences) do
@@ -159,6 +193,208 @@ function TextParser:parseSentences(text)
     end
 
     return sentences
+end
+
+--[[--
+Split a long sentence into clause-aware chunks for Piper TTS.
+
+Piper on ARM has a hard ceiling at ~900 chars (OOM above ~1000).  Even below
+that, throughput is best with 100-300 char chunks.  This function:
+
+1. Splits at natural clause boundaries (; : " - " and ", <conjunction>")
+2. Merges tiny fragments (< MIN_CHUNK_CHARS) with their neighbours
+3. Re-splits anything still over max_chars at word boundaries
+
+See benchmark/RESULTS_LONG.md for the data behind these thresholds.
+
+@param text string      The sentence text to split
+@param max_chars number  Maximum chunk size (default MAX_CHUNK_CHARS)
+@return table            Array of chunk strings
+--]]
+function TextParser:splitLongSentence(text, max_chars)
+    max_chars = max_chars or MAX_CHUNK_CHARS
+    if #text <= max_chars then
+        return { text }
+    end
+
+    -- Step 1: split at clause boundaries
+    local chunks = self:_splitAtClauses(text)
+
+    -- Step 2: merge fragments smaller than MIN_CHUNK_CHARS
+    chunks = self:_mergeSmallChunks(chunks, MIN_CHUNK_CHARS)
+
+    -- Step 3: re-split anything still over max_chars at word boundaries
+    local final = {}
+    for _, chunk in ipairs(chunks) do
+        if #chunk > max_chars then
+            local subs = self:_splitAtWordBoundary(chunk, max_chars)
+            for _, sub in ipairs(subs) do
+                table.insert(final, sub)
+            end
+        else
+            table.insert(final, chunk)
+        end
+    end
+
+    return final
+end
+
+--[[--
+Split text at clause boundaries.
+
+Recognised boundaries (kept at the end of the preceding chunk):
+  - semicolons:   "; "
+  - colons:       ": "
+  - dashes:       " - "
+  - conjunctions: ", and/but/or/nor/for/yet/so/which/who/that/where/when/
+                    while/although/because/since/unless/if/after/before"
+
+@param text string
+@return table Array of trimmed non-empty strings
+--]]
+function TextParser:_splitAtClauses(text)
+    local conjunctions = {
+        "and", "but", "or", "nor", "for", "yet", "so",
+        "which", "who", "that", "where", "when", "while",
+        "although", "because", "since", "unless", "if",
+        "after", "before",
+    }
+
+    local chunks = {}
+    local current = ""
+    local pos = 1
+
+    while pos <= #text do
+        local ch = text:sub(pos, pos)
+
+        -- "; " or ": " - split after the punctuation
+        if (ch == ";" or ch == ":") and text:sub(pos + 1, pos + 1) == " " then
+            current = current .. ch
+            table.insert(chunks, current)
+            current = ""
+            pos = pos + 2  -- skip the trailing space
+
+        -- " - " - split after the dash
+        elseif text:sub(pos, pos + 2) == " - " then
+            current = current .. " -"
+            table.insert(chunks, current)
+            current = ""
+            pos = pos + 3
+
+        -- ", <conjunction> " - split after the comma
+        elseif ch == "," and text:sub(pos + 1, pos + 1) == " " then
+            local rest = text:sub(pos + 2)
+            local found_conj = false
+            for _, conj in ipairs(conjunctions) do
+                if rest:find("^" .. conj .. "%s") or rest:find("^" .. conj .. "$") then
+                    current = current .. ","
+                    table.insert(chunks, current)
+                    current = ""
+                    pos = pos + 2  -- skip ", "; conjunction starts the next chunk
+                    found_conj = true
+                    break
+                end
+            end
+            if not found_conj then
+                current = current .. ch
+                pos = pos + 1
+            end
+
+        else
+            current = current .. ch
+            pos = pos + 1
+        end
+    end
+
+    if current ~= "" then
+        table.insert(chunks, current)
+    end
+
+    -- Trim and drop empties
+    local result = {}
+    for _, chunk in ipairs(chunks) do
+        chunk = chunk:match("^%s*(.-)%s*$")
+        if chunk and chunk ~= "" then
+            table.insert(result, chunk)
+        end
+    end
+    return result
+end
+
+--[[--
+Merge chunks shorter than min_chars with a neighbour.
+
+Prefers merging with the previous chunk (so we build up the leading chunk).
+Falls back to merging forward when there is no previous chunk.
+
+@param chunks table     Array of chunk strings
+@param min_chars number  Minimum acceptable chunk length
+@return table            Merged array
+--]]
+function TextParser:_mergeSmallChunks(chunks, min_chars)
+    if #chunks <= 1 then return chunks end
+
+    local merged = {}
+    for _, chunk in ipairs(chunks) do
+        if #chunk < min_chars and #merged > 0 then
+            -- Merge with previous chunk
+            merged[#merged] = merged[#merged] .. " " .. chunk
+        elseif #chunk < min_chars then
+            -- First chunk is tiny - just push, will merge on next iteration
+            table.insert(merged, chunk)
+        else
+            table.insert(merged, chunk)
+        end
+    end
+
+    -- Second pass: if the first chunk is still too small, merge it forward
+    if #merged > 1 and #merged[1] < min_chars then
+        merged[2] = merged[1] .. " " .. merged[2]
+        table.remove(merged, 1)
+    end
+
+    return merged
+end
+
+--[[--
+Split text at word boundaries so every chunk is <= max_chars.
+
+Finds the last space at or before the limit and splits there.
+Falls back to a hard cut when a single word exceeds max_chars.
+
+@param text string
+@param max_chars number
+@return table Array of chunk strings
+--]]
+function TextParser:_splitAtWordBoundary(text, max_chars)
+    local chunks = {}
+    local remaining = text
+
+    while #remaining > max_chars do
+        local split_pos = max_chars
+        -- Walk backwards to find a space
+        while split_pos > 0 and remaining:sub(split_pos, split_pos) ~= " " do
+            split_pos = split_pos - 1
+        end
+        if split_pos == 0 then
+            -- No space found - hard cut (extremely unlikely with natural text)
+            split_pos = max_chars
+        end
+        table.insert(chunks, remaining:sub(1, split_pos - 1))
+        remaining = remaining:sub(split_pos + 1)  -- skip the space
+    end
+
+    if #remaining > 0 then
+        -- If the trailing fragment is shorter than MIN_CHUNK_CHARS, merge it
+        -- back into the previous chunk.  Slightly exceeding max_chars is far
+        -- cheaper than the ~4-5 s fixed overhead of a tiny extra request.
+        if #remaining < MIN_CHUNK_CHARS and #chunks > 0 then
+            chunks[#chunks] = chunks[#chunks] .. " " .. remaining
+        else
+            table.insert(chunks, remaining)
+        end
+    end
+    return chunks
 end
 
 --[[--

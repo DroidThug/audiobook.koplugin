@@ -166,6 +166,16 @@ socket (`@kobo:mtkbtmwrpc`). The plugin keeps one GStreamer pipeline alive for
 the entire reading session and feeds audio through a FIFO. Orphan pipelines from
 crashes are killed on startup via PID files and `pkill`.
 
+**Long-sentence splitting.** Piper's attention mechanism scales quadratically
+with input length. On Kobo's 512 MB of RAM the server OOMs on sentences above
+~1000 characters and throughput drops from ~7 ch/s at 300 chars to ~3 ch/s at
+1400 chars. The text parser automatically splits any sentence longer than 300
+characters at natural clause boundaries (`;` `:` `, and/but/or...` ` - `) then
+merges fragments shorter than 80 characters with a neighbour (below that, ~90%
+of synthesis time is wasted on per-request overhead) and re-splits anything still
+over 300 at word boundaries. See
+[benchmark/RESULTS_LONG.md](benchmark/RESULTS_LONG.md) for the full data.
+
 ## Troubleshooting
 
 | Problem | Fix |
