@@ -598,9 +598,8 @@ function MenuBuilder.buildPiperVoiceMenu(plugin)
     for _, voice in ipairs(voices) do
         local quality_label = ""
         if voice.quality then
-            local icons = { high = "★★★", medium = "★★☆", low = "★☆☆" }
-            quality_label = string.format(" %s %s · %d kHz",
-                icons[voice.quality] or "", voice.quality,
+            quality_label = string.format(" (%s · %d kHz)",
+                voice.quality,
                 (voice.sample_rate or 22050) / 1000)
         end
         local size_mb = voice.size and string.format(" · %.0f MB", voice.size / 1024 / 1024) or ""

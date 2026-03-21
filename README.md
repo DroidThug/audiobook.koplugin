@@ -18,7 +18,9 @@
   <a href="https://github.com/sponsors/stradichenko">
     <img src="https://img.shields.io/badge/sponsor-30363D?style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA" alt="GitHub Sponsors">
   </a>
-</h4>
+  <a href="https://buymeacoffee.com/stradichenko">
+    <img src="https://raw.githubusercontent.com/pachadotdev/buymeacoffee-badges/main/bmc-donate-white.svg" alt="BuyMeACoffee">
+</a>
 
 <h4 align="center">
 
@@ -32,9 +34,19 @@ support. Works offline on Kobo, Kindle, Android, and Linux.
 
 ## Quick start
 
-### 1. Copy the plugin
+### 1. Download and copy the plugin
 
-Put `audiobook.koplugin` into KOReader's plugins folder:
+Clone the repository:
+
+```bash
+git clone https://github.com/stradichenko/audiobook.koplugin.git
+```
+
+Pre-built bundles with espeak-ng and Piper included will be available on
+[GitHub Releases](https://github.com/stradichenko/audiobook.koplugin/releases)
+in the future.
+
+Copy the `audiobook.koplugin` folder into KOReader's plugins directory:
 
 | Platform | Path |
 |----------|------|
@@ -74,23 +86,58 @@ If `opkg` is unavailable, grab the `.ipk` from
 ## Optional: Piper neural TTS
 
 Piper sounds much more natural than espeak-ng. It runs fully offline on Kobo's
-ARM processor (~40 MB for engine + voice model).
-
-```bash
-bash package-for-kobo.sh --with-piper
-```
-
-Pick a different voice with `--piper-voice en_US-ryan-low`. Voice samples:
-[rhasspy.github.io/piper-samples](https://rhasspy.github.io/piper-samples/).
-
-To install manually, download the armv7l binary from
-[Piper releases](https://github.com/rhasspy/piper/releases/tag/2023.11.14-2)
-and a voice model from
-[HuggingFace](https://huggingface.co/rhasspy/piper-voices), then place them in
-`audiobook.koplugin/piper/`.
+ARM processor (~40 MB for engine + voice model). Pre-built bundles with Piper
+included will be available on
+[GitHub Releases](https://github.com/stradichenko/audiobook.koplugin/releases).
+To build a bundle yourself, see [Building from source](#building-from-source).
 
 Switch between espeak-ng and Piper any time from
 **Tools > Audiobook Read-Along > Voice settings**.
+
+### Choosing a voice
+
+Listen to samples and pick a voice:
+[rhasspy.github.io/piper-samples](https://rhasspy.github.io/piper-samples/)
+
+Voices come in four quality levels:
+
+| Quality | Sample rate | Size | Notes |
+|---------|-------------|------|-------|
+| x_low | 16 kHz | ~5 MB | Smallest, lowest quality |
+| low | 16 kHz | ~15 MB | Good for constrained devices |
+| medium | 22 kHz | ~60 MB | Recommended balance |
+| high | 22 kHz | ~100 MB | Best quality, more RAM/CPU |
+
+> On Kobo (512 MB RAM), `low` or `x_low` voices are recommended.
+
+### Downloading additional voices
+
+Every voice needs two files: a `.onnx` model and a `.onnx.json` config. Place
+both in `audiobook.koplugin/piper/`.
+
+Voices are hosted on HuggingFace. The URL pattern is:
+
+```text
+https://huggingface.co/rhasspy/piper-voices/resolve/main/<lang>/<lang_REGION>/<speaker>/<quality>/
+```
+
+For example, to download **en_US-lessac-medium**:
+
+```bash
+cd audiobook.koplugin/piper/
+curl -LO https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx
+curl -LO https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json
+```
+
+Or for **en_US-ryan-low**:
+
+```bash
+curl -LO https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/ryan/low/en_US-ryan-low.onnx
+curl -LO https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/ryan/low/en_US-ryan-low.onnx.json
+```
+
+Browse all available voices:
+[huggingface.co/rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices/tree/main)
 
 ## Bluetooth audio (Kobo)
 
@@ -122,12 +169,19 @@ Reading pauses automatically when you open a menu and resumes when you close it.
 All settings are under **Tools > Audiobook Read-Along**:
 
 - **Bluetooth settings** - pair, connect, disconnect alert interval
-- **Voice settings** - TTS engine, voice, speech rate, pitch
-- **Highlight style** - invert (best for e-ink), underline, box, background
+- **Voice settings** - TTS engine, voice, speech rate, pitch, volume,
+  sentence/paragraph pauses (espeak-ng), sentence/paragraph gaps (Piper),
+  word gap, clause pause
+- **Highlight style** - background (default), invert (best for e-ink),
+  underline, box
 - **Auto-advance pages** - turn pages automatically
 - **Highlight words / sentences** - toggle each independently
 - **Quick start with espeak** - play first sentence with espeak-ng while Piper
   loads (avoids the ~3s cold start silence)
+- **Keep playing when lid is closed** - prevents device suspend so audio
+  continues with the case closed
+- **BT headset media buttons** - use play/pause/next/prev on a Bluetooth
+  headset or speaker to control TTS playback
 
 ## Architecture
 
@@ -135,7 +189,7 @@ All settings are under **Tools > Audiobook Read-Along**:
 audiobook.koplugin/
   main.lua             - entry point, menus, event hooks
   synccontroller.lua   - coordinates audio timing with highlights
-  ttsengine.lua        - TTS synthesis, audio playback, BT pipeline
+  ttsengine.lua        - TTS synthesis, audio playback, backend detection
   piperqueue.lua       - persistent Piper server management
   textparser.lua       - sentence/word tokenization with positions
   highlightmanager.lua - screen-coordinate highlight via crengine
@@ -144,6 +198,8 @@ audiobook.koplugin/
   btmanager.lua        - Bluetooth device scanning and pairing
   btui.lua             - BT menu UI and disconnect watcher
   btpipeline.lua       - GStreamer BT audio pipeline management
+  btmediacontrol.lua   - BT headset media buttons (AVRCP play/pause/skip)
+  wavutils.lua         - WAV file reading, writing, and manipulation
   utils.lua            - shared helpers
 ```
 
@@ -187,6 +243,48 @@ over 300 at word boundaries. See
 | SSH refused on port 22 | KOReader uses port 2222: `ssh root@<ip> -p 2222` |
 | `.adds` not visible | Enable hidden files on your OS. The folder starts with a dot. |
 | Highlight bleeds into next sentence | Update the plugin - fixed via binary-search alignment. |
+
+## Building from source
+
+The `package-for-kobo.sh` script cross-compiles espeak-ng for ARM and bundles
+the plugin into a ready-to-deploy directory. It requires
+[Nix](https://nixos.org/download) for the cross-compilation toolchain.
+
+```bash
+# Plugin + espeak-ng only
+bash package-for-kobo.sh
+
+# Plugin + espeak-ng + Piper neural TTS
+bash package-for-kobo.sh --with-piper
+
+# Use a specific Piper voice (default: en_US-lessac-medium)
+bash package-for-kobo.sh --piper-voice en_US-ryan-low
+```
+
+The output is placed in `kobo-tts-bundle/audiobook.koplugin/`. Copy it to your
+device:
+
+```bash
+scp -P 2222 -r kobo-tts-bundle/audiobook.koplugin root@<kobo-ip>:/mnt/onboard/.adds/koreader/plugins/
+```
+
+### Installing the Piper binary manually
+
+If you don't want to use the packaging script, you can assemble the Piper
+runtime yourself:
+
+1. Download the **armv7l** binary from
+   [Piper releases (2023.11.14-2)](https://github.com/rhasspy/piper/releases/tag/2023.11.14-2).
+2. Extract `piper`, its `lib/` directory, and `espeak-ng-data/` into
+   `audiobook.koplugin/piper/`.
+3. Download a voice model (`.onnx` + `.onnx.json`) as described in
+   [Downloading additional voices](#downloading-additional-voices) and place
+   them in the same `piper/` directory.
+
+> **Note:** The [rhasspy/piper](https://github.com/rhasspy/piper) repository
+> was archived in October 2025. The binaries on the releases page still work.
+> The project continues as
+> [OHF-Voice/piper1-gpl](https://github.com/OHF-Voice/piper1-gpl).
 
 ## Contributing
 

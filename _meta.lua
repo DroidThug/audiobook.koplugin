@@ -14,13 +14,14 @@ return {
 Features:
 • Word-by-word highlighting as text is read
 • Sentence highlighting option
-• Multiple TTS engine support (espeak, pico2wave, flite)
-• Adjustable speech rate (0.5x to 2.0x)
+• Multiple TTS engine support (espeak-ng, Piper neural, Pico, Flite, Festival, Android)
+• Adjustable speech rate (0.25x to 2.0x), pitch, and volume
 • Auto-advance pages
 • Multiple highlight styles (background, underline, box, invert)
+• Bluetooth audio and headset media button support
 
 Usage:
 1. Long-press a word to open dictionary
-2. Tap "🔊 Read aloud from here"
+2. Tap "Read aloud from here"
 3. Or use Tools menu → Audiobook Read-Along]]),
 }
