@@ -4,6 +4,9 @@ kobo-tts-bundle/
 # Piper download cache
 .cache/
 
+# Voice models (downloaded at build time)
+piper/
+
 # Bundled binaries (packaged by package-for-kobo.sh)
 espeak-ng/
 

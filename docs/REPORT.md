@@ -41,7 +41,7 @@ contention on single-core hardware.
 - Multi-core: up to 2 servers, batch size 1
 - Pipeline depth capped at 1 on single-core (avoids FIFO measurement overhead)
 
-Full results with charts and raw data: [benchmark/RESULTS.md](benchmark/RESULTS.md)
+Full results with charts and raw data: [dev/benchmark/RESULTS.md](../dev/benchmark/RESULTS.md)
 
 ---
 

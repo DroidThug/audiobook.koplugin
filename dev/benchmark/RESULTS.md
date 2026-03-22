@@ -228,7 +228,7 @@ beneficial. Re-run benchmarks on that hardware to validate.
 ## Reproducing These Results
 
 ```bash
-cd benchmark/
+cd dev/benchmark/
 
 # Deploy to Kobo
 bash deploy-and-run.sh --deploy-only

@@ -196,7 +196,6 @@ audiobook.koplugin/
   menubuilder.lua      - voice/highlight settings menus
   btmanager.lua        - Bluetooth device scanning and pairing
   btui.lua             - BT menu UI and disconnect watcher
-  btpipeline.lua       - GStreamer BT audio pipeline management
   btmediacontrol.lua   - BT headset media buttons (AVRCP play/pause/skip)
   wavutils.lua         - WAV file reading, writing, and manipulation
   utils.lua            - shared helpers
@@ -208,7 +207,7 @@ audiobook.koplugin/
 takes ~4.5 seconds. A persistent server process keeps the model in memory and
 accepts sentences over a FIFO. Combined with 3-sentence batching this brings the
 realtime factor from 0.085x (old 2-server config) to 0.329x. See
-[benchmark/RESULTS.md](benchmark/RESULTS.md) for the full analysis.
+[dev/benchmark/RESULTS.md](dev/benchmark/RESULTS.md) for the full analysis.
 
 **Binary-search highlight alignment.** CRe (crengine) snaps text selections to
 word boundaries, and proportional fonts make character-to-pixel estimates
@@ -229,7 +228,7 @@ characters at natural clause boundaries (`;` `:` `, and/but/or...` ` - `) then
 merges fragments shorter than 80 characters with a neighbour (below that, ~90%
 of synthesis time is wasted on per-request overhead) and re-splits anything still
 over 300 at word boundaries. See
-[benchmark/RESULTS_LONG.md](benchmark/RESULTS_LONG.md) for the full data.
+[dev/benchmark/RESULTS_LONG.md](dev/benchmark/RESULTS_LONG.md) for the full data.
 
 ## Troubleshooting
 

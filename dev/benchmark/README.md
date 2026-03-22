@@ -75,7 +75,7 @@ between synthesized audio segments when using low-quality Piper models
 
 ```bash
 # Deploy and run all strategies:
-cd benchmark/
+cd dev/benchmark/
 ./deploy-and-run.sh
 
 # Deploy and run a specific strategy:
