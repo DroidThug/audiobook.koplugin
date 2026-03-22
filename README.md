@@ -21,8 +21,9 @@
   <a href="https://buymeacoffee.com/stradichenko">
     <img src="https://raw.githubusercontent.com/pachadotdev/buymeacoffee-badges/main/bmc-donate-white.svg" alt="BuyMeACoffee">
 </a>
-
 <h4 align="center">
+
+<script type="text/javascript" src="https://cdnjs.buymeacoffee.com/1.0.0/button.prod.min.js" data-name="bmc-button" data-slug="stradichenko" data-color="#FFDD00" data-emoji=""  data-font="Poppins" data-text="Buy me a coffee" data-outline-color="#000000" data-font-color="#000000" data-coffee-color="#ffffff" ></script>
 
 [![Share on X](https://img.shields.io/badge/-Share%20on%20X-gray?style=flat&logo=x)](https://x.com/intent/tweet?text=Audiobook%20Read-Along%20for%20KOReader!%20TTS%20with%20word%20highlighting%20on%20e-readers.&url=https://github.com/stradichenko/audiobook.koplugin&hashtags=KOReader,TTS,eink)
 
@@ -36,17 +37,10 @@ support. Works offline on Kobo, Kindle, Android, and Linux.
 
 ### 1. Download and copy the plugin
 
-Clone the repository:
-
-```bash
-git clone https://github.com/stradichenko/audiobook.koplugin.git
-```
-
-Pre-built bundles with espeak-ng and Piper included will be available on
-[GitHub Releases](https://github.com/stradichenko/audiobook.koplugin/releases)
-in the future.
-
-Copy the `audiobook.koplugin` folder into KOReader's plugins directory:
+Download the latest release (includes espeak-ng and Piper) from
+[GitHub Releases](https://github.com/stradichenko/audiobook.koplugin/releases/latest),
+unzip it, and copy the `audiobook.koplugin` folder into KOReader's plugins
+directory:
 
 | Platform | Path |
 |----------|------|
@@ -86,9 +80,9 @@ If `opkg` is unavailable, grab the `.ipk` from
 ## Optional: Piper neural TTS
 
 Piper sounds much more natural than espeak-ng. It runs fully offline on Kobo's
-ARM processor (~40 MB for engine + voice model). Pre-built bundles with Piper
-included will be available on
-[GitHub Releases](https://github.com/stradichenko/audiobook.koplugin/releases).
+ARM processor (~40 MB for engine + voice model). The
+[pre-built release](https://github.com/stradichenko/audiobook.koplugin/releases/latest)
+already includes Piper and a default voice (`en_US-lessac-medium`).
 To build a bundle yourself, see [Building from source](#building-from-source).
 
 Switch between espeak-ng and Piper any time from
