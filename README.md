@@ -20,10 +20,10 @@
   </a>
   <a href="https://buymeacoffee.com/stradichenko">
     <img src="https://raw.githubusercontent.com/pachadotdev/buymeacoffee-badges/main/bmc-donate-white.svg" alt="BuyMeACoffee">
-</a>
-<h4 align="center">
+  </a>
+</h4>
 
-<script type="text/javascript" src="https://cdnjs.buymeacoffee.com/1.0.0/button.prod.min.js" data-name="bmc-button" data-slug="stradichenko" data-color="#FFDD00" data-emoji=""  data-font="Poppins" data-text="Buy me a coffee" data-outline-color="#000000" data-font-color="#000000" data-coffee-color="#ffffff" ></script>
+<h4 align="center">
 
 [![Share on X](https://img.shields.io/badge/-Share%20on%20X-gray?style=flat&logo=x)](https://x.com/intent/tweet?text=Audiobook%20Read-Along%20for%20KOReader!%20TTS%20with%20word%20highlighting%20on%20e-readers.&url=https://github.com/stradichenko/audiobook.koplugin&hashtags=KOReader,TTS,eink)
 
@@ -52,10 +52,15 @@ directory:
 
 Restart KOReader after copying.
 
-### 2. Install a TTS engine
+### 2. Install a TTS engine (if not using the pre-built release)
 
-**Kobo** - ships with no TTS. Install espeak-ng via SSH or the terminal
-emulator (Menu > More tools > Terminal emulator):
+The pre-built release from step 1 **already includes espeak-ng and Piper** —
+no extra install needed on Kobo. Skip to step 3.
+
+If you cloned the repository instead:
+
+**Kobo** — install espeak-ng via SSH or the terminal emulator
+(Menu > More tools > Terminal emulator):
 
 ```bash
 opkg update && opkg install espeak-ng
@@ -65,9 +70,9 @@ If `opkg` is unavailable, grab the `.ipk` from
 [nickel-packages](https://github.com/nickel-packages/packages) and run
 `opkg install /mnt/onboard/espeak-ng*.ipk`.
 
-**Linux** - `sudo apt install espeak-ng`
+**Linux** — `sudo apt install espeak-ng`
 
-**Android** - uses the system TTS. No extra install needed.
+**Android** — uses the system TTS. No extra install needed.
 
 ### 3. Start reading
 
@@ -236,7 +241,6 @@ over 300 at word boundaries. See
 | BT audio silent | Restart KOReader to kill orphan pipelines. Check BT is paired in the plugin menu. |
 | SSH refused on port 22 | KOReader uses port 2222: `ssh root@<ip> -p 2222` |
 | `.adds` not visible | Enable hidden files on your OS. The folder starts with a dot. |
-| Highlight bleeds into next sentence | Update the plugin - fixed via binary-search alignment. |
 
 ## Building from source
 
@@ -280,18 +284,19 @@ runtime yourself:
 > The project continues as
 > [OHF-Voice/piper1-gpl](https://github.com/OHF-Voice/piper1-gpl).
 
-## Contributing
+## To Do
 
-Areas that could use work:
-
-- Real word-level timing from TTS engines (SSML / phoneme callbacks)
-- PDF/DjVu highlight support (currently EPUB only)
-- More TTS backends
-- Accessibility improvements
+- Implement real word-level timing from TTS engines (SSML / phoneme callbacks)
+- Add PDF/DjVu highlight support (currently EPUB only)
+- Integrate more TTS backends
+- Improve accessibility
+- Support whole audiobook production with hash-based verification
+- Evaluate plugin with other TTS models (e.g., KittenTTS)
+- Test and optimize for ultralow-quality/size voice models
 
 ## License
 
-Copyright 2025 gespitia - AGPL-3.0. See [LICENSE](LICENSE).
+Copyright 2025-2026 gespitia - AGPL-3.0. See [LICENSE](LICENSE).
 
 | Bundled component | License |
 |-------------------|---------|
