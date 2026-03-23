@@ -87,7 +87,9 @@ If `opkg` is unavailable, grab the `.ipk` from
 Piper sounds much more natural than espeak-ng. It runs fully offline on Kobo's
 ARM processor (~40 MB for engine + voice model). The
 [pre-built release](https://github.com/stradichenko/audiobook.koplugin/releases/latest)
-already includes Piper and a default voice (`en_US-lessac-medium`).
+already includes Piper and a default voice (`en_US-lessac-medium`). For faster
+load times on Kobo, consider switching to a `low` quality voice (see
+[Choosing a voice](#choosing-a-voice)).
 To build a bundle yourself, see [Building from source](#building-from-source).
 
 Switch between espeak-ng and Piper any time from
@@ -102,12 +104,13 @@ Voices come in four quality levels:
 
 | Quality | Sample rate | Size | Notes |
 |---------|-------------|------|-------|
-| x_low | 16 kHz | ~5 MB | Smallest, lowest quality |
-| low | 16 kHz | ~15 MB | Good for constrained devices |
-| medium | 22 kHz | ~60 MB | Recommended balance |
+| low | 16 kHz | ~15 MB | **Recommended for Kobo** — fast load, low RAM |
+| medium | 22 kHz | ~60 MB | Better quality, but slower to load on Kobo |
 | high | 22 kHz | ~100 MB | Best quality, more RAM/CPU |
 
-> On Kobo (512 MB RAM), `low` or `x_low` voices are recommended.
+> On Kobo (512 MB RAM), `low` voices are recommended. `medium` works but the
+> model takes noticeably longer to load. Not every voice is available at every
+> quality level — check HuggingFace for what's offered.
 
 ### Downloading additional voices
 
