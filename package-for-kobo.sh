@@ -38,7 +38,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 echo "=== Building espeak-ng for armv7l via Nix cross-compilation ==="
-ESPEAK_OUT=$(nix-build "$SCRIPT_DIR/cross-build-espeak.nix" --no-out-link 2>/dev/null)
+ESPEAK_OUT=$(nix-build "$SCRIPT_DIR/cross-build-espeak.nix" --no-out-link)
 echo "Nix store path: $ESPEAK_OUT"
 
 echo "=== Packaging bundle ==="
@@ -47,7 +47,7 @@ rm -rf "$BUNDLE_DIR"
 mkdir -p "$ESPEAK_DEST/bin" "$ESPEAK_DEST/lib" "$ESPEAK_DEST/share/espeak-ng-data/lang/gmw" "$ESPEAK_DEST/share/espeak-ng-data/voices"
 
 # Plugin Lua files first
-for f in main.lua textparser.lua ttsengine.lua highlightmanager.lua synccontroller.lua playbackbar.lua menubuilder.lua btmanager.lua btui.lua btmediacontrol.lua utils.lua wavutils.lua piperqueue.lua _meta.lua; do
+for f in main.lua textparser.lua ttsengine.lua highlightmanager.lua synccontroller.lua playbackbar.lua menubuilder.lua btmanager.lua btui.lua btmediacontrol.lua utils.lua wavutils.lua piperqueue.lua bugreport.lua _meta.lua; do
     if [ -f "$SCRIPT_DIR/$f" ]; then
         cp "$SCRIPT_DIR/$f" "$PLUGIN_DEST/"
     fi
@@ -55,8 +55,16 @@ done
 
 # espeak-ng binary + library (inside plugin dir)
 cp "$ESPEAK_OUT/bin/espeak-ng" "$ESPEAK_DEST/bin/"
-cp "$ESPEAK_OUT/lib/libespeak-ng.so.1.52.0.1" "$ESPEAK_DEST/lib/"
-(cd "$ESPEAK_DEST/lib" && ln -sf libespeak-ng.so.1.52.0.1 libespeak-ng.so.1 && ln -sf libespeak-ng.so.1 libespeak-ng.so)
+# Find the actual versioned .so file (e.g. libespeak-ng.so.1.52.0.1) without hardcoding version
+ESPEAK_SO=$(find "$ESPEAK_OUT/lib" -name 'libespeak-ng.so.*.*.*' ! -type l | head -1)
+if [ -z "$ESPEAK_SO" ]; then
+    echo "ERROR: Could not find libespeak-ng.so.*.*.* in $ESPEAK_OUT/lib/"
+    exit 1
+fi
+ESPEAK_SO_NAME=$(basename "$ESPEAK_SO")
+echo "Found espeak-ng library: $ESPEAK_SO_NAME"
+cp "$ESPEAK_SO" "$ESPEAK_DEST/lib/"
+(cd "$ESPEAK_DEST/lib" && ln -sf "$ESPEAK_SO_NAME" libespeak-ng.so.1 && ln -sf libespeak-ng.so.1 libespeak-ng.so)
 
 # Bundle cross-compiled glibc (Kobo's system glibc 2.11 is too old)
 # The bundled ld-linux-armhf.so.3 will be used as the dynamic linker

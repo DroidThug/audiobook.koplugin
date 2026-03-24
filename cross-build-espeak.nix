@@ -2,7 +2,10 @@
 # Usage: nix-build cross-build-espeak.nix --no-out-link
 # Then: ls $(nix-build cross-build-espeak.nix --no-out-link)/bin/
 let
-  pkgs = import <nixpkgs> {};
+  # Pin nixpkgs to a known-good commit (nixpkgs-unstable, 2026-03-22)
+  # to avoid CI breakage from channel updates
+  nixpkgsSrc = fetchTarball "https://github.com/NixOS/nixpkgs/archive/255a186666b6130ddddf8ad749887102a0820914.tar.gz";
+  pkgs = import nixpkgsSrc {};
   crossPkgs = pkgs.pkgsCross.armv7l-hf-multiplatform;
 in
 (crossPkgs.espeak-ng.override {
