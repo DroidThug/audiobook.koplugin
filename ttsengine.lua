@@ -1021,12 +1021,23 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
     local player = self._cached_player or self:findAudioPlayer()
     if player then
         self._cached_player = player
+    else
+        -- Clear cache so next attempt re-probes (user may pair BT between tries)
+        self._cached_player = nil
     end
     if not player then
         logger.err("TTSEngine: No audio player found")
         self.player_error = true
+        local msg
+        if Device:isKindle() then
+            msg = _("No audio output available.\n\nPair Bluetooth headphones via the Kindle menu, then try again.\n\nIf already paired, try restarting KOReader.")
+        elseif Device:isKobo() then
+            msg = _("No audio output available.\n\nKobo has no built-in speaker.\n\nPlease pair Bluetooth headphones:\nSettings → Bluetooth → Pair\n\nThen try again.")
+        else
+            msg = _("No audio output available.\n\nNo supported audio player found (aplay, paplay, mpv, mplayer).\n\nIf using Bluetooth, make sure headphones are paired and connected.")
+        end
         UIManager:show(InfoMessage:new{
-            text = _("No audio output available.\n\nKobo has no built-in speaker.\n\nPlease pair Bluetooth headphones:\nSettings → Bluetooth → Pair\n\nThen try again."),
+            text = msg,
             timeout = 8,
         })
         self.is_speaking = false
@@ -1429,7 +1440,7 @@ function TTSEngine:findAudioPlayer()
         end
     end
 
-    -- 2) Check if any ALSA soundcard exists (required for aplay)
+    -- 2) Check if any ALSA soundcard exists
     local has_soundcard = false
     local cards = io.open("/proc/asound/cards", "r")
     if cards then
@@ -1438,9 +1449,14 @@ function TTSEngine:findAudioPlayer()
         has_soundcard = content and not content:match("no soundcards")
     end
 
-    -- Order by preference for e-ink/Kobo devices
+    -- On Kindle, the OS handles BT-to-ALSA routing at the system level.
+    -- /proc/asound/cards may report "no soundcards" even with BT audio
+    -- paired, so we try aplay regardless.
+    local is_kindle = Device:isKindle()
+
+    -- Order by preference
     local players = {}
-    if has_soundcard then
+    if has_soundcard or is_kindle then
         table.insert(players, {cmd = "aplay", args = "-q -D default"})
         table.insert(players, {cmd = "aplay", args = "-q -D hw:0,0"})
         table.insert(players, {cmd = "aplay", args = "-q"})
@@ -1449,6 +1465,11 @@ function TTSEngine:findAudioPlayer()
     table.insert(players, {cmd = "mpv", args = "--no-video --really-quiet"})
     table.insert(players, {cmd = "mplayer", args = "-really-quiet"})
     table.insert(players, {cmd = "play", args = "-q"})
+    -- Last resort: try aplay even without a detected soundcard (BT audio
+    -- may be available through the OS audio stack)
+    if not has_soundcard and not is_kindle then
+        table.insert(players, {cmd = "aplay", args = "-q"})
+    end
 
     for _, player in ipairs(players) do
         if self:commandExists(player.cmd) then
@@ -1461,6 +1482,8 @@ function TTSEngine:findAudioPlayer()
         end
     end
 
+    logger.warn("TTSEngine: No audio player found. has_soundcard=", has_soundcard,
+                "is_kindle=", is_kindle, "checked:", #players, "candidates")
     return nil
 end
 

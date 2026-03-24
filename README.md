@@ -252,8 +252,9 @@ over 300 at word boundaries. See
 
 | Problem | Fix |
 |---------|-----|
-| Plugin not in menu | Folder must be `audiobook.koplugin` inside `plugins/`. Restart KOReader. |
+| Plugin not in menu | Folder must be `audiobook.koplugin` inside `plugins/`. The plugin only appears in the **Tools** menu when a book is open. Restart KOReader after copying. |
 | No sound | Run `espeak-ng "hello" -w /tmp/t.wav && aplay /tmp/t.wav` over SSH. |
+| No audio player found (Kindle) | Pair BT headphones via the Kindle top-swipe menu **before** starting playback. If already paired, restart KOReader so the plugin re-detects the audio output. |
 | No TTS engine found | Install espeak-ng (see Quick start). |
 | No TTS engine found (Android) | Ensure `android/tts_helper.dex` is present inside the plugin folder. The pre-built release includes it; if you cloned from source, run `./build-dex.sh` in the `android/` directory. The device must also have a TTS engine installed (most do by default). See [Android support](#android-support). |
 | BT audio silent | Restart KOReader to kill orphan pipelines. Check BT is paired in the plugin menu. |
