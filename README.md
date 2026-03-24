@@ -5,7 +5,8 @@
 <h3 align="center">
 
 ![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)
-![Platform](https://img.shields.io/badge/platform-Kobo%20%7C%20Kindle%20%7C%20Android%20%7C%20Linux-blue)
+![Platform](https://img.shields.io/badge/platform-Kobo%20%7C%20Kindle%20%7C%20Linux-blue)
+![Android](https://img.shields.io/badge/Android-not%20yet%20supported-orange)
 ![TTS](https://img.shields.io/badge/TTS-Piper%20%7C%20espeak--ng-green)
 
 </h3>
@@ -72,7 +73,11 @@ If `opkg` is unavailable, grab the `.ipk` from
 
 **Linux** — `sudo apt install espeak-ng`
 
-**Android** — uses the system TTS. No extra install needed.
+**Android (Boox, etc.)** — **not yet supported.** The bundled espeak-ng
+and Piper binaries are compiled for Linux-based e-readers (Kobo, Kindle) and
+will not run on Android. Android TTS integration is planned but not yet
+implemented. If you have `espeak-ng` in your system PATH (e.g. via Termux), the
+plugin will detect and use it, but this is untested.
 
 ### 3. Start reading
 
@@ -240,9 +245,79 @@ over 300 at word boundaries. See
 | Plugin not in menu | Folder must be `audiobook.koplugin` inside `plugins/`. Restart KOReader. |
 | No sound | Run `espeak-ng "hello" -w /tmp/t.wav && aplay /tmp/t.wav` over SSH. |
 | No TTS engine found | Install espeak-ng (see Quick start). |
+| No TTS engine found (Android) | Android TTS is not yet supported. The bundled binaries only work on Linux-based e-readers (Kobo, Kindle). See [Android note](#2-install-a-tts-engine-if-not-using-the-pre-built-release). |
 | BT audio silent | Restart KOReader to kill orphan pipelines. Check BT is paired in the plugin menu. |
 | SSH refused on port 22 | KOReader uses port 2222: `ssh root@<ip> -p 2222` |
 | `.adds` not visible | Enable hidden files on your OS. The folder starts with a dot. |
+
+### Generating a bug report
+
+If something isn't working, please generate a diagnostic report from the
+plugin menu:
+
+**Tools > Audiobook Read-Along > Generate bug report**
+
+This saves a `.txt` file to your device's root storage:
+
+| Platform | Report location |
+|----------|----------------|
+| Kobo | `/mnt/onboard/audiobook-bug-report-*.txt` |
+| Kindle | `/mnt/us/audiobook-bug-report-*.txt` |
+| Android | `/sdcard/audiobook-bug-report-*.txt` |
+| Linux | `~/audiobook-bug-report-*.txt` |
+
+Connect your device via USB, find the file, and attach it to your
+[GitHub issue](https://github.com/stradichenko/audiobook.koplugin/issues).
+
+**What the report contains:**
+
+- Device model, platform, screen size, kernel version
+- KOReader version
+- TTS engine detection results (which backends were found/missing)
+- Audio player availability (aplay, GStreamer, etc.)
+- Plugin settings (speech rate, highlight style, etc.)
+- Memory and disk info
+
+**What the report does NOT contain:**
+
+- Book titles, content, or reading positions
+- File paths with usernames (sanitized automatically)
+- Highlights, bookmarks, or notes
+- Network information or credentials
+
+## Android support
+
+Android TTS integration is **in progress**. Here is the current status:
+
+| Feature | Status |
+|---------|--------|
+| Plugin loads in KOReader | ![Works](https://img.shields.io/badge/-works-brightgreen) |
+| Text parsing & highlighting | ![Works](https://img.shields.io/badge/-works-brightgreen) |
+| Bundled espeak-ng / Piper | ![No](https://img.shields.io/badge/-not%20supported-red) Linux binaries, won't run on Android |
+| Android system TTS | ![Planned](https://img.shields.io/badge/-planned-blue) Requires JNI bridge to `TextToSpeech` API |
+| espeak-ng via Termux | ![Untested](https://img.shields.io/badge/-untested-yellow) May work if `espeak-ng` is in PATH |
+| Audio playback | ![Untested](https://img.shields.io/badge/-untested-yellow) Depends on available player (`mpv`, `play`, etc.) |
+
+### Why it doesn't work yet
+
+The bundled `espeak-ng` and `piper` binaries in the release are
+cross-compiled for **Linux ARM with glibc**. Android uses **Bionic libc**,
+so these binaries cannot execute on Android devices (Boox, phones, tablets).
+
+Android has its own `TextToSpeech` Java API, but KOReader's Lua runtime
+needs a JNI bridge to call it. This bridge does not exist yet.
+
+### Workaround for advanced users
+
+If you have [Termux](https://termux.dev/) installed:
+
+1. Install espeak-ng in Termux: `pkg install espeak-ng`
+2. Ensure Termux's bin directory is in KOReader's PATH
+3. The plugin will detect `espeak-ng` from the system PATH automatically
+
+This is **untested** — if you try it, please
+[open an issue](https://github.com/stradichenko/audiobook.koplugin/issues)
+with a bug report (see above) regardless of whether it works.
 
 ## Building from source
 
@@ -290,6 +365,7 @@ runtime yourself:
 
 - Implement real word-level timing from TTS engines (SSML / phoneme callbacks)
 - Add PDF/DjVu highlight support (currently EPUB only)
+- **Android TTS support** via JNI bridge to Android's `TextToSpeech` API
 - Integrate more TTS backends
 - Improve accessibility
 - Support whole audiobook production with hash-based verification

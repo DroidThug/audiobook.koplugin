@@ -21,6 +21,7 @@ local Utils = dofile(_utils_dir .. "utils.lua")
 local MenuBuilder = dofile(_utils_dir .. "menubuilder.lua")
 local BtUI = dofile(_utils_dir .. "btui.lua")
 local BtMediaControl = dofile(_utils_dir .. "btmediacontrol.lua")
+local BugReport = dofile(_utils_dir .. "bugreport.lua")
 local PLUGIN_PATH = _utils_dir
 
 local Audiobook = WidgetContainer:extend{
@@ -285,6 +286,14 @@ function Audiobook:addToMainMenu(menu_items)
                     end
                 end,
                 help_text = _("When enabled, play/pause/next/prev buttons on a Bluetooth headset or speaker will control TTS playback. The connected device will also show playback status."),
+            },
+            -- ── Diagnostics ──
+            {
+                text = _("Generate bug report"),
+                callback = function()
+                    BugReport.menuCallback(self)
+                end,
+                help_text = _("Saves a diagnostic report to your device storage. The report contains device model, TTS engine status, and audio configuration — no personal data or book content. Share it when reporting issues on GitHub."),
             },
         },
     }

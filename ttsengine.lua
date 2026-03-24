@@ -90,54 +90,55 @@ end
 Detect available TTS backend.
 --]]
 function TTSEngine:detectBackend()
-    if Device:isAndroid() then
-        self.backend = self.BACKENDS.ANDROID
-        logger.dbg("TTSEngine: Using Android TTS")
-        return
+    local is_android = Device:isAndroid()
+
+    -- On Android, the bundled espeak-ng/Piper binaries are compiled for Linux
+    -- (glibc) and won't run on Android's Bionic libc.  Skip bundled binaries
+    -- and go straight to system PATH detection.
+    if not is_android then
+        -- Detect all available bundled engines first, then pick the best default.
+        local plugin_dir = self.plugin_dir or "/mnt/onboard/.adds/koreader/plugins/audiobook.koplugin"
+
+        -- Check for bundled espeak-ng
+        local bundled_base = plugin_dir .. "/espeak-ng"
+        local bundled_bin = bundled_base .. "/bin/espeak-ng"
+        local found_espeak = false
+        local f = io.open(bundled_bin, "r")
+        if f then
+            f:close()
+            found_espeak = true
+            self.backend_cmd = bundled_bin
+            self.espeak_bin = bundled_bin  -- keep reference for fallback even when Piper is active
+            self.espeak_lib_path = bundled_base .. "/lib"
+            self.espeak_data_path = bundled_base .. "/share"
+            self.espeak_linker = bundled_base .. "/lib/ld-linux-armhf.so.3"
+            logger.dbg("TTSEngine: Found bundled espeak-ng at", bundled_bin)
+        end
+
+        -- Check for bundled Piper TTS binary
+        local bundled_piper_bin = plugin_dir .. "/piper/piper"
+        local found_piper = false
+        f = io.open(bundled_piper_bin, "r")
+        if f then
+            f:close()
+            found_piper = true
+            self.piper_cmd = bundled_piper_bin
+            self.piper_model_dir = plugin_dir .. "/piper"
+            logger.dbg("TTSEngine: Found bundled Piper TTS at", bundled_piper_bin)
+        end
+
+        -- Pick default backend: espeak-ng first (lighter), then Piper
+        if found_espeak then
+            self.backend = self.BACKENDS.ESPEAK
+            return
+        elseif found_piper then
+            self.backend = self.BACKENDS.PIPER
+            self.backend_cmd = bundled_piper_bin
+            return
+        end
     end
 
-    -- Detect all available bundled engines first, then pick the best default.
-    local plugin_dir = self.plugin_dir or "/mnt/onboard/.adds/koreader/plugins/audiobook.koplugin"
-
-    -- Check for bundled espeak-ng
-    local bundled_base = plugin_dir .. "/espeak-ng"
-    local bundled_bin = bundled_base .. "/bin/espeak-ng"
-    local found_espeak = false
-    local f = io.open(bundled_bin, "r")
-    if f then
-        f:close()
-        found_espeak = true
-        self.backend_cmd = bundled_bin
-        self.espeak_bin = bundled_bin  -- keep reference for fallback even when Piper is active
-        self.espeak_lib_path = bundled_base .. "/lib"
-        self.espeak_data_path = bundled_base .. "/share"
-        self.espeak_linker = bundled_base .. "/lib/ld-linux-armhf.so.3"
-        logger.dbg("TTSEngine: Found bundled espeak-ng at", bundled_bin)
-    end
-
-    -- Check for bundled Piper TTS binary
-    local bundled_piper_bin = plugin_dir .. "/piper/piper"
-    local found_piper = false
-    f = io.open(bundled_piper_bin, "r")
-    if f then
-        f:close()
-        found_piper = true
-        self.piper_cmd = bundled_piper_bin
-        self.piper_model_dir = plugin_dir .. "/piper"
-        logger.dbg("TTSEngine: Found bundled Piper TTS at", bundled_piper_bin)
-    end
-
-    -- Pick default backend: espeak-ng first (lighter), then Piper
-    if found_espeak then
-        self.backend = self.BACKENDS.ESPEAK
-        return
-    elseif found_piper then
-        self.backend = self.BACKENDS.PIPER
-        self.backend_cmd = bundled_piper_bin
-        return
-    end
-
-    -- Fall back to system PATH
+    -- Fall back to system PATH (also the primary path on Android)
     local backends_to_try = {
         {name = self.BACKENDS.ESPEAK, cmd = "espeak-ng"},
         {name = self.BACKENDS.ESPEAK, cmd = "espeak"},
@@ -159,7 +160,11 @@ function TTSEngine:detectBackend()
     -- Log what we searched for
     logger.warn("TTSEngine: No TTS backend found. Searched for: espeak-ng, espeak, pico2wave, flite, festival")
     self.backend = nil
-    self.backend_error = _("No TTS engine found. Please install espeak-ng.")
+    if is_android then
+        self.backend_error = _("No TTS engine found.\n\nAndroid TTS is not yet supported.\nThe bundled espeak-ng/Piper require a Linux-based e-reader (Kobo, Kindle).\n\nSee the README for details.")
+    else
+        self.backend_error = _("No TTS engine found. Please install espeak-ng.")
+    end
 end
 
 --[[--
@@ -262,7 +267,7 @@ function TTSEngine:synthesize(text, callback)
         logger.err("TTSEngine: No TTS backend available")
         -- Show error to user
         UIManager:show(InfoMessage:new{
-            text = self.backend_error or _("No TTS engine available.\n\nOn Kobo, you need to install espeak-ng.\n\nSee README for instructions."),
+            text = self.backend_error or _("No TTS engine available.\n\nOn Kobo/Kindle, install espeak-ng or use the pre-built release.\nOn Android, TTS is not yet supported.\n\nSee README for details."),
             timeout = 5,
         })
         if callback then
@@ -275,11 +280,7 @@ function TTSEngine:synthesize(text, callback)
     
     logger.dbg("TTSEngine: Starting synthesis with backend:", self.backend)
     
-    if self.backend == self.BACKENDS.ANDROID then
-        return self:synthesizeAndroid(text, callback)
-    else
-        return self:synthesizeCommand(text, callback)
-    end
+    return self:synthesizeCommand(text, callback)
 end
 
 --[[--
