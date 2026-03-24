@@ -6,8 +6,8 @@
 
 ![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)
 ![Platform](https://img.shields.io/badge/platform-Kobo%20%7C%20Kindle%20%7C%20Linux-blue)
-![Android](https://img.shields.io/badge/Android-not%20yet%20supported-orange)
-![TTS](https://img.shields.io/badge/TTS-Piper%20%7C%20espeak--ng-green)
+![Android](https://img.shields.io/badge/Android-supported-brightgreen)
+![TTS](https://img.shields.io/badge/TTS-Piper%20%7C%20espeak--ng%20%7C%20Android-green)
 
 </h3>
 
@@ -55,12 +55,12 @@ Restart KOReader after copying.
 
 ### 2. Install a TTS engine (if not using the pre-built release)
 
-The pre-built release from step 1 **already includes espeak-ng and Piper** —
+The pre-built release from step 1 **already includes espeak-ng and Piper** --
 no extra install needed on Kobo. Skip to step 3.
 
 If you cloned the repository instead:
 
-**Kobo** — install espeak-ng via SSH or the terminal emulator
+**Kobo** -- install espeak-ng via SSH or the terminal emulator
 (Menu > More tools > Terminal emulator):
 
 ```bash
@@ -71,13 +71,22 @@ If `opkg` is unavailable, grab the `.ipk` from
 [nickel-packages](https://github.com/nickel-packages/packages) and run
 `opkg install /mnt/onboard/espeak-ng*.ipk`.
 
-**Linux** — `sudo apt install espeak-ng`
+**Linux** -- `sudo apt install espeak-ng`
 
-**Android (Boox, etc.)** — **not yet supported.** The bundled espeak-ng
-and Piper binaries are compiled for Linux-based e-readers (Kobo, Kindle) and
-will not run on Android. Android TTS integration is planned but not yet
-implemented. If you have `espeak-ng` in your system PATH (e.g. via Termux), the
-plugin will detect and use it, but this is untested.
+**Android (Boox, etc.)** -- the pre-built release includes `tts_helper.dex`,
+which bridges to the device's built-in TTS engine (Google, Samsung, etc.). Just
+unzip and copy the folder like any other platform. No extra steps needed.
+
+If you cloned the repo instead of downloading a release, build the `.dex`
+manually (requires Android SDK):
+
+```bash
+cd audiobook.koplugin/android/
+./build-dex.sh
+```
+
+The bundled espeak-ng and Piper binaries are for Linux-based e-readers and will
+not run on Android. See [Android support](#android-support) for details.
 
 ### 3. Start reading
 
@@ -92,8 +101,8 @@ plugin will detect and use it, but this is untested.
 Piper sounds much more natural than espeak-ng. It runs fully offline on Kobo's
 ARM processor (~40 MB for engine + voice model). The
 [pre-built release](https://github.com/stradichenko/audiobook.koplugin/releases/latest)
-already includes Piper and a default voice (`en_US-lessac-medium`). For faster
-load times on Kobo, consider switching to a `low` quality voice (see
+already includes Piper and a default voice (`en_US-danny-low`). For faster
+load times on Kobo, `low` quality voices like this one are recommended (see
 [Choosing a voice](#choosing-a-voice)).
 To build a bundle yourself, see [Building from source](#building-from-source).
 
@@ -109,13 +118,13 @@ Voices come in four quality levels:
 
 | Quality | Sample rate | Size | Notes |
 |---------|-------------|------|-------|
-| low | 16 kHz | ~15 MB | **Recommended for Kobo** — fast load, low RAM |
+| low | 16 kHz | ~15 MB | **Recommended for Kobo** -- fast load, low RAM |
 | medium | 22 kHz | ~60 MB | Better quality, but slower to load on Kobo |
 | high | 22 kHz | ~100 MB | Best quality, more RAM/CPU |
 
 > On Kobo (512 MB RAM), `low` voices are recommended. `medium` works but the
 > model takes noticeably longer to load. Not every voice is available at every
-> quality level — check HuggingFace for what's offered.
+> quality level -- check HuggingFace for what's offered.
 
 ### Downloading additional voices
 
@@ -206,6 +215,7 @@ audiobook.koplugin/
   btui.lua             - BT menu UI and disconnect watcher
   btmediacontrol.lua   - BT headset media buttons (AVRCP play/pause/skip)
   wavutils.lua         - WAV file reading, writing, and manipulation
+  androidtts.lua       - Android TTS via JNI (DexClassLoader + TtsHelper)
   utils.lua            - shared helpers
 ```
 
@@ -245,7 +255,7 @@ over 300 at word boundaries. See
 | Plugin not in menu | Folder must be `audiobook.koplugin` inside `plugins/`. Restart KOReader. |
 | No sound | Run `espeak-ng "hello" -w /tmp/t.wav && aplay /tmp/t.wav` over SSH. |
 | No TTS engine found | Install espeak-ng (see Quick start). |
-| No TTS engine found (Android) | Android TTS is not yet supported. The bundled binaries only work on Linux-based e-readers (Kobo, Kindle). See [Android note](#2-install-a-tts-engine-if-not-using-the-pre-built-release). |
+| No TTS engine found (Android) | Ensure `android/tts_helper.dex` is present inside the plugin folder. The pre-built release includes it; if you cloned from source, run `./build-dex.sh` in the `android/` directory. The device must also have a TTS engine installed (most do by default). See [Android support](#android-support). |
 | BT audio silent | Restart KOReader to kill orphan pipelines. Check BT is paired in the plugin menu. |
 | SSH refused on port 22 | KOReader uses port 2222: `ssh root@<ip> -p 2222` |
 | `.adds` not visible | Enable hidden files on your OS. The folder starts with a dot. |
@@ -287,37 +297,57 @@ Connect your device via USB, find the file, and attach it to your
 
 ## Android support
 
-Android TTS integration is **in progress**. Here is the current status:
+Android TTS is supported via a JNI bridge to the device's built-in
+`TextToSpeech` engine (Google, Samsung, etc.). No Termux, no extra APKs, no
+root required.
 
 | Feature | Status |
 |---------|--------|
 | Plugin loads in KOReader | ![Works](https://img.shields.io/badge/-works-brightgreen) |
 | Text parsing & highlighting | ![Works](https://img.shields.io/badge/-works-brightgreen) |
+| Android system TTS | ![Works](https://img.shields.io/badge/-works-brightgreen) Via JNI bridge to `TextToSpeech` API |
+| Audio playback | ![Works](https://img.shields.io/badge/-works-brightgreen) Via Android `MediaPlayer` |
 | Bundled espeak-ng / Piper | ![No](https://img.shields.io/badge/-not%20supported-red) Linux binaries, won't run on Android |
-| Android system TTS | ![Planned](https://img.shields.io/badge/-planned-blue) Requires JNI bridge to `TextToSpeech` API |
 | espeak-ng via Termux | ![Untested](https://img.shields.io/badge/-untested-yellow) May work if `espeak-ng` is in PATH |
-| Audio playback | ![Untested](https://img.shields.io/badge/-untested-yellow) Depends on available player (`mpv`, `play`, etc.) |
 
-### Why it doesn't work yet
+### Setup
 
-The bundled `espeak-ng` and `piper` binaries in the release are
-cross-compiled for **Linux ARM with glibc**. Android uses **Bionic libc**,
-so these binaries cannot execute on Android devices (Boox, phones, tablets).
+The pre-built release from
+[GitHub Releases](https://github.com/stradichenko/audiobook.koplugin/releases/latest)
+includes `android/tts_helper.dex`. Just unzip and copy:
 
-Android has its own `TextToSpeech` Java API, but KOReader's Lua runtime
-needs a JNI bridge to call it. This bridge does not exist yet.
+1. Download the release zip and extract it.
+2. Copy `audiobook.koplugin/` to `/sdcard/koreader/plugins/`.
+3. Restart KOReader. The plugin auto-detects Android and initializes the
+   JNI bridge to the device's TTS engine.
 
-### Workaround for advanced users
+If you cloned the repo instead of using a release, build the `.dex` first
+(requires Android SDK + Java):
 
-If you have [Termux](https://termux.dev/) installed:
+```bash
+cd audiobook.koplugin/android/
+./build-dex.sh
+```
 
-1. Install espeak-ng in Termux: `pkg install espeak-ng`
-2. Ensure Termux's bin directory is in KOReader's PATH
-3. The plugin will detect `espeak-ng` from the system PATH automatically
+### How it works
 
-This is **untested** — if you try it, please
-[open an issue](https://github.com/stradichenko/audiobook.koplugin/issues)
-with a bug report (see above) regardless of whether it works.
+The plugin loads a small `.dex` file (`tts_helper.dex`, ~4KB) at runtime via
+Android's `DexClassLoader`. This helper wraps `android.speech.tts.TextToSpeech`
+with a polling-friendly API (since LuaJIT cannot implement Java callback
+interfaces). Synthesis produces standard WAV files that feed into the same
+pipeline used by espeak-ng and Piper.
+
+Audio playback uses Android's `MediaPlayer` instead of `aplay` or GStreamer.
+Pause, resume, and stop all work through the MediaPlayer API.
+
+For the full technical analysis, see [docs/ANDROID_TTS.md](docs/ANDROID_TTS.md).
+
+### Limitations
+
+- Uses the device's default TTS voice (voice picker UI not yet implemented)
+- Word timing is estimated (Android TTS does not provide per-word callbacks
+  when synthesizing to file)
+- First sentence may have a brief delay while the TTS engine initializes
 
 ## Building from source
 
@@ -332,7 +362,7 @@ bash package-for-kobo.sh
 # Plugin + espeak-ng + Piper neural TTS
 bash package-for-kobo.sh --with-piper
 
-# Use a specific Piper voice (default: en_US-lessac-medium)
+# Use a specific Piper voice (default: en_US-danny-low)
 bash package-for-kobo.sh --piper-voice en_US-ryan-low
 ```
 
@@ -365,7 +395,7 @@ runtime yourself:
 
 - Implement real word-level timing from TTS engines (SSML / phoneme callbacks)
 - Add PDF/DjVu highlight support (currently EPUB only)
-- **Android TTS support** via JNI bridge to Android's `TextToSpeech` API
+- Voice picker for Android TTS engines and voices
 - Integrate more TTS backends
 - Improve accessibility
 - Support whole audiobook production with hash-based verification

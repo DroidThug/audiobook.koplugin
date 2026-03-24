@@ -30,6 +30,7 @@ local _utils_dir = debug.getinfo(1, "S").source:match("^@(.*/)[^/]*$") or "./"
 local Utils = dofile(_utils_dir .. "utils.lua")
 local WavUtils = dofile(_utils_dir .. "wavutils.lua")
 local PiperQueue = dofile(_utils_dir .. "piperqueue.lua")
+local AndroidTts = dofile(_utils_dir .. "androidtts.lua")
 
 local TTSEngine = {
     -- Supported TTS backends
@@ -80,6 +81,8 @@ function TTSEngine:new(o)
     o._prefetch_text = nil
     -- Piper async prefetch queue (extracted module)
     o._piper = PiperQueue:new{engine = o}
+    -- Android TTS wrapper (initialized lazily in detectBackend)
+    o._android_tts = nil
     
     o:detectBackend()
     
@@ -159,9 +162,31 @@ function TTSEngine:detectBackend()
     
     -- Log what we searched for
     logger.warn("TTSEngine: No TTS backend found. Searched for: espeak-ng, espeak, pico2wave, flite, festival")
+
+    -- On Android, try the native TextToSpeech API via JNI
+    if is_android then
+        local atts = AndroidTts:new{
+            plugin_dir = self.plugin_dir or ".",
+        }
+        if atts:init() then
+            -- Wait up to 3 seconds for the TTS engine to initialize
+            if atts:waitForInit(3000) then
+                self._android_tts = atts
+                self.backend = self.BACKENDS.ANDROID
+                logger.dbg("TTSEngine: Using Android TTS backend")
+                return
+            else
+                atts:shutdown()
+                logger.warn("TTSEngine: Android TTS init timed out or failed")
+            end
+        else
+            logger.warn("TTSEngine: Android TTS helper .dex not available")
+        end
+    end
+
     self.backend = nil
     if is_android then
-        self.backend_error = _("No TTS engine found.\n\nAndroid TTS is not yet supported.\nThe bundled espeak-ng/Piper require a Linux-based e-reader (Kobo, Kindle).\n\nSee the README for details.")
+        self.backend_error = _("No TTS engine found.\n\nTo use Android TTS, build and install tts_helper.dex.\nSee the plugin's android/ directory for instructions.\n\nAlternatively, install espeak-ng via Termux and add it to PATH.")
     else
         self.backend_error = _("No TTS engine found. Please install espeak-ng.")
     end
@@ -290,8 +315,8 @@ Synthesize using command-line TTS.
 @return boolean Success
 --]]
 function TTSEngine:synthesizeCommand(text, callback)
-    -- /tmp always exists on Kobo; HOME and TMPDIR may point to nonexistent paths
-    local temp_dir = "/tmp"
+    -- Use Android cache dir when running on Android (no /tmp); otherwise /tmp
+    local temp_dir = self._android_tts and self._android_tts:getTempDir() or "/tmp"
     self.file_counter = (self.file_counter or 0) + 1
     local audio_file = temp_dir .. "/audiobook_tts_" .. os.time() .. "_" .. self.file_counter .. ".wav"
     local timing_file = temp_dir .. "/audiobook_timing_" .. os.time() .. ".txt"
@@ -392,6 +417,9 @@ function TTSEngine:synthesizeCommand(text, callback)
             'echo "%s" | text2wave -o "%s"',
             self:escapeText(text), audio_file
         )
+    elseif self.backend == self.BACKENDS.ANDROID then
+        -- Android TTS via JNI: synthesize to WAV file asynchronously
+        return self:synthesizeAndroid(text, audio_file, callback)
     end
     
     if not cmd then
@@ -541,24 +569,77 @@ function TTSEngine:getFileSize(path)
 end
 
 --[[--
-Synthesize using Android TTS.
+Synthesize using Android TTS via JNI.
+Dispatches synthesis to the TtsHelper, then polls for completion.
+Runs asynchronously via UIManager:scheduleIn so the UI stays responsive.
 @param text string Text to synthesize
-@param callback function Callback when synthesis is complete
-@return boolean Success
+@param audio_file string Output WAV file path
+@param callback function Callback(success, timing_data)
+@return nil  (async -- caller should not treat as immediate failure)
 --]]
-function TTSEngine:synthesizeAndroid(text, callback)
-    -- Android TTS integration would go here
-    -- This requires JNI calls to Android's TextToSpeech API
-    logger.dbg("TTSEngine: Android TTS synthesis")
-    
-    -- For now, generate timing estimates
-    self:generateTimingEstimates(text)
-    
-    if callback then
-        callback(true, self.timing_data)
+function TTSEngine:synthesizeAndroid(text, audio_file, callback)
+    local atts = self._android_tts
+    if not atts then
+        logger.err("TTSEngine: Android TTS not initialized")
+        if callback then callback(false, nil) end
+        return false
     end
-    
-    return true
+
+    -- Forward rate/pitch settings to the Android engine
+    atts:setRate(self.rate or 1.0)
+    -- espeak-ng pitch is 0-99 (default 50); Android pitch is a multiplier
+    -- around 1.0.  Map 0-99 to 0.5-2.0 range.
+    local android_pitch = 0.5 + ((self.pitch or 50) / 99) * 1.5
+    atts:setPitch(android_pitch)
+
+    logger.dbg("TTSEngine: Android TTS synthesis for:", text:sub(1, 60))
+
+    -- Dispatch synthesis (async -- the Java engine writes the WAV in background)
+    local dispatch = atts:synthesizeToFile(text, audio_file)
+    if dispatch ~= 0 then
+        logger.err("TTSEngine: Android TTS dispatch failed, code:", dispatch)
+        if callback then callback(false, nil) end
+        return false
+    end
+
+    -- Poll for completion via UIManager (keeps UI responsive)
+    local engine = self
+    local poll_count = 0
+    local max_polls = 120  -- 60 seconds max (120 x 0.5s)
+    local function pollAndroidDone()
+        poll_count = poll_count + 1
+        local status = atts:getSynthStatus()
+        if status == 1 then
+            -- Synthesis complete -- check the output file
+            local f = io.open(audio_file, "r")
+            if f then
+                f:close()
+                local size = engine:getFileSize(audio_file)
+                if size and size > 0 then
+                    engine.current_audio_file = audio_file
+                    engine:generateTimingEstimates(text)
+                    logger.dbg("TTSEngine: Android TTS done, file size:", size)
+                    if callback then
+                        callback(true, engine.timing_data)
+                    end
+                    return
+                end
+            end
+            logger.err("TTSEngine: Android TTS reported done but WAV missing/empty")
+            if callback then callback(false, nil) end
+        elseif status == 2 then
+            logger.err("TTSEngine: Android TTS synthesis error")
+            if callback then callback(false, nil) end
+        elseif poll_count < max_polls then
+            UIManager:scheduleIn(0.5, pollAndroidDone)
+        else
+            logger.err("TTSEngine: Android TTS timed out after", max_polls * 0.5, "s")
+            if callback then callback(false, nil) end
+        end
+    end
+    UIManager:scheduleIn(0.3, pollAndroidDone)
+    -- Return nil to signal async (same convention as Piper)
+    return nil
 end
 
 --[[--
@@ -691,7 +772,7 @@ This works even when the active backend is Piper.
 --]]
 function TTSEngine:espeakSynthesizeFallback(text)
     if not self.espeak_bin then return nil end
-    local temp_dir = "/tmp"
+    local temp_dir = self._android_tts and self._android_tts:getTempDir() or "/tmp"
     self.file_counter = (self.file_counter or 0) + 1
     local audio_file = temp_dir .. "/audiobook_espeak_fb_" .. os.time() .. "_" .. self.file_counter .. ".wav"
     local exec_prefix = ""
@@ -989,6 +1070,48 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         end
     end
     
+    -- === ANDROID MEDIAPLAYER PATH ===
+    if self.audio_player_type == "android" then
+        local atts = self._android_tts
+        self._concat_durations = nil
+        self._expected_play_duration_ms = self._current_audio_duration_ms
+        self.play_generation = (self.play_generation or 0) + 1
+        local my_gen = self.play_generation
+        self.playback_latency_ms = 0
+
+        local dur_ms = atts:playFile(self.current_audio_file)
+        if dur_ms < 0 then
+            logger.err("TTSEngine: Android playFile failed")
+            self.is_speaking = false
+            if on_complete then on_complete() end
+            return false
+        end
+        self._audio_launched_at = UIManager:getTime()
+        logger.dbg("TTSEngine: Android playback started, duration:", dur_ms, "ms")
+
+        -- Start timing loop for word highlighting
+        self:startTimingLoop()
+
+        -- Poll for playback completion
+        local engine = self
+        local function pollPlaybackDone()
+            if (engine.play_generation or 0) ~= my_gen then return end
+            if not engine.is_speaking then return end
+            if engine.is_paused then
+                UIManager:scheduleIn(0.3, pollPlaybackDone)
+                return
+            end
+            if atts:isPlaybackDone() then
+                logger.dbg("TTSEngine: Android playback complete")
+                engine:onPlaybackComplete()
+            else
+                UIManager:scheduleIn(0.1, pollPlaybackDone)
+            end
+        end
+        UIManager:scheduleIn(0.1, pollPlaybackDone)
+        return true
+    end
+
     -- === PERSISTENT BT PIPELINE PATH ===
     -- For Bluetooth: use a single persistent gst-launch that never stops.
     -- A feeder script writes silence between sentences to keep BT A2DP alive,
@@ -1285,6 +1408,13 @@ Sets self.audio_player_type to "gst-bt", "aplay", or "generic".
 @return string|nil Player command
 --]]
 function TTSEngine:findAudioPlayer()
+    -- 0) Android: use MediaPlayer via TtsHelper (no CLI player needed)
+    if self._android_tts then
+        self.audio_player_type = "android"
+        logger.dbg("TTSEngine: Using Android MediaPlayer for audio")
+        return "android"
+    end
+
     -- 1) GStreamer with Kobo Bluetooth A2DP sink (primary on Kobo Libra Colour etc.)
     if self:commandExists("gst-launch-1.0") then
         local handle = io.popen("gst-inspect-1.0 mtkbtmwrpcaudiosink 2>/dev/null | head -1")
@@ -1876,8 +2006,11 @@ function TTSEngine:pause()
     if self.is_speaking and not self.is_paused then
         self.is_paused = true
         self.pause_time = UIManager:getTime()
+        -- Android: pause via MediaPlayer API
+        if self.audio_player_type == "android" and self._android_tts then
+            self._android_tts:pausePlayback()
         -- Freeze the audio pipeline/process (SIGSTOP) so it can resume in place
-        if self._persistent_pipeline then
+        elseif self._persistent_pipeline then
             if self._pipeline_gst_pid then
                 os.execute("kill -STOP " .. self._pipeline_gst_pid .. " 2>/dev/null")
             end
@@ -1904,8 +2037,11 @@ function TTSEngine:resume()
         -- Accumulate total pause time so the completion timer knows how
         -- much real playback time has actually elapsed.
         self._total_pause_ms = (self._total_pause_ms or 0) + pause_ms
+        -- Android: resume via MediaPlayer API
+        if self.audio_player_type == "android" and self._android_tts then
+            self._android_tts:resumePlayback()
         -- Unfreeze the audio pipeline/process (SIGCONT)
-        if self._persistent_pipeline then
+        elseif self._persistent_pipeline then
             if self._pipeline_gst_pid then
                 os.execute("kill -CONT " .. self._pipeline_gst_pid .. " 2>/dev/null")
             end
@@ -1944,6 +2080,11 @@ function TTSEngine:stop()
     if self._completion_timer_fn then
         UIManager:unschedule(self._completion_timer_fn)
         self._completion_timer_fn = nil
+    end
+
+    -- Stop Android MediaPlayer if active
+    if self.audio_player_type == "android" and self._android_tts then
+        self._android_tts:stopPlayback()
     end
 
     -- Stop persistent pipeline or legacy keepalive
@@ -2006,6 +2147,11 @@ function TTSEngine:forceKillAll()
     if self._pending_launch_fn then
         UIManager:unschedule(self._pending_launch_fn)
         self._pending_launch_fn = nil
+    end
+    -- Shut down Android TTS engine and MediaPlayer
+    if self._android_tts then
+        self._android_tts:shutdown()
+        self._android_tts = nil
     end
     -- Stop persistent pipeline or legacy keepalive
     if self._persistent_pipeline then

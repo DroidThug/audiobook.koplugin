@@ -28,7 +28,28 @@ jobs:
           key: piper-armv7l-${{ hashFiles('package-for-kobo.sh') }}
 
       - name: Build bundle (espeak-ng + Piper)
-        run: bash package-for-kobo.sh --with-piper
+        run: bash package-for-kobo.sh --with-piper --piper-voice en_US-danny-low
+
+      - name: Build Android TTS helper (.dex)
+        run: |
+          # Install minimal Android SDK components for dex compilation
+          export ANDROID_HOME="$HOME/android-sdk"
+          mkdir -p "$ANDROID_HOME"
+          # Download command-line tools
+          CMDLINE_URL="https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+          curl -sL -o /tmp/cmdline-tools.zip "$CMDLINE_URL"
+          unzip -q /tmp/cmdline-tools.zip -d "$ANDROID_HOME/"
+          mv "$ANDROID_HOME/cmdline-tools" "$ANDROID_HOME/cmdline-tools-tmp"
+          mkdir -p "$ANDROID_HOME/cmdline-tools/latest"
+          mv "$ANDROID_HOME/cmdline-tools-tmp/"* "$ANDROID_HOME/cmdline-tools/latest/"
+          rmdir "$ANDROID_HOME/cmdline-tools-tmp"
+          # Accept licenses and install build-tools + platform
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;34.0.0" "platforms;android-34" > /dev/null 2>&1
+          # Build the .dex
+          cd android && bash build-dex.sh
+          # Copy into the bundle
+          cp tts_helper.dex ../kobo-tts-bundle/audiobook.koplugin/android/
 
       - name: Verify bundle
         run: |
@@ -42,19 +63,22 @@ jobs:
           ls -la kobo-tts-bundle/audiobook.koplugin/piper/piper
           ls -la kobo-tts-bundle/audiobook.koplugin/piper/*.onnx
           echo ""
+          echo "=== Android TTS helper ==="
+          ls -la kobo-tts-bundle/audiobook.koplugin/android/
+          echo ""
           echo "=== Total size ==="
           du -sh kobo-tts-bundle/audiobook.koplugin/
 
       - name: Create zip
         run: |
           cd kobo-tts-bundle
-          zip -r ../audiobook-koplugin-${{ github.ref_name }}-kobo.zip audiobook.koplugin/
+          zip -r ../audiobook-koplugin-${{ github.ref_name }}.zip audiobook.koplugin/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: audiobook-koplugin-${{ github.ref_name }}-kobo.zip
+          files: audiobook-koplugin-${{ github.ref_name }}.zip
           body: |
             ## Audiobook Read-Along ${{ github.ref_name }}
 
@@ -63,7 +87,8 @@ jobs:
             ### Included
             - Plugin (all Lua files)
             - Bundled espeak-ng (cross-compiled for Kobo armv7l)
-            - Bundled Piper neural TTS + en_US-lessac-medium voice
+            - Bundled Piper neural TTS + en_US-danny-low voice
+            - Android TTS helper (pre-built tts_helper.dex)
 
             ### Install paths
             | Platform | Path |

@@ -6,7 +6,7 @@
 #
 # Options:
 #   --with-piper         Also bundle Piper TTS neural engine (~24 MB)
-#   --piper-voice VOICE  Download a specific Piper voice (default: en_US-lessac-medium)
+#   --piper-voice VOICE  Download a specific Piper voice (default: en_US-danny-low)
 #                        Use "low" quality for smaller size (~15 MB), "medium" for better quality (~60 MB)
 set -euo pipefail
 
@@ -18,7 +18,7 @@ PIPER_DEST="$PLUGIN_DEST/piper"
 
 # Parse arguments
 WITH_PIPER=false
-PIPER_VOICE="en_US-lessac-medium"
+PIPER_VOICE="en_US-danny-low"
 while [[ $# -gt 0 ]]; do
     case $1 in
         --with-piper)
@@ -47,11 +47,23 @@ rm -rf "$BUNDLE_DIR"
 mkdir -p "$ESPEAK_DEST/bin" "$ESPEAK_DEST/lib" "$ESPEAK_DEST/share/espeak-ng-data/lang/gmw" "$ESPEAK_DEST/share/espeak-ng-data/voices"
 
 # Plugin Lua files first
-for f in main.lua textparser.lua ttsengine.lua highlightmanager.lua synccontroller.lua playbackbar.lua menubuilder.lua btmanager.lua btui.lua btmediacontrol.lua utils.lua wavutils.lua piperqueue.lua bugreport.lua _meta.lua; do
+for f in main.lua textparser.lua ttsengine.lua highlightmanager.lua synccontroller.lua playbackbar.lua menubuilder.lua btmanager.lua btui.lua btmediacontrol.lua utils.lua wavutils.lua piperqueue.lua bugreport.lua androidtts.lua _meta.lua; do
     if [ -f "$SCRIPT_DIR/$f" ]; then
         cp "$SCRIPT_DIR/$f" "$PLUGIN_DEST/"
     fi
 done
+
+# Android TTS helper (Java source + build script; .dex built in CI or by user)
+mkdir -p "$PLUGIN_DEST/android"
+for f in TtsHelper.java build-dex.sh; do
+    if [ -f "$SCRIPT_DIR/android/$f" ]; then
+        cp "$SCRIPT_DIR/android/$f" "$PLUGIN_DEST/android/"
+    fi
+done
+# Include pre-built .dex if available (CI builds it)
+if [ -f "$SCRIPT_DIR/android/tts_helper.dex" ]; then
+    cp "$SCRIPT_DIR/android/tts_helper.dex" "$PLUGIN_DEST/android/"
+fi
 
 # espeak-ng binary + library (inside plugin dir)
 cp "$ESPEAK_OUT/bin/espeak-ng" "$ESPEAK_DEST/bin/"

@@ -1,0 +1,504 @@
+--[[--
+Android TTS Module
+Wraps the Android TextToSpeech Java API via JNI for use from Lua.
+Requires a pre-compiled tts_helper.dex in the plugin's android/ directory.
+
+The helper .dex provides a polling-friendly wrapper around TextToSpeech so
+that Lua does not need to implement Java callback interfaces.
+
+Build the .dex with: cd android && ./build-dex.sh
+
+@module androidtts
+--]]
+
+local ffi = require("ffi")
+local logger = require("logger")
+
+local AndroidTts = {}
+
+function AndroidTts:new(o)
+    o = o or {}
+    setmetatable(o, self)
+    self.__index = self
+
+    o._helper_ref = nil       -- JNI GlobalRef to TtsHelper instance
+    o._helper_class_ref = nil -- JNI GlobalRef to TtsHelper class
+    o._method = {}            -- cached jmethodID values
+    o._initialized = false
+    o._android = nil
+    o._cache_dir = nil
+    o.plugin_dir = o.plugin_dir or "."
+
+    return o
+end
+
+--[[--
+Check for JNI exceptions after a call.  If an exception occurred, log it
+to logcat (ExceptionDescribe) and clear it.
+@param env  JNIEnv pointer
+@return boolean  true if an exception was pending (and has been cleared)
+--]]
+local function checkException(env)
+    if env[0].ExceptionCheck(env) ~= 0 then
+        env[0].ExceptionDescribe(env)
+        env[0].ExceptionClear(env)
+        return true
+    end
+    return false
+end
+
+--[[--
+Initialize the Android TTS engine.
+Loads the helper .dex via DexClassLoader and creates a TtsHelper instance.
+@return boolean  true on success
+--]]
+function AndroidTts:init()
+    if self._initialized then return true end
+
+    local Device = require("device")
+    if not Device:isAndroid() then
+        logger.err("AndroidTts: Not running on Android")
+        return false
+    end
+
+    local ok, android = pcall(require, "android")
+    if not ok then
+        logger.err("AndroidTts: Cannot load android module:", android)
+        return false
+    end
+    self._android = android
+
+    -- Check that the .dex helper file exists
+    local dex_path = self.plugin_dir .. "/android/tts_helper.dex"
+    local f = io.open(dex_path, "r")
+    if not f then
+        logger.err("AndroidTts: tts_helper.dex not found at", dex_path)
+        return false
+    end
+    f:close()
+
+    -- Resolve the cache directory for DexClassLoader's optimized dex output
+    -- and for WAV file storage.
+    local cache_dir = self:_getCacheDir()
+    if not cache_dir then
+        logger.err("AndroidTts: Cannot determine cache directory")
+        return false
+    end
+    self._cache_dir = cache_dir
+    -- Ensure the audiobook cache subdirectory exists
+    os.execute('mkdir -p "' .. cache_dir .. '/audiobook"')
+
+    -- Load the helper via DexClassLoader inside a JNI context
+    local load_ok = false
+    android.jni:context(android.app.activity.vm, function(jni)
+        local env = jni.env
+
+        -- 1. Get the parent ClassLoader from the Activity context
+        local ctx_class = env[0].GetObjectClass(env, android.app.activity.clazz)
+        if checkException(env) or ctx_class == nil then
+            logger.err("AndroidTts: GetObjectClass failed for activity")
+            return
+        end
+        local get_cl_id = env[0].GetMethodID(env, ctx_class,
+            "getClassLoader", "()Ljava/lang/ClassLoader;")
+        env[0].DeleteLocalRef(env, ctx_class)
+        if checkException(env) or get_cl_id == nil then
+            logger.err("AndroidTts: getClassLoader methodID not found")
+            return
+        end
+        local parent_cl = env[0].CallObjectMethod(env,
+            android.app.activity.clazz, get_cl_id)
+        if checkException(env) or parent_cl == nil then
+            logger.err("AndroidTts: getClassLoader returned null")
+            return
+        end
+
+        -- 2. Create a DexClassLoader to load our helper .dex
+        local dcl_class = env[0].FindClass(env, "dalvik/system/DexClassLoader")
+        if checkException(env) or dcl_class == nil then
+            logger.err("AndroidTts: DexClassLoader class not found")
+            env[0].DeleteLocalRef(env, parent_cl)
+            return
+        end
+        local dcl_init = env[0].GetMethodID(env, dcl_class, "<init>",
+            "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/ClassLoader;)V")
+        if checkException(env) or dcl_init == nil then
+            logger.err("AndroidTts: DexClassLoader constructor not found")
+            env[0].DeleteLocalRef(env, parent_cl)
+            env[0].DeleteLocalRef(env, dcl_class)
+            return
+        end
+
+        local j_dex_path = env[0].NewStringUTF(env, dex_path)
+        local j_opt_dir = env[0].NewStringUTF(env, cache_dir)
+        local dcl_obj = env[0].NewObject(env, dcl_class, dcl_init,
+            j_dex_path, j_opt_dir, nil, parent_cl)
+        env[0].DeleteLocalRef(env, j_dex_path)
+        env[0].DeleteLocalRef(env, j_opt_dir)
+        env[0].DeleteLocalRef(env, parent_cl)
+        if checkException(env) or dcl_obj == nil then
+            logger.err("AndroidTts: DexClassLoader creation failed")
+            env[0].DeleteLocalRef(env, dcl_class)
+            return
+        end
+
+        -- 3. Load the TtsHelper class from the .dex
+        local load_class_id = env[0].GetMethodID(env, dcl_class,
+            "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;")
+        env[0].DeleteLocalRef(env, dcl_class)
+        if checkException(env) or load_class_id == nil then
+            logger.err("AndroidTts: loadClass methodID not found")
+            env[0].DeleteLocalRef(env, dcl_obj)
+            return
+        end
+
+        local j_class_name = env[0].NewStringUTF(env,
+            "org.koreader.plugin.audiobook.TtsHelper")
+        local helper_class = env[0].CallObjectMethod(env,
+            dcl_obj, load_class_id, j_class_name)
+        env[0].DeleteLocalRef(env, j_class_name)
+        env[0].DeleteLocalRef(env, dcl_obj)
+        if checkException(env) or helper_class == nil then
+            logger.err("AndroidTts: TtsHelper class not found in .dex")
+            return
+        end
+
+        -- 4. Get the TtsHelper constructor and create an instance
+        local helper_init = env[0].GetMethodID(env, helper_class,
+            "<init>", "(Landroid/content/Context;)V")
+        if checkException(env) or helper_init == nil then
+            logger.err("AndroidTts: TtsHelper constructor not found")
+            env[0].DeleteLocalRef(env, helper_class)
+            return
+        end
+        local helper_obj = env[0].NewObject(env, helper_class, helper_init,
+            android.app.activity.clazz)
+        if checkException(env) or helper_obj == nil then
+            logger.err("AndroidTts: TtsHelper instantiation failed")
+            env[0].DeleteLocalRef(env, helper_class)
+            return
+        end
+
+        -- 5. Cache method IDs (valid as long as the class is loaded)
+        self._method.getInitStatus = env[0].GetMethodID(env, helper_class,
+            "getInitStatus", "()I")
+        self._method.synthesizeToFile = env[0].GetMethodID(env, helper_class,
+            "synthesizeToFile", "(Ljava/lang/String;Ljava/lang/String;)I")
+        self._method.getSynthStatus = env[0].GetMethodID(env, helper_class,
+            "getSynthStatus", "()I")
+        self._method.setRate = env[0].GetMethodID(env, helper_class,
+            "setRate", "(F)V")
+        self._method.setPitch = env[0].GetMethodID(env, helper_class,
+            "setPitch", "(F)V")
+        self._method.setLanguage = env[0].GetMethodID(env, helper_class,
+            "setLanguage", "(Ljava/lang/String;)I")
+        self._method.shutdown = env[0].GetMethodID(env, helper_class,
+            "shutdown", "()V")
+        self._method.playFile = env[0].GetMethodID(env, helper_class,
+            "playFile", "(Ljava/lang/String;)I")
+        self._method.isPlaying = env[0].GetMethodID(env, helper_class,
+            "isPlaying", "()Z")
+        self._method.isPlaybackDone = env[0].GetMethodID(env, helper_class,
+            "isPlaybackDone", "()Z")
+        self._method.stopPlayback = env[0].GetMethodID(env, helper_class,
+            "stopPlayback", "()V")
+        self._method.pausePlayback = env[0].GetMethodID(env, helper_class,
+            "pausePlayback", "()V")
+        self._method.resumePlayback = env[0].GetMethodID(env, helper_class,
+            "resumePlayback", "()V")
+
+        if checkException(env) then
+            logger.err("AndroidTts: Failed to resolve one or more method IDs")
+            env[0].DeleteLocalRef(env, helper_obj)
+            env[0].DeleteLocalRef(env, helper_class)
+            return
+        end
+
+        -- 6. Promote to GlobalRefs so they survive beyond this JNI context
+        self._helper_ref = env[0].NewGlobalRef(env, helper_obj)
+        self._helper_class_ref = env[0].NewGlobalRef(env, helper_class)
+        env[0].DeleteLocalRef(env, helper_obj)
+        env[0].DeleteLocalRef(env, helper_class)
+
+        load_ok = true
+        logger.dbg("AndroidTts: Helper loaded, waiting for TTS engine init")
+    end)
+
+    if not load_ok then
+        return false
+    end
+
+    self._initialized = true
+    return true
+end
+
+--[[--
+Get the app's cache directory from the Android Context.
+@return string|nil  Absolute path to cache dir
+--]]
+function AndroidTts:_getCacheDir()
+    if self._cache_dir then return self._cache_dir end
+    local android = self._android
+    if not android then return nil end
+
+    return android.jni:context(android.app.activity.vm, function(jni)
+        local cache_file = jni:callObjectMethod(
+            android.app.activity.clazz,
+            "getCacheDir",
+            "()Ljava/io/File;"
+        )
+        if cache_file == nil then return nil end
+        local abs_path = jni:callObjectMethod(
+            cache_file, "getAbsolutePath", "()Ljava/lang/String;"
+        )
+        jni.env[0].DeleteLocalRef(jni.env, cache_file)
+        if abs_path == nil then return nil end
+        local result = jni:to_string(abs_path)
+        jni.env[0].DeleteLocalRef(jni.env, abs_path)
+        return result
+    end)
+end
+
+--[[--
+Return the temp directory to use for WAV files.
+On Android this is the app cache; on other platforms /tmp.
+@return string
+--]]
+function AndroidTts:getTempDir()
+    if self._cache_dir then
+        return self._cache_dir .. "/audiobook"
+    end
+    return "/tmp"
+end
+
+--[[--
+Poll the TTS engine initialization status.
+@return number  -1 pending, 0 success, >0 error
+--]]
+function AndroidTts:getInitStatus()
+    if not self._initialized or not self._helper_ref then return -1 end
+    local android = self._android
+    return android.jni:context(android.app.activity.vm, function(jni)
+        return jni.env[0].CallIntMethod(jni.env,
+            self._helper_ref, self._method.getInitStatus)
+    end)
+end
+
+--[[--
+Wait for TTS init to complete, polling with a timeout.
+@param timeout_ms number  Maximum wait time in ms (default 5000)
+@return boolean  true if engine initialized successfully
+--]]
+function AndroidTts:waitForInit(timeout_ms)
+    timeout_ms = timeout_ms or 5000
+    local start = os.clock() * 1000
+    while (os.clock() * 1000 - start) < timeout_ms do
+        local status = self:getInitStatus()
+        if status == 0 then
+            logger.dbg("AndroidTts: Engine initialized OK")
+            return true
+        elseif status > 0 then
+            logger.err("AndroidTts: Engine init failed, status:", status)
+            return false
+        end
+        -- Still pending, brief sleep
+        os.execute("usleep 50000")  -- 50ms
+    end
+    logger.err("AndroidTts: Engine init timed out after", timeout_ms, "ms")
+    return false
+end
+
+--[[--
+Start synthesis to a WAV file (async).
+@param text string  Text to synthesize
+@param output_path string  Full path for the output WAV file
+@return number  0 on successful dispatch, -1 if not ready, >0 on error
+--]]
+function AndroidTts:synthesizeToFile(text, output_path)
+    if not self._initialized or not self._helper_ref then return -1 end
+    local android = self._android
+    return android.jni:context(android.app.activity.vm, function(jni)
+        local env = jni.env
+        local j_text = env[0].NewStringUTF(env, text)
+        local j_path = env[0].NewStringUTF(env, output_path)
+        local result = env[0].CallIntMethod(env,
+            self._helper_ref, self._method.synthesizeToFile, j_text, j_path)
+        env[0].DeleteLocalRef(env, j_text)
+        env[0].DeleteLocalRef(env, j_path)
+        if checkException(env) then
+            return -1
+        end
+        return result
+    end)
+end
+
+--[[--
+Poll the synthesis completion status.
+@return number  -1 idle, 0 in-progress, 1 done, 2 error
+--]]
+function AndroidTts:getSynthStatus()
+    if not self._initialized or not self._helper_ref then return -1 end
+    local android = self._android
+    return android.jni:context(android.app.activity.vm, function(jni)
+        return jni.env[0].CallIntMethod(jni.env,
+            self._helper_ref, self._method.getSynthStatus)
+    end)
+end
+
+--[[--
+Set speech rate.
+@param rate number  1.0 = normal speed
+--]]
+function AndroidTts:setRate(rate)
+    if not self._initialized or not self._helper_ref then return end
+    local android = self._android
+    android.jni:context(android.app.activity.vm, function(jni)
+        local env = jni.env
+        local args = ffi.new("jvalue[1]")
+        args[0].f = rate
+        env[0].CallVoidMethodA(env,
+            self._helper_ref, self._method.setRate, args)
+    end)
+end
+
+--[[--
+Set pitch.
+@param pitch number  1.0 = normal pitch
+--]]
+function AndroidTts:setPitch(pitch)
+    if not self._initialized or not self._helper_ref then return end
+    local android = self._android
+    android.jni:context(android.app.activity.vm, function(jni)
+        local env = jni.env
+        local args = ffi.new("jvalue[1]")
+        args[0].f = pitch
+        env[0].CallVoidMethodA(env,
+            self._helper_ref, self._method.setPitch, args)
+    end)
+end
+
+--[[--
+Set language by BCP-47 tag (e.g. "en-US").
+@param lang string
+@return number  TextToSpeech result code
+--]]
+function AndroidTts:setLanguage(lang)
+    if not self._initialized or not self._helper_ref then return -1 end
+    local android = self._android
+    return android.jni:context(android.app.activity.vm, function(jni)
+        local env = jni.env
+        local j_lang = env[0].NewStringUTF(env, lang)
+        local result = env[0].CallIntMethod(env,
+            self._helper_ref, self._method.setLanguage, j_lang)
+        env[0].DeleteLocalRef(env, j_lang)
+        return result
+    end)
+end
+
+--[[--
+Play a WAV file through Android's MediaPlayer.
+@param path string  WAV file path
+@return number  Duration in ms, or -1 on error
+--]]
+function AndroidTts:playFile(path)
+    if not self._initialized or not self._helper_ref then return -1 end
+    local android = self._android
+    return android.jni:context(android.app.activity.vm, function(jni)
+        local env = jni.env
+        local j_path = env[0].NewStringUTF(env, path)
+        local result = env[0].CallIntMethod(env,
+            self._helper_ref, self._method.playFile, j_path)
+        env[0].DeleteLocalRef(env, j_path)
+        return result
+    end)
+end
+
+--[[--
+Check if audio is still playing.
+@return boolean
+--]]
+function AndroidTts:isPlaying()
+    if not self._initialized or not self._helper_ref then return false end
+    local android = self._android
+    return android.jni:context(android.app.activity.vm, function(jni)
+        return jni.env[0].CallBooleanMethod(jni.env,
+            self._helper_ref, self._method.isPlaying) ~= 0
+    end)
+end
+
+--[[--
+Check if playback finished (completed or error).
+@return boolean
+--]]
+function AndroidTts:isPlaybackDone()
+    if not self._initialized or not self._helper_ref then return true end
+    local android = self._android
+    return android.jni:context(android.app.activity.vm, function(jni)
+        return jni.env[0].CallBooleanMethod(jni.env,
+            self._helper_ref, self._method.isPlaybackDone) ~= 0
+    end)
+end
+
+--[[--
+Stop audio playback.
+--]]
+function AndroidTts:stopPlayback()
+    if not self._initialized or not self._helper_ref then return end
+    local android = self._android
+    android.jni:context(android.app.activity.vm, function(jni)
+        jni.env[0].CallVoidMethod(jni.env,
+            self._helper_ref, self._method.stopPlayback)
+    end)
+end
+
+--[[--
+Pause audio playback.
+--]]
+function AndroidTts:pausePlayback()
+    if not self._initialized or not self._helper_ref then return end
+    local android = self._android
+    android.jni:context(android.app.activity.vm, function(jni)
+        jni.env[0].CallVoidMethod(jni.env,
+            self._helper_ref, self._method.pausePlayback)
+    end)
+end
+
+--[[--
+Resume audio playback.
+--]]
+function AndroidTts:resumePlayback()
+    if not self._initialized or not self._helper_ref then return end
+    local android = self._android
+    android.jni:context(android.app.activity.vm, function(jni)
+        jni.env[0].CallVoidMethod(jni.env,
+            self._helper_ref, self._method.resumePlayback)
+    end)
+end
+
+--[[--
+Release the TTS engine and clean up JNI references.
+--]]
+function AndroidTts:shutdown()
+    if not self._initialized then return end
+    local android = self._android
+    if android and self._helper_ref then
+        android.jni:context(android.app.activity.vm, function(jni)
+            local env = jni.env
+            -- Call TtsHelper.shutdown()
+            env[0].CallVoidMethod(env,
+                self._helper_ref, self._method.shutdown)
+            -- Release global refs
+            env[0].DeleteGlobalRef(env, self._helper_ref)
+            if self._helper_class_ref then
+                env[0].DeleteGlobalRef(env, self._helper_class_ref)
+            end
+        end)
+    end
+    self._helper_ref = nil
+    self._helper_class_ref = nil
+    self._method = {}
+    self._initialized = false
+    logger.dbg("AndroidTts: Shutdown complete")
+end
+
+return AndroidTts
