@@ -30,6 +30,66 @@ local Audiobook = WidgetContainer:extend{
 }
 
 function Audiobook:init()
+    -- Register the menu FIRST so the plugin always appears, even if
+    -- submodule loading fails.  Callbacks check self._init_ok.
+    self.ui.menu:registerToMainMenu(self)
+    self:onDispatcherRegisterActions()
+
+    -- Heavy initialization is wrapped in pcall so a crash in any
+    -- submodule (e.g. FFI on Android, missing library) doesn't
+    -- prevent the plugin from showing in the menu at all.
+    local ok, err = pcall(function() self:_initSubmodules() end)
+    if not ok then
+        logger.warn("Audiobook: init failed:", err)
+        self._init_error = tostring(err)
+        return
+    end
+    self._init_ok = true
+
+    -- Install SleepCover event override so we can prevent device suspend
+    -- while audio is playing (when the user enables the setting).
+    self:_installSleepCoverOverride()
+
+    -- Add "Read aloud from here" to the text selection / highlight popup.
+    -- This appears when the user selects a paragraph or multiple words
+    -- (as opposed to the single-word dictionary popup, which is handled
+    -- by onDictButtonsReady).
+    if self.ui.highlight and self.ui.highlight.addToHighlightDialog then
+        self.ui.highlight:addToHighlightDialog("15_read_aloud", function(this)
+            return {
+                text = _("Read aloud from here"),
+                callback = function()
+                    if not self._init_ok then
+                        UIManager:show(InfoMessage:new{
+                            text = _("Audiobook plugin failed to initialize.\n\n") .. (self._init_error or "Unknown error"),
+                            timeout = 5,
+                        })
+                        return
+                    end
+                    local selected_text = this.selected_text
+                    local context = nil
+                    if selected_text then
+                        context = {
+                            pos0 = selected_text.pos0,
+                            pos1 = selected_text.pos1,
+                        }
+                    end
+                    this:onClose()
+                    UIManager:scheduleIn(0.3, function()
+                        local word = selected_text and selected_text.text
+                        if word then
+                            -- Use the first word for position matching
+                            word = word:match("^%s*(%S+)") or word
+                        end
+                        self:startReadAlongFromWord(word, context)
+                    end)
+                end,
+            }
+        end)
+    end
+end
+
+function Audiobook:_initSubmodules()
     -- ── Orphan cleanup from previous crash/SIGKILL ──
     -- If KOReader was killed (OOM, watchdog, etc.), no Lua cleanup ran.
     -- Kill any orphan processes from the previous session to free the
@@ -84,44 +144,6 @@ function Audiobook:init()
         highlight_manager = self.highlight_manager,
         text_parser = self.text_parser,
     }
-    
-    self.ui.menu:registerToMainMenu(self)
-    self:onDispatcherRegisterActions()
-
-    -- Install SleepCover event override so we can prevent device suspend
-    -- while audio is playing (when the user enables the setting).
-    self:_installSleepCoverOverride()
-
-    -- Add "Read aloud from here" to the text selection / highlight popup.
-    -- This appears when the user selects a paragraph or multiple words
-    -- (as opposed to the single-word dictionary popup, which is handled
-    -- by onDictButtonsReady).
-    if self.ui.highlight and self.ui.highlight.addToHighlightDialog then
-        self.ui.highlight:addToHighlightDialog("15_read_aloud", function(this)
-            return {
-                text = _("Read aloud from here"),
-                callback = function()
-                    local selected_text = this.selected_text
-                    local context = nil
-                    if selected_text then
-                        context = {
-                            pos0 = selected_text.pos0,
-                            pos1 = selected_text.pos1,
-                        }
-                    end
-                    this:onClose()
-                    UIManager:scheduleIn(0.3, function()
-                        local word = selected_text and selected_text.text
-                        if word then
-                            -- Use the first word for position matching
-                            word = word:match("^%s*(%S+)") or word
-                        end
-                        self:startReadAlongFromWord(word, context)
-                    end)
-                end,
-            }
-        end)
-    end
 end
 
 function Audiobook:onDispatcherRegisterActions()
@@ -139,6 +161,13 @@ function Audiobook:onDispatcherRegisterActions()
     })
 end
 
+function Audiobook:_showInitError()
+    UIManager:show(InfoMessage:new{
+        text = _("Audiobook plugin failed to initialize.\n\n") .. (self._init_error or "Unknown error"),
+        timeout = 8,
+    })
+end
+
 function Audiobook:addToMainMenu(menu_items)
     menu_items.audiobook = {
         text = _("Audiobook Read-Along"),
@@ -147,21 +176,24 @@ function Audiobook:addToMainMenu(menu_items)
             {
                 text = _("Start reading from current page"),
                 callback = function()
+                    if not self._init_ok then self:_showInitError(); return end
                     self:startReadAlong()
                 end,
             },
             {
                 text = _("Stop reading"),
                 callback = function()
+                    if not self._init_ok then return end
                     self:stopReadAlong()
                 end,
                 enabled_func = function()
-                    return self.sync_controller:isPlaying() or self.sync_controller:isPaused()
+                    return self._init_ok and (self.sync_controller:isPlaying() or self.sync_controller:isPaused())
                 end,
             },
             {
                 text = _("Pause/Resume"),
                 callback = function()
+                    if not self._init_ok then return end
                     if self.sync_controller:isPlaying() then
                         self:pauseReadAlong()
                     elseif self.sync_controller:isPaused() then
@@ -169,7 +201,7 @@ function Audiobook:addToMainMenu(menu_items)
                     end
                 end,
                 enabled_func = function()
-                    return self.sync_controller:isPlaying() or self.sync_controller:isPaused()
+                    return self._init_ok and (self.sync_controller:isPlaying() or self.sync_controller:isPaused())
                 end,
             },
             -- ── Bluetooth (high priority - needed before first playback) ──
@@ -194,6 +226,7 @@ function Audiobook:addToMainMenu(menu_items)
             -- ── Voice & highlight settings ──
             {
                 text_func = function()
+                    if not self._init_ok then return _("Voice settings") end
                     if self.tts_engine.backend == self.tts_engine.BACKENDS.PIPER then
                         local model_label = self:getSetting("piper_model_label", "default")
                         return T(_("Voice settings (Piper - %1)"), model_label)
@@ -258,7 +291,8 @@ function Audiobook:addToMainMenu(menu_items)
                     self:toggleSetting("espeak_cold_start", true)
                 end,
                 enabled_func = function()
-                    return self.tts_engine.backend == self.tts_engine.BACKENDS.PIPER
+                    return self._init_ok
+                        and self.tts_engine.backend == self.tts_engine.BACKENDS.PIPER
                         and self.tts_engine.espeak_bin ~= nil
                 end,
             },
@@ -341,6 +375,7 @@ function Audiobook:onDictButtonsReady(dict_popup, buttons)
 end
 
 function Audiobook:startReadAlong(text, start_pos)
+    if not self._init_ok then self:_showInitError(); return end
     local page_text = text or self:getCurrentPageText()
     if not page_text or page_text == "" then
         UIManager:show(InfoMessage:new{
@@ -379,8 +414,9 @@ function Audiobook:startReadAlong(text, start_pos)
     -- Check if TTS engine has a backend
     if not self.tts_engine.backend then
         UIManager:show(InfoMessage:new{
-            text = _("No TTS engine found.\n\nPlease install espeak-ng:\n\nOn Kobo: See README for instructions"),
-            timeout = 5,
+            text = self.tts_engine.backend_error
+                or _("No TTS engine found.\n\nPlease install espeak-ng."),
+            timeout = 8,
         })
         return
     end
@@ -410,6 +446,7 @@ function Audiobook:startReadAlong(text, start_pos)
 end
 
 function Audiobook:startReadAlongFromWord(word, context)
+    if not self._init_ok then self:_showInitError(); return end
     local page_text = self:getCurrentPageText()
     if not page_text or page_text == "" then
         -- Try to get text from the dictionary lookup context instead
@@ -517,6 +554,10 @@ didn't run (OOM kill, watchdog, hard reboot).
 Called once at plugin init — idempotent and safe when no orphans exist.
 --]]
 function Audiobook:_killOrphanProcessesFromPreviousSession()
+    -- These orphan cleanup commands (pgrep, killall, pkill) are Linux-specific
+    -- and don't exist on Android.  Skip entirely on Android.
+    if Device:isAndroid() then return end
+
     local dominated = false
 
     -- 1. Kill orphan gst-launch-1.0 (frees the exclusive BT A2DP socket)
@@ -584,6 +625,7 @@ function Audiobook:_killOrphanProcessesFromPreviousSession()
 end
 
 function Audiobook:stopReadAlong()
+    if not self._init_ok then return end
     logger.warn("Audiobook: stopReadAlong() called")
     pcall(function() BtUI.stopWatcher(self) end)
     pcall(function() BtMediaControl.stop() end)
@@ -597,11 +639,13 @@ function Audiobook:stopReadAlong()
 end
 
 function Audiobook:pauseReadAlong()
+    if not self._init_ok then return end
     self.sync_controller:pause()
     pcall(function() BtMediaControl.sendPlaybackStatus("paused") end)
 end
 
 function Audiobook:resumeReadAlong()
+    if not self._init_ok then return end
     self.sync_controller:resume()
     pcall(function() BtMediaControl.sendPlaybackStatus("playing") end)
 end
@@ -668,6 +712,7 @@ end
 
 -- Event handlers
 function Audiobook:onAudiobookToggle()
+    if not self._init_ok then self:_showInitError(); return true end
     if self.sync_controller:isPlaying() then
         self:pauseReadAlong()
     elseif self.sync_controller:isPaused() then
@@ -679,6 +724,7 @@ function Audiobook:onAudiobookToggle()
 end
 
 function Audiobook:onAudiobookStop()
+    if not self._init_ok then return true end
     logger.warn("Audiobook: onAudiobookStop event received")
     self:stopReadAlong()
     return true
@@ -689,6 +735,7 @@ end
 -- device sends key events (play/pause/next/prev from a BT headset).
 
 function Audiobook:onMediaPlayPause()
+    if not self._init_ok then return true end
     if self.sync_controller:isPlaying() then
         self:pauseReadAlong()
     elseif self.sync_controller:isPaused() then
@@ -698,6 +745,7 @@ function Audiobook:onMediaPlayPause()
 end
 
 function Audiobook:onMediaPlay()
+    if not self._init_ok then return true end
     if self.sync_controller:isPaused() then
         self:resumeReadAlong()
     end
@@ -705,6 +753,7 @@ function Audiobook:onMediaPlay()
 end
 
 function Audiobook:onMediaPause()
+    if not self._init_ok then return true end
     if self.sync_controller:isPlaying() then
         self:pauseReadAlong()
     end
@@ -712,12 +761,14 @@ function Audiobook:onMediaPause()
 end
 
 function Audiobook:onMediaStop()
+    if not self._init_ok then return true end
     logger.warn("Audiobook: onMediaStop event received")
     self:stopReadAlong()
     return true
 end
 
 function Audiobook:onMediaNext()
+    if not self._init_ok then return true end
     if self.sync_controller:isPlaying() or self.sync_controller:isPaused() then
         self.sync_controller:nextSentence()
     end
@@ -725,6 +776,7 @@ function Audiobook:onMediaNext()
 end
 
 function Audiobook:onMediaPrev()
+    if not self._init_ok then return true end
     if self.sync_controller:isPlaying() or self.sync_controller:isPaused() then
         self.sync_controller:prevSentence()
     end
@@ -741,6 +793,7 @@ end
 -- so onShowConfigMenu may never fire. The PlaybackBar handles its own
 -- visibility via paintTo (checks for overlay widgets in the stack).
 function Audiobook:onShowReaderMenu()
+    if not self._init_ok then return end
     if self.sync_controller:isPlaying() then
         self._paused_by_menu = true
         self.sync_controller:pause()
@@ -748,6 +801,7 @@ function Audiobook:onShowReaderMenu()
 end
 
 function Audiobook:onCloseReaderMenu()
+    if not self._init_ok then return end
     if self._paused_by_menu then
         self._paused_by_menu = false
         if self.sync_controller:isPaused() then
@@ -758,6 +812,7 @@ end
 
 -- Also pause for the config/bottom menu
 function Audiobook:onShowConfigMenu()
+    if not self._init_ok then return end
     if self.sync_controller:isPlaying() then
         self._paused_by_menu = true
         self.sync_controller:pause()
@@ -765,6 +820,7 @@ function Audiobook:onShowConfigMenu()
 end
 
 function Audiobook:onCloseConfigMenu()
+    if not self._init_ok then return end
     if self._paused_by_menu then
         self._paused_by_menu = false
         if self.sync_controller:isPaused() then
@@ -779,6 +835,7 @@ end
 -- leaves them holding audio hardware resources, which can crash the
 -- entire device on some Kobo models.
 function Audiobook:onSuspend()
+    if not self._init_ok then return end
     if self.sync_controller:isPlaying() or self.sync_controller:isPaused() then
         -- Save current position so we can resume later
         self._suspend_sentence_idx = self.sync_controller.reading_sentence_idx
@@ -802,6 +859,7 @@ function Audiobook:onSuspend()
 end
 
 function Audiobook:onResume()
+    if not self._init_ok then return end
     if self._paused_by_suspend then
         self._paused_by_suspend = false
         local sentence_idx = self._suspend_sentence_idx
@@ -841,7 +899,9 @@ end
 function Audiobook:onCloseWidget()
     logger.warn("Audiobook: onCloseWidget event received")
     self:stopReadAlong()
-    self:_removeSleepCoverOverride()
+    if self._init_ok then
+        self:_removeSleepCoverOverride()
+    end
 end
 
 --[[--
@@ -926,6 +986,7 @@ end
 -- reaches reader plugins — standalone UIManager widgets like PlaybackBar
 -- never receive it.  We must explicitly tell the bar to rebuild here.
 function Audiobook:onSetRotationMode()
+    if not self._init_ok then return end
     local Device = require("device")
     local Screen = Device.screen
     local mode = Screen:getScreenMode()

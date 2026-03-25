@@ -186,7 +186,7 @@ function TTSEngine:detectBackend()
 
     self.backend = nil
     if is_android then
-        self.backend_error = _("No TTS engine found.\n\nTo use Android TTS, build and install tts_helper.dex.\nSee the plugin's android/ directory for instructions.\n\nAlternatively, install espeak-ng via Termux and add it to PATH.")
+        self.backend_error = _("No TTS engine available on this device.\n\nThe plugin needs the Android TTS helper (.dex) which is not yet included.\n\nAs a workaround, install espeak-ng via Termux:\n  pkg install espeak-ng\n\nThen add Termux to your PATH before launching KOReader.")
     else
         self.backend_error = _("No TTS engine found. Please install espeak-ng.")
     end
