@@ -740,14 +740,17 @@ function SyncController:beginSentencePlayback(sentence)
             end
             logger.warn("SyncController: Scheduling next sentence in", delay, "s",
                 "from sentence=", last_sent.index, "state=", controller.state)
-            UIManager:scheduleIn(delay, function()
+            local chain_func = function()
+                controller._pending_chain_func = nil
                 if controller.state ~= controller.STATE.STOPPED then
                     controller:readNextSentence()
                 else
-                    logger.warn("SyncController: Chain BLOCKED — state is STOPPED when timer fired",
+                    logger.dbg("SyncController: chain timer fired after user-initiated stop",
                         "(was scheduled after sentence", last_sent.index, ")")
                 end
-            end)
+            end
+            controller._pending_chain_func = chain_func
+            UIManager:scheduleIn(delay, chain_func)
         end,
         -- Failure callback
         function()
@@ -1659,6 +1662,13 @@ function SyncController:stop()
             "caller:", trace)
     end
     self.state = self.STATE.STOPPED
+
+    -- Cancel any pending next-sentence timer so a stale closure cannot
+    -- fire after stop (or worse, after a *new* session has started).
+    if self._pending_chain_func then
+        UIManager:unschedule(self._pending_chain_func)
+        self._pending_chain_func = nil
+    end
 
     if self.tts_engine then
         pcall(function() self.tts_engine:stop() end)

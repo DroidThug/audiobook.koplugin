@@ -120,6 +120,7 @@ local function collectPluginInfo(plugin)
     if ok and meta then
         info.plugin_name = meta.name or "audiobook"
         info.plugin_fullname = meta.fullname or "?"
+        info.plugin_version = meta.version or "unknown"
     end
 
     info.plugin_dir = sanitizePath(_utils_dir)
@@ -270,8 +271,14 @@ function BugReport.generate(plugin)
     local resources = collectResourceInfo()
     local timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
 
+    local version = "unknown"
+    local ok_meta, meta = pcall(dofile, _utils_dir .. "_meta.lua")
+    if ok_meta and meta then
+        version = meta.version or version
+    end
+
     local sections = {
-        "=== Audiobook Read-Along Bug Report ===",
+        "=== Audiobook Read-Along Bug Report (v" .. version .. ") ===",
         "Generated: " .. timestamp,
         "",
         formatSection("Device", device),
