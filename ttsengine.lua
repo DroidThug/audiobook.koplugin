@@ -1041,9 +1041,11 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             timeout = 8,
         })
         self.is_speaking = false
-        if on_complete then
-            on_complete()
-        end
+        -- Do NOT call on_complete here — returning false tells
+        -- beginSentencePlayback to handle the error.  Calling both
+        -- on_complete and returning false creates a race: the completion
+        -- callback schedules readNextSentence, then beginSentencePlayback
+        -- calls stop(), so the scheduled timer finds state==STOPPED.
         return false
     end
     
@@ -1094,7 +1096,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         if dur_ms < 0 then
             logger.err("TTSEngine: Android playFile failed")
             self.is_speaking = false
-            if on_complete then on_complete() end
             return false
         end
         self._audio_launched_at = UIManager:getTime()

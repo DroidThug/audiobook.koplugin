@@ -584,7 +584,7 @@ function Audiobook:_killOrphanProcessesFromPreviousSession()
 end
 
 function Audiobook:stopReadAlong()
-    logger.dbg("Audiobook: Stopping read-along")
+    logger.warn("Audiobook: stopReadAlong() called")
     pcall(function() BtUI.stopWatcher(self) end)
     pcall(function() BtMediaControl.stop() end)
     pcall(function() BtMediaControl.sendPlaybackStatus("stopped") end)
@@ -679,6 +679,7 @@ function Audiobook:onAudiobookToggle()
 end
 
 function Audiobook:onAudiobookStop()
+    logger.warn("Audiobook: onAudiobookStop event received")
     self:stopReadAlong()
     return true
 end
@@ -711,6 +712,7 @@ function Audiobook:onMediaPause()
 end
 
 function Audiobook:onMediaStop()
+    logger.warn("Audiobook: onMediaStop event received")
     self:stopReadAlong()
     return true
 end
@@ -830,12 +832,14 @@ function Audiobook:onResume()
 end
 
 function Audiobook:onCloseDocument()
+    logger.warn("Audiobook: onCloseDocument event received")
     self:stopReadAlong()
 end
 
 -- Safety net: if UIManager tears down the widget tree (exit, doc switch)
 -- without CloseDocument firing first, force-stop everything.
 function Audiobook:onCloseWidget()
+    logger.warn("Audiobook: onCloseWidget event received")
     self:stopReadAlong()
     self:_removeSleepCoverOverride()
 end

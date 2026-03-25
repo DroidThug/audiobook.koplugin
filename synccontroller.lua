@@ -738,12 +738,14 @@ function SyncController:beginSentencePlayback(sentence)
             else
                 delay = (controller.plugin and controller.plugin:getSetting("sentence_pause", 0.1)) or 0.1
             end
-            logger.warn("SyncController: Scheduling next sentence in", delay, "s")
+            logger.warn("SyncController: Scheduling next sentence in", delay, "s",
+                "from sentence=", last_sent.index, "state=", controller.state)
             UIManager:scheduleIn(delay, function()
                 if controller.state ~= controller.STATE.STOPPED then
                     controller:readNextSentence()
                 else
-                    logger.warn("SyncController: Chain BLOCKED — state is STOPPED when timer fired")
+                    logger.warn("SyncController: Chain BLOCKED — state is STOPPED when timer fired",
+                        "(was scheduled after sentence", last_sent.index, ")")
                 end
             end)
         end,
@@ -1648,6 +1650,14 @@ end
 Stop playback completely.
 --]]
 function SyncController:stop()
+    -- Log at WARN level with traceback when stopping from an active state
+    -- so we can diagnose unexpected stops (e.g. "Chain BLOCKED" on Kindle).
+    if self.state ~= self.STATE.STOPPED then
+        local trace = debug.traceback("", 2)
+        logger.warn("SyncController: stop() from state=", self.state,
+            "sentence=", self.reading_sentence_idx, "/", self.total_sentences,
+            "caller:", trace)
+    end
     self.state = self.STATE.STOPPED
 
     if self.tts_engine then
@@ -1682,7 +1692,7 @@ function SyncController:stop()
     self._first_play_sentence_text = nil
     self:_cleanConcatFiles()
 
-    logger.dbg("SyncController: Stopped")
+    logger.warn("SyncController: Stopped")
 end
 
 --[[--
