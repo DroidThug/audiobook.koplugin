@@ -263,12 +263,31 @@ over 300 at word boundaries. See
 
 ### Generating a bug report
 
-If something isn't working, please generate a diagnostic report from the
-plugin menu:
+If something isn't working, please generate a diagnostic report. There are two
+ways to do this:
+
+#### Option A: From the plugin menu
 
 **Tools > Audiobook Read-Along > Generate bug report**
 
-This saves a `.txt` file to your device's root storage:
+This saves a `.txt` file to your device's root storage (see locations below).
+
+#### Option B: Standalone script (when the plugin menu is not visible)
+
+If the plugin doesn't appear in the KOReader menu at all, you can run the
+report generator directly via SSH or KOReader's built-in terminal emulator
+(Menu > More tools > Terminal emulator):
+
+```bash
+sh /mnt/onboard/.adds/koreader/plugins/audiobook.koplugin/generate-report.sh   # Kobo
+sh /mnt/us/koreader/plugins/audiobook.koplugin/generate-report.sh              # Kindle
+sh /sdcard/koreader/plugins/audiobook.koplugin/generate-report.sh              # Android
+```
+
+The report is printed to the terminal and also saved to a file. If using the
+terminal emulator, you can scroll up to read it on screen.
+
+#### Report location
 
 | Platform | Report location |
 |----------|----------------|
