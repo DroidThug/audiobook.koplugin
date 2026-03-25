@@ -5,24 +5,21 @@ Provides text-to-speech with synchronized word highlighting.
 @module koplugin.audiobook
 --]]
 
-local Device = require("device")
-local Dispatcher = require("dispatcher")
-local Event = require("ui/event")
-local InfoMessage = require("ui/widget/infomessage")
-local UIManager = require("ui/uimanager")
+-- CRITICAL: Only require() modules that have existed in every KOReader version.
+-- If ANY top-level statement throws, KOReader's pcall(dofile, "main.lua") fails
+-- and the plugin vanishes from menus entirely -- no error shown to the user.
+-- Newer / optional modules (Dispatcher) and plugin dofile() submodules are
+-- loaded inside init() where failures are caught and reported gracefully.
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local logger = require("logger")
 local _ = require("gettext")
-local T = require("ffi/util").template
 
--- Shared utility modules (DRY: eliminates duplicated getPluginPath, commandExists)
-local _utils_dir = debug.getinfo(1, "S").source:match("^@(.*/)[^/]*$") or "./"
-local Utils = dofile(_utils_dir .. "utils.lua")
-local MenuBuilder = dofile(_utils_dir .. "menubuilder.lua")
-local BtUI = dofile(_utils_dir .. "btui.lua")
-local BtMediaControl = dofile(_utils_dir .. "btmediacontrol.lua")
-local BugReport = dofile(_utils_dir .. "bugreport.lua")
-local PLUGIN_PATH = _utils_dir
+-- Forward-declared module-level locals.  Populated by init() Phase 1.
+-- Every function in this file can reference them as upvalues; they start
+-- as nil and become usable after init() succeeds.
+local Device, UIManager, InfoMessage, T
+local BtUI, BtMediaControl, BugReport, MenuBuilder, Utils
+local PLUGIN_PATH
 
 local Audiobook = WidgetContainer:extend{
     name = "audiobook",
@@ -30,8 +27,45 @@ local Audiobook = WidgetContainer:extend{
 }
 
 function Audiobook:init()
-    -- Register the menu FIRST so the plugin always appears, even if
-    -- submodule loading fails.  Callbacks check self._init_ok.
+    -- ── Phase 1: Load ancillary modules ─────────────────────────────
+    -- These are loaded here (not at module top level) because a failed
+    -- top-level require/dofile makes KOReader silently drop the entire
+    -- plugin.  Loading them inside init() lets us catch errors and still
+    -- show a menu entry with a helpful error message.
+    --
+    -- The forward-declared module-level locals (Device, UIManager, etc.)
+    -- are assigned here.  All functions defined below this point see the
+    -- assignments through their upvalue references.
+    local load_ok, load_err = pcall(function()
+        Device = require("device")
+        UIManager = require("ui/uimanager")
+        InfoMessage = require("ui/widget/infomessage")
+        T = require("ffi/util").template
+
+        -- Resolve plugin directory from self.path (set by KOReader's plugin
+        -- loader) with a debug.getinfo fallback for dev/testing.
+        local _utils_dir = self.path and (self.path .. "/")
+            or debug.getinfo(2, "S").source:match("^@(.*/)[^/]*$")
+            or "./"
+        PLUGIN_PATH = _utils_dir
+
+        BtUI = dofile(_utils_dir .. "btui.lua")
+        BtMediaControl = dofile(_utils_dir .. "btmediacontrol.lua")
+        BugReport = dofile(_utils_dir .. "bugreport.lua")
+        MenuBuilder = dofile(_utils_dir .. "menubuilder.lua")
+        Utils = dofile(_utils_dir .. "utils.lua")
+    end)
+    if not load_ok then
+        logger.warn("Audiobook: module loading failed:", load_err)
+        self._init_error = tostring(load_err)
+        -- Still register the menu so the user sees *something*.
+        pcall(function() self.ui.menu:registerToMainMenu(self) end)
+        return
+    end
+
+    -- ── Phase 2: Register menu and dispatcher actions ───────────────
+    -- Register the menu so the plugin always appears, even if heavy
+    -- submodule loading (Phase 3) fails.  Callbacks check self._init_ok.
     self.ui.menu:registerToMainMenu(self)
     self:onDispatcherRegisterActions()
 
@@ -60,10 +94,7 @@ function Audiobook:init()
                 text = _("Read aloud from here"),
                 callback = function()
                     if not self._init_ok then
-                        UIManager:show(InfoMessage:new{
-                            text = _("Audiobook plugin failed to initialize.\n\n") .. (self._init_error or "Unknown error"),
-                            timeout = 5,
-                        })
+                        self:_showInitError()
                         return
                     end
                     local selected_text = this.selected_text
@@ -97,16 +128,17 @@ function Audiobook:_initSubmodules()
     self:_killOrphanProcessesFromPreviousSession()
 
     -- Load submodules from plugin directory
-    local TextParser = dofile(PLUGIN_PATH .. "textparser.lua")
-    local TTSEngine = dofile(PLUGIN_PATH .. "ttsengine.lua")
-    local HighlightManager = dofile(PLUGIN_PATH .. "highlightmanager.lua")
-    local SyncController = dofile(PLUGIN_PATH .. "synccontroller.lua")
-    self.bt_manager = dofile(PLUGIN_PATH .. "btmanager.lua")
+    local pp = PLUGIN_PATH
+    local TextParser = dofile(pp .. "textparser.lua")
+    local TTSEngine = dofile(pp .. "ttsengine.lua")
+    local HighlightManager = dofile(pp .. "highlightmanager.lua")
+    local SyncController = dofile(pp .. "synccontroller.lua")
+    self.bt_manager = dofile(pp .. "btmanager.lua")
     
     self.text_parser = TextParser:new()
     self.tts_engine = TTSEngine:new{
         plugin = self,
-        plugin_dir = PLUGIN_PATH:sub(1, -2), -- strip trailing slash
+        plugin_dir = pp:sub(1, -2), -- strip trailing slash
     }
     -- Restore saved TTS backend selection (if user explicitly chose one)
     local saved_backend = self:getSetting("tts_backend", nil)
@@ -147,6 +179,8 @@ function Audiobook:_initSubmodules()
 end
 
 function Audiobook:onDispatcherRegisterActions()
+    local ok, Dispatcher = pcall(require, "dispatcher")
+    if not ok then return end
     Dispatcher:registerAction("audiobook_toggle", {
         category = "none",
         event = "AudiobookToggle",
@@ -162,6 +196,10 @@ function Audiobook:onDispatcherRegisterActions()
 end
 
 function Audiobook:_showInitError()
+    if not UIManager or not InfoMessage then
+        logger.warn("Audiobook: init failed:", self._init_error or "Unknown error")
+        return
+    end
     UIManager:show(InfoMessage:new{
         text = _("Audiobook plugin failed to initialize.\n\n") .. (self._init_error or "Unknown error"),
         timeout = 8,
@@ -169,6 +207,26 @@ function Audiobook:_showInitError()
 end
 
 function Audiobook:addToMainMenu(menu_items)
+    -- If Phase 1 module loading failed, show a minimal error menu.
+    -- The full menu references modules (BtUI, MenuBuilder, T) that are nil
+    -- when loading fails, so we must not build it.
+    if self._init_error and not UIManager then
+        menu_items.audiobook = {
+            text = _("Audiobook Read-Along (error)"),
+            sorting_hint = "tools",
+            sub_item_table = {
+                {
+                    text = _("Plugin failed to load"),
+                    callback = function()
+                        logger.warn("Audiobook: init failed:", self._init_error)
+                    end,
+                    help_text = self._init_error,
+                },
+            },
+        }
+        return
+    end
+
     menu_items.audiobook = {
         text = _("Audiobook Read-Along"),
         sorting_hint = "tools",
@@ -335,6 +393,7 @@ end
 
 --- Hook into dictionary popup to add "Read aloud from here" button
 function Audiobook:onDictButtonsReady(dict_popup, buttons)
+    if not self._init_ok then return end
     if dict_popup.is_wiki_fullpage then
         return
     end
