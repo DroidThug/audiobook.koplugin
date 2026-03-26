@@ -788,9 +788,10 @@ function TTSEngine:espeakSynthesizeFallback(text)
         )
     end
     local speed = math.floor(175 * (self.rate or 1.0))
+    local voice = self.voice or "en"
     local cmd = string.format(
-        '%s%s -v en -s %d -a 100 -w "%s" "%s" 2>&1',
-        exec_prefix, self.espeak_bin, speed, audio_file, self:escapeText(text)
+        '%s%s -v %s -s %d -a 100 -w "%s" "%s" 2>&1',
+        exec_prefix, self.espeak_bin, voice, speed, audio_file, self:escapeText(text)
     )
     logger.warn("TTSEngine: espeak fallback synthesis for cold-start")
     local handle = io.popen(cmd, "r")
@@ -1052,6 +1053,18 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
     logger.dbg("TTSEngine: Using player:", player)
     logger.dbg("TTSEngine: Audio file:", self.current_audio_file)
     logger.warn("TTSEngine: play() findPlayer took", time.to_ms(UIManager:getTime() - t0), "ms")
+
+    -- One-time warning when no real audio output exists (no soundcard, no BT)
+    if self._no_real_audio_output and not self._no_audio_warned then
+        self._no_audio_warned = true
+        logger.warn("TTSEngine: No soundcard and no Bluetooth — audio will be silent")
+        if Device:isKobo() then
+            UIManager:show(InfoMessage:new{
+                text = _("No audio output detected.\n\nKobo has no built-in speaker. Please pair Bluetooth headphones to hear audio.\n\nText highlighting will still work."),
+                timeout = 6,
+            })
+        end
+    end
     
     -- Calculate real audio duration from WAV file.
     -- If _unpadded_duration_ms is set, the WAV was padded with trailing
@@ -1470,6 +1483,7 @@ function TTSEngine:findAudioPlayer()
     -- may be available through the OS audio stack)
     if not has_soundcard and not is_kindle then
         table.insert(players, {cmd = "aplay", args = "-q"})
+        self._no_real_audio_output = true
     end
 
     for _, player in ipairs(players) do

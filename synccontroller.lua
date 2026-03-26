@@ -23,11 +23,11 @@ local PLUGIN_PATH = _utils_dir
 -- 20 gives comfortable headroom so sentences are ready when needed.
 local PIPER_LOOKAHEAD = 20
 
--- Number of initial sentences to play via espeak-ng while Piper warms up.
+-- espeak-ng cold-start fallback:
 -- espeak synthesizes in ~300ms vs Piper's 30-75s first batch on ARM.
--- 8 sentences ≈ 50-70s of audio, covering the typical first-batch wait.
--- Only used during actual cold start, not after page turns.
-local ESPEAK_COLD_START_COUNT = 8
+-- The fallback keeps playing sentences via espeak until Piper delivers
+-- its first result (_piper_warmed_up), so slow models on weak hardware
+-- (e.g. French medium on single-core) never stall.
 
 -- ── Accumulate-then-play buffering ───────────────────────────────────
 -- Piper on ARM synthesizes at ~0.3-0.5× real-time (each 5 s sentence
@@ -190,13 +190,12 @@ function SyncController:readNextSentence()
     -- launching a duplicate synthesis (which wastes ~11s and RAM).
     local piper_status = self.tts_engine:getPiperPrefetchStatus(sentence.text)
     if piper_status == "pending" or piper_status == "queued" then
-        -- ── espeak cold-start for early sentences ──────────────────
-        -- If we're in the first N sentences and espeak fallback is enabled,
-        -- don't wait for Piper — synthesize instantly with espeak.
+        -- ── espeak cold-start fallback ─────────────────────────────
+        -- While Piper hasn't delivered any audio yet, keep playing via
+        -- espeak so the user never hits a dead stall on slow hardware.
         local use_espeak_early = self.plugin
             and self.plugin:getSetting("espeak_cold_start", true)
             and self.tts_engine.espeak_bin
-            and self.reading_sentence_idx <= ESPEAK_COLD_START_COUNT
             and not self._piper_warmed_up
         if use_espeak_early then
             logger.warn("SyncController: espeak cold-start fallback for sentence",
