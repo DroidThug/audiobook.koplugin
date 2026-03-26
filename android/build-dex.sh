@@ -51,9 +51,9 @@ javac -source 8 -target 8 \
     -d build \
     TtsHelper.java
 
-# Convert .class -> .dex
+# Convert .class -> .dex (include inner/anonymous classes like TtsHelper$1)
 echo "Dexing..."
-"$D8" --min-api 21 --output . build/org/koreader/plugin/audiobook/TtsHelper.class
+"$D8" --min-api 21 --output . build/org/koreader/plugin/audiobook/TtsHelper*.class
 
 # d8 outputs classes.dex; rename to our expected name
 mv classes.dex tts_helper.dex
