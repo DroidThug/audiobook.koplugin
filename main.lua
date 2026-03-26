@@ -49,11 +49,19 @@ function Audiobook:init()
             or "./"
         PLUGIN_PATH = _utils_dir
 
-        BtUI = dofile(_utils_dir .. "btui.lua")
-        BtMediaControl = dofile(_utils_dir .. "btmediacontrol.lua")
-        BugReport = dofile(_utils_dir .. "bugreport.lua")
-        MenuBuilder = dofile(_utils_dir .. "menubuilder.lua")
-        Utils = dofile(_utils_dir .. "utils.lua")
+        -- Load each submodule independently so a failure in one
+        -- (e.g. btui.lua) doesn't prevent BugReport from loading.
+        local function try_dofile(path)
+            local ok, mod = pcall(dofile, path)
+            if ok then return mod end
+            logger.warn("Audiobook: failed to load", path, ":", mod)
+            return nil
+        end
+        BtUI = try_dofile(_utils_dir .. "btui.lua")
+        BtMediaControl = try_dofile(_utils_dir .. "btmediacontrol.lua")
+        BugReport = try_dofile(_utils_dir .. "bugreport.lua")
+        MenuBuilder = try_dofile(_utils_dir .. "menubuilder.lua")
+        Utils = try_dofile(_utils_dir .. "utils.lua")
     end)
     if not load_ok then
         logger.warn("Audiobook: module loading failed:", load_err)
@@ -210,7 +218,9 @@ function Audiobook:addToMainMenu(menu_items)
     -- If Phase 1 module loading failed, show a minimal error menu.
     -- The full menu references modules (BtUI, MenuBuilder, T) that are nil
     -- when loading fails, so we must not build it.
-    if self._init_error and not UIManager then
+    -- Check MenuBuilder directly: Phase 1 loads UIManager *before* the
+    -- plugin submodules, so UIManager can be set even when loading failed.
+    if not MenuBuilder then
         menu_items.audiobook = {
             text = _("Audiobook Read-Along (error)"),
             sorting_hint = "tools",
@@ -221,6 +231,19 @@ function Audiobook:addToMainMenu(menu_items)
                         logger.warn("Audiobook: init failed:", self._init_error)
                     end,
                     help_text = self._init_error,
+                },
+                {
+                    text = _("Generate bug report"),
+                    callback = function()
+                        if BugReport then
+                            BugReport.menuCallback(self)
+                        elseif UIManager and InfoMessage then
+                            UIManager:show(InfoMessage:new{
+                                text = _("Bug report module failed to load.\n\nRun generate-report.sh via SSH or the terminal emulator instead."),
+                                timeout = 10,
+                            })
+                        end
+                    end,
                 },
             },
         }
@@ -279,7 +302,9 @@ function Audiobook:addToMainMenu(menu_items)
                     end
                     return T(_("BT disconnect alert: %1s"), val)
                 end,
-                sub_item_table = BtUI.buildBTDisconnectMenu(self),
+                sub_item_table_func = function()
+                    return BtUI.buildBTDisconnectMenu(self)
+                end,
             },
             -- ── Voice & highlight settings ──
             {
@@ -310,7 +335,9 @@ function Audiobook:addToMainMenu(menu_items)
                     }
                     return T(_("Highlight style: %1"), styles[self:getSetting("highlight_style", "background")] or _("Background"))
                 end,
-                sub_item_table = MenuBuilder.buildHighlightStyleMenu(self),
+                sub_item_table_func = function()
+                    return MenuBuilder.buildHighlightStyleMenu(self)
+                end,
             },
             -- ── Toggles ──
             {

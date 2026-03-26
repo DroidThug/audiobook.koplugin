@@ -53,6 +53,12 @@ for f in main.lua textparser.lua ttsengine.lua highlightmanager.lua synccontroll
     fi
 done
 
+# Standalone bug report script (for users who cannot access the plugin menu)
+if [ -f "$SCRIPT_DIR/generate-report.sh" ]; then
+    cp "$SCRIPT_DIR/generate-report.sh" "$PLUGIN_DEST/"
+    chmod +x "$PLUGIN_DEST/generate-report.sh"
+fi
+
 # Android TTS helper (Java source + build script; .dex built in CI or by user)
 mkdir -p "$PLUGIN_DEST/android"
 for f in TtsHelper.java build-dex.sh; do

@@ -55,20 +55,20 @@ end
 --- Collect device and OS information.
 local function collectDeviceInfo()
     local info = {}
-    info.platform = Device:getPlatform and Device:getPlatform() or "unknown"
-    info.model = Device:getDeviceModel and Device:getDeviceModel() or "unknown"
+    info.platform = Device.getPlatform and Device:getPlatform() or "unknown"
+    info.model = Device.getDeviceModel and Device:getDeviceModel() or "unknown"
     info.is_android = Device:isAndroid() or false
-    info.is_kindle = Device:isKindle and Device:isKindle() or false
-    info.is_kobo = Device:isKobo and Device:isKobo() or false
-    info.is_pocketbook = Device:isPocketBook and Device:isPocketBook() or false
-    info.has_eink = Device:hasEinkScreen and Device:hasEinkScreen() or false
+    info.is_kindle = Device.isKindle and Device:isKindle() or false
+    info.is_kobo = Device.isKobo and Device:isKobo() or false
+    info.is_pocketbook = Device.isPocketBook and Device:isPocketBook() or false
+    info.has_eink = Device.hasEinkScreen and Device:hasEinkScreen() or false
 
     -- Screen dimensions
     local screen = Device.screen
     if screen then
-        info.screen_width = screen:getWidth and screen:getWidth() or "?"
-        info.screen_height = screen:getHeight and screen:getHeight() or "?"
-        info.screen_dpi = screen:getDPI and screen:getDPI() or "?"
+        info.screen_width = screen.getWidth and screen:getWidth() or "?"
+        info.screen_height = screen.getHeight and screen:getHeight() or "?"
+        info.screen_dpi = screen.getDPI and screen:getDPI() or "?"
     end
 
     -- Kernel / uname
@@ -307,9 +307,9 @@ function BugReport.generateAndSave(plugin)
     -- Pick a user-accessible save location.
     -- Prefer the device's main visible storage so the file is easy to find.
     local save_dir
-    if Device:isKobo and Device:isKobo() then
+    if Device.isKobo and Device:isKobo() then
         save_dir = "/mnt/onboard"
-    elseif Device:isKindle and Device:isKindle() then
+    elseif Device.isKindle and Device:isKindle() then
         save_dir = "/mnt/us"
     elseif Device:isAndroid() then
         save_dir = "/sdcard"
