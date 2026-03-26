@@ -95,7 +95,7 @@ local function collectKoreaderInfo()
     -- KOReader version
     local ok, Version = pcall(require, "version")
     if ok and Version then
-        info.koreader_version = Version:getCurrentRevision and Version:getCurrentRevision() or "unknown"
+        info.koreader_version = Version.getCurrentRevision and Version:getCurrentRevision() or "unknown"
     else
         -- Fallback: try reading git_rev file
         local rev_file = io.open("git-rev", "r")
@@ -209,11 +209,33 @@ local function collectAudioInfo()
                         Utils.commandExists("hcitool") or
                         fileExists("/sys/class/bluetooth") or false
 
+    -- BT adapter present?
+    info.bt_hci_devices = shellCapture("ls -1 /sys/class/bluetooth/ 2>/dev/null", 2) or "none"
+
+    -- Paired / connected BT devices (bluetoothctl)
+    if Utils.commandExists("bluetoothctl") then
+        info.bt_paired_devices = shellCapture("bluetoothctl devices Paired 2>/dev/null || bluetoothctl paired-devices 2>/dev/null", 3) or "none"
+        info.bt_connected_devices = shellCapture("bluetoothctl devices Connected 2>/dev/null || bluetoothctl info 2>/dev/null | grep -E 'Device|Name|Connected'", 3) or "none"
+    end
+
+    -- hcitool fallback (older Kobo firmware)
+    if Utils.commandExists("hcitool") then
+        info.bt_hcitool_con = shellCapture("hcitool con 2>/dev/null", 3) or "none"
+    end
+
+    -- Kobo BT daemon
+    info.bt_daemon_running = shellCapture("pidof mtkbtmwrpc 2>/dev/null || pidof bluetoothd 2>/dev/null", 2) or "not running"
+
     -- GStreamer BT sink (Kobo-specific)
     if Utils.commandExists("gst-inspect-1.0") then
-        local bt_sink = shellCapture("gst-inspect-1.0 mtkbtmwrpcaudiosink 2>/dev/null | head -1", 3)
-        info.gst_bt_sink = bt_sink and bt_sink:match("Factory") and "available" or "not found"
+        local bt_sink = shellCapture("gst-inspect-1.0 mtkbtmwrpcaudiosink 2>/dev/null | head -5", 3)
+        info.gst_bt_sink = bt_sink or "not found"
+        -- List all available audio sinks
+        info.gst_audio_sinks = shellCapture("gst-inspect-1.0 --list-elements 2>/dev/null | grep -i 'sink\\|audio' || gst-inspect-1.0 2>/dev/null | grep -i 'sink\\|audio'", 3) or "none found"
     end
+
+    -- Kobo BT socket (abstract socket used by mtkbtmwrpc)
+    info.bt_abstract_socket = shellCapture("cat /proc/net/unix 2>/dev/null | grep -i 'kobo\\|mtk\\|bluetooth' | head -5", 2) or "none"
 
     -- /tmp writable (needed for WAV files)
     info.tmp_writable = fileExists("/tmp") and os.execute("touch /tmp/.audiobook_test 2>/dev/null && rm /tmp/.audiobook_test 2>/dev/null") ~= nil

@@ -124,15 +124,41 @@ ALSA_CARDS="not available"
 # Bluetooth
 BT_AVAILABLE=$(bool sh -c 'command -v bluetoothctl >/dev/null || command -v hcitool >/dev/null || [ -d /sys/class/bluetooth ]')
 
+# BT adapter
+BT_HCI_DEVICES=$(ls -1 /sys/class/bluetooth/ 2>/dev/null || echo "none")
+
+# Paired / connected devices
+BT_PAIRED="n/a"
+BT_CONNECTED="n/a"
+if command -v bluetoothctl >/dev/null 2>&1; then
+    BT_PAIRED=$(capture bluetoothctl devices Paired 2>/dev/null || capture bluetoothctl paired-devices 2>/dev/null)
+    [ -z "$BT_PAIRED" ] && BT_PAIRED="none"
+    BT_CONNECTED=$(capture bluetoothctl devices Connected 2>/dev/null || capture bluetoothctl info 2>/dev/null | grep -E 'Device|Name|Connected')
+    [ -z "$BT_CONNECTED" ] && BT_CONNECTED="none"
+fi
+
+# hcitool fallback
+BT_HCITOOL_CON="n/a"
+if command -v hcitool >/dev/null 2>&1; then
+    BT_HCITOOL_CON=$(capture hcitool con)
+    [ -z "$BT_HCITOOL_CON" ] && BT_HCITOOL_CON="none"
+fi
+
+# Kobo BT daemon
+BT_DAEMON=$(pidof mtkbtmwrpc 2>/dev/null || pidof bluetoothd 2>/dev/null || echo "not running")
+
 # GStreamer BT sink
 GST_BT_SINK="n/a"
+GST_AUDIO_SINKS="n/a"
 if command -v gst-inspect-1.0 >/dev/null 2>&1; then
-    if capture gst-inspect-1.0 mtkbtmwrpcaudiosink | grep -q Factory; then
-        GST_BT_SINK="available"
-    else
-        GST_BT_SINK="not found"
-    fi
+    GST_BT_SINK=$(capture gst-inspect-1.0 mtkbtmwrpcaudiosink 2>/dev/null | head -5)
+    [ -z "$GST_BT_SINK" ] && GST_BT_SINK="not found"
+    GST_AUDIO_SINKS=$(capture sh -c 'gst-inspect-1.0 --list-elements 2>/dev/null | grep -i "sink\|audio" || gst-inspect-1.0 2>/dev/null | grep -i "sink\|audio"')
+    [ -z "$GST_AUDIO_SINKS" ] && GST_AUDIO_SINKS="none found"
 fi
+
+# Kobo BT abstract socket
+BT_SOCKET=$(cat /proc/net/unix 2>/dev/null | grep -i 'kobo\|mtk\|bluetooth' | head -5 || echo "none")
 
 # Android extras
 ANDROID_SECTION=""
@@ -196,7 +222,14 @@ ${SETTINGS_SECTION}
 $(printf '%b' "$TTS_CMDS")  players_in_path:
 $(printf '%b' "$PLAYER_CMDS")  alsa_cards: ${ALSA_CARDS}
   bt_available: ${BT_AVAILABLE}
+  bt_hci_devices: ${BT_HCI_DEVICES}
+  bt_paired_devices: ${BT_PAIRED}
+  bt_connected_devices: ${BT_CONNECTED}
+  bt_hcitool_con: ${BT_HCITOOL_CON}
+  bt_daemon: ${BT_DAEMON}
   gst_bt_sink: ${GST_BT_SINK}
+  gst_audio_sinks: ${GST_AUDIO_SINKS}
+  bt_abstract_socket: ${BT_SOCKET}
   tmp_writable: ${TMP_WRITABLE}
 
 ── Resources ──

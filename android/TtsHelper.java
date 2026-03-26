@@ -116,6 +116,7 @@ public class TtsHelper implements TextToSpeech.OnInitListener {
 
     // --- Audio playback via MediaPlayer ---
 
+    private final Object mpLock = new Object();
     private MediaPlayer mediaPlayer;
     private volatile boolean playbackDone = false;
 
@@ -126,26 +127,36 @@ public class TtsHelper implements TextToSpeech.OnInitListener {
     public int playFile(String path) {
         stopPlayback();
         playbackDone = false;
-        try {
-            mediaPlayer = new MediaPlayer();
-            mediaPlayer.setDataSource(path);
-            mediaPlayer.setOnCompletionListener(mp -> playbackDone = true);
-            mediaPlayer.setOnErrorListener((mp, what, extra) -> {
+        synchronized (mpLock) {
+            try {
+                mediaPlayer = new MediaPlayer();
+                mediaPlayer.setDataSource(path);
+                mediaPlayer.setOnCompletionListener(mp -> {
+                    playbackDone = true;
+                });
+                mediaPlayer.setOnErrorListener((mp, what, extra) -> {
+                    playbackDone = true;
+                    return true;
+                });
+                mediaPlayer.prepare();
+                mediaPlayer.start();
+                return mediaPlayer.getDuration();
+            } catch (IOException e) {
                 playbackDone = true;
-                return true;
-            });
-            mediaPlayer.prepare();
-            mediaPlayer.start();
-            return mediaPlayer.getDuration();
-        } catch (IOException e) {
-            playbackDone = true;
-            return -1;
+                return -1;
+            }
         }
     }
 
     /** Check if audio is still playing. */
     public boolean isPlaying() {
-        return mediaPlayer != null && mediaPlayer.isPlaying();
+        synchronized (mpLock) {
+            try {
+                return mediaPlayer != null && mediaPlayer.isPlaying();
+            } catch (IllegalStateException e) {
+                return false;
+            }
+        }
     }
 
     /** Check if playback finished (completed or error). */
@@ -155,29 +166,44 @@ public class TtsHelper implements TextToSpeech.OnInitListener {
 
     /** Stop and release the MediaPlayer. */
     public void stopPlayback() {
-        if (mediaPlayer != null) {
-            try {
-                if (mediaPlayer.isPlaying()) {
-                    mediaPlayer.stop();
-                }
-            } catch (IllegalStateException ignored) {}
-            mediaPlayer.release();
-            mediaPlayer = null;
+        synchronized (mpLock) {
+            if (mediaPlayer != null) {
+                // Clear listeners BEFORE release to prevent callbacks from
+                // firing on the internal thread after the native object is
+                // destroyed (causes pthread_mutex_lock on destroyed mutex).
+                mediaPlayer.setOnCompletionListener(null);
+                mediaPlayer.setOnErrorListener(null);
+                try {
+                    if (mediaPlayer.isPlaying()) {
+                        mediaPlayer.stop();
+                    }
+                } catch (IllegalStateException ignored) {}
+                mediaPlayer.release();
+                mediaPlayer = null;
+            }
+            playbackDone = false;
         }
-        playbackDone = false;
     }
 
     /** Pause audio playback. */
     public void pausePlayback() {
-        if (mediaPlayer != null && mediaPlayer.isPlaying()) {
-            mediaPlayer.pause();
+        synchronized (mpLock) {
+            try {
+                if (mediaPlayer != null && mediaPlayer.isPlaying()) {
+                    mediaPlayer.pause();
+                }
+            } catch (IllegalStateException ignored) {}
         }
     }
 
     /** Resume audio playback after pause. */
     public void resumePlayback() {
-        if (mediaPlayer != null && !mediaPlayer.isPlaying()) {
-            mediaPlayer.start();
+        synchronized (mpLock) {
+            try {
+                if (mediaPlayer != null && !mediaPlayer.isPlaying()) {
+                    mediaPlayer.start();
+                }
+            } catch (IllegalStateException ignored) {}
         }
     }
 }
