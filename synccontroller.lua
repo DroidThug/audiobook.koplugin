@@ -29,6 +29,12 @@ local PIPER_LOOKAHEAD = 20
 -- its first result (_piper_warmed_up), so slow models on weak hardware
 -- (e.g. French medium on single-core) never stall.
 
+-- If Piper hasn't delivered any result after this many consecutive
+-- espeak fallback sentences, kill the Piper server to free CPU/memory.
+-- One Kobo page is typically 20-25 sentences; 30 gives Piper one full
+-- page of breathing room before we give up.
+local PIPER_ABANDON_THRESHOLD = 30
+
 -- ── Accumulate-then-play buffering ───────────────────────────────────
 -- Piper on ARM synthesizes at ~0.3-0.5× real-time (each 5 s sentence
 -- takes 15-30 s).  Playing each sentence as soon as it's ready creates
@@ -67,6 +73,10 @@ function SyncController:new(o)
     -- Set to true once Piper delivers its first audio; prevents espeak
     -- cold-start from re-triggering on page turns.
     o._piper_warmed_up = false
+    -- Piper abandonment: if espeak runs for too many sentences without
+    -- Piper ever delivering, kill the server to free CPU on single-core.
+    o._piper_abandoned = false
+    o._espeak_fallback_count = 0
     -- Timing
     o.sentence_sync_start = nil
     o.pause_time = nil
@@ -117,6 +127,15 @@ function SyncController:start(text)
     self.reading_sentence_idx = 0
     -- Don't reset _piper_warmed_up here: it persists across page turns
     -- so espeak cold-start doesn't re-trigger when Piper is already warm.
+    -- Honor espeak-only mode: if the user enabled the setting (or it was
+    -- auto-enabled by a previous abandon), skip Piper from the start.
+    if not self._piper_abandoned
+            and self.plugin
+            and self.plugin:getSetting("espeak_only_mode", false) then
+        self._piper_abandoned = true
+        logger.warn("SyncController: espeak-only mode enabled via settings")
+        pcall(function() self.tts_engine._piper:shutdown() end)
+    end
     self.current_word_index = 0
     self.current_sentence_index = 0
     self.current_sentence = nil
@@ -171,6 +190,20 @@ function SyncController:readNextSentence()
     self.state = self.STATE.LOADING
     local controller = self
 
+    -- espeak-only mode: skip all Piper queueing/waiting
+    if self._piper_abandoned and self.tts_engine and self.tts_engine.espeak_bin then
+        logger.dbg("SyncController: espeak-only mode, sentence", self.reading_sentence_idx)
+        local fb_file = self.tts_engine:espeakSynthesizeFallback(sentence.text)
+        if fb_file then
+            controller:applySentenceTiming(sentence, self.tts_engine.timing_data)
+            controller:beginSentencePlayback(sentence)
+            return
+        end
+        -- espeak failed, skip sentence
+        self:readNextSentence()
+        return
+    end
+
     logger.dbg("SyncController: Reading sentence",
         self.reading_sentence_idx, "/", self.total_sentences, ":",
         sentence.text:sub(1, 60))
@@ -202,6 +235,8 @@ function SyncController:readNextSentence()
                 self.reading_sentence_idx, "(early, Piper status:", piper_status, ")")
             local fb_file = self.tts_engine:espeakSynthesizeFallback(sentence.text)
             if fb_file then
+                self._espeak_fallback_count = (self._espeak_fallback_count or 0) + 1
+                self:_checkPiperAbandon()
                 controller:applySentenceTiming(sentence, self.tts_engine.timing_data)
                 controller:beginSentencePlayback(sentence)
                 return
@@ -350,6 +385,8 @@ function SyncController:readNextSentence()
                 self.reading_sentence_idx)
             local fb_file = self.tts_engine:espeakSynthesizeFallback(sentence.text)
             if fb_file then
+                self._espeak_fallback_count = (self._espeak_fallback_count or 0) + 1
+                self:_checkPiperAbandon()
                 controller:applySentenceTiming(sentence, self.tts_engine.timing_data)
                 controller:beginSentencePlayback(sentence)
                 return  -- Piper keeps synthesizing in background; readNextSentence will pick up Piper audio
@@ -1649,6 +1686,41 @@ function SyncController:resume(auto)
 end
 
 --[[--
+Check whether Piper should be abandoned after too many consecutive espeak
+fallbacks (i.e. Piper never delivered any audio).  Shows a one-time warning
+explaining the situation, kills the Piper server to free CPU, and enables
+the persistent "espeak-only mode" setting so subsequent sessions skip Piper.
+Called from espeak fallback success paths in readNextSentence().
+--]]
+function SyncController:_checkPiperAbandon()
+    if self._piper_abandoned then return end
+    if (self._espeak_fallback_count or 0) < PIPER_ABANDON_THRESHOLD then return end
+
+    self._piper_abandoned = true
+    logger.warn("SyncController: Abandoning Piper after",
+        self._espeak_fallback_count, "espeak fallbacks -- killing servers")
+    pcall(function() self.tts_engine._piper:shutdown() end)
+
+    -- Persist the setting so Piper is skipped on future sessions too
+    if self.plugin then
+        self.plugin:setSetting("espeak_only_mode", true)
+    end
+
+    -- Show a non-blocking warning so the user understands what happened
+    local InfoMessage = require("ui/widget/infomessage")
+    UIManager:show(InfoMessage:new{
+        text = "Piper neural TTS could not keep up on this device "
+            .. "(single-core ARM). After "
+            .. tostring(self._espeak_fallback_count)
+            .. " sentences, it still hadn't produced any audio.\n\n"
+            .. "Switching to espeak-only mode for stable playback. "
+            .. "You can disable this in:\n"
+            .. "  Audiobook > espeak-only mode (skip Piper)",
+        timeout = 10,
+    })
+end
+
+--[[--
 Stop playback completely.
 --]]
 function SyncController:stop()
@@ -1684,6 +1756,8 @@ function SyncController:stop()
     self.current_sentence_index = 0
     self.reading_sentence_idx = 0
     self._piper_warmed_up = false
+    self._piper_abandoned = false
+    self._espeak_fallback_count = 0
     self.total_sentences = 0
     self.current_sentence = nil
     self.sentence_sync_start = nil

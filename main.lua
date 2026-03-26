@@ -382,6 +382,21 @@ function Audiobook:addToMainMenu(menu_items)
                 end,
             },
             {
+                text = _("espeak-only mode (skip Piper)"),
+                checked_func = function()
+                    return self:getSetting("espeak_only_mode", false)
+                end,
+                callback = function()
+                    self:toggleSetting("espeak_only_mode", false)
+                end,
+                enabled_func = function()
+                    return self._init_ok
+                        and self.tts_engine.backend == self.tts_engine.BACKENDS.PIPER
+                        and self.tts_engine.espeak_bin ~= nil
+                end,
+                help_text = _("Use espeak-ng for all sentences instead of Piper neural TTS. Enable this on single-core devices where Piper cannot synthesize fast enough, causing the device to freeze. This is auto-enabled when the plugin detects Piper cannot keep up."),
+            },
+            {
                 text = _("Keep playing when lid is closed"),
                 checked_func = function()
                     return self:getSetting("keep_playing_on_lid_close", false)
