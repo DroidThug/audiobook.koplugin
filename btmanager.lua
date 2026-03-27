@@ -39,6 +39,8 @@ local OBJMGR_IFACE = "org.freedesktop.DBus.ObjectManager"
 -- Detected stack state (set once by detectStack, then cached)
 local bt_stack = nil        -- "mtk" or "bluez"
 local gst_bt_sink = nil     -- "mtkbtmwrpcaudiosink" or nil
+local bluetoothd_path = nil -- resolved path to bluetoothd binary
+local has_bluetoothctl = nil -- cached availability of bluetoothctl
 
 --- Detect which Bluetooth stack this Kobo device uses.
 -- Called lazily from dbus_cmd() on first BT operation; a no-op
@@ -81,6 +83,45 @@ local function detectStack()
     DBUS_DEST = "org.bluez"
     gst_bt_sink = nil
     logger.dbg("BTManager: detected standard BlueZ Bluetooth stack")
+
+    -- Resolve the bluetoothd binary path.
+    -- On Kobo Libra 2 / Io it lives at /libexec/bluetooth/bluetoothd
+    -- rather than on PATH.
+    local daemon_candidates = {
+        "/libexec/bluetooth/bluetoothd",
+        "/usr/libexec/bluetooth/bluetoothd",
+        "/usr/lib/bluetooth/bluetoothd",
+    }
+    for _, p in ipairs(daemon_candidates) do
+        local f = io.open(p, "r")
+        if f then
+            f:close()
+            bluetoothd_path = p
+            logger.dbg("BTManager: found bluetoothd at", p)
+            break
+        end
+    end
+    if not bluetoothd_path then
+        -- Fall back to PATH lookup
+        local h = io.popen("which bluetoothd 2>/dev/null")
+        local r = h and h:read("*a") or ""
+        if h then h:close() end
+        r = r:gsub("%s+$", "")
+        if r ~= "" then
+            bluetoothd_path = r
+            logger.dbg("BTManager: found bluetoothd via PATH:", r)
+        else
+            bluetoothd_path = "bluetoothd"  -- last resort
+            logger.warn("BTManager: bluetoothd not found at known paths, using bare name")
+        end
+    end
+
+    -- Check bluetoothctl availability (used for agent-based pairing)
+    local bctl = io.popen("which bluetoothctl 2>/dev/null")
+    local bctl_r = bctl and bctl:read("*a") or ""
+    if bctl then bctl:close() end
+    has_bluetoothctl = bctl_r:match("%S") ~= nil
+    logger.dbg("BTManager: bluetoothctl available:", has_bluetoothctl)
 end
 
 --- Run a dbus-send command and return the raw output.
@@ -98,6 +139,8 @@ local function dbus(cmd)
 end
 
 --- Build a dbus-send command.
+-- Includes a 5-second reply timeout to prevent blocking the Lua VM
+-- when bluetoothd is unresponsive or not running.
 -- @string path    object path
 -- @string method  full interface.method name
 -- @string ...     additional arguments
@@ -106,7 +149,7 @@ local function dbus_cmd(path, method, ...)
     detectStack()  -- lazy init on first D-Bus operation
     local args = table.concat({...}, " ")
     return string.format(
-        "dbus-send --system --print-reply --dest=%s %s %s %s",
+        "dbus-send --system --print-reply --reply-timeout=5000 --dest=%s %s %s %s",
         DBUS_DEST, path, method, args
     )
 end
@@ -147,6 +190,15 @@ function BTManager:isPowered()
     return out:match("boolean true") ~= nil
 end
 
+--- Check if bluetoothd is already running.
+-- @treturn bool
+local function is_bluetoothd_running()
+    local h = io.popen("pidof bluetoothd 2>/dev/null")
+    local r = h and h:read("*a") or ""
+    if h then h:close() end
+    return r:match("%d+") ~= nil
+end
+
 --- Power on the Bluetooth adapter.
 -- For BlueZ devices, starts the bluetoothd daemon and resets the HCI
 -- adapter first (required on Kobo Libra 2 and similar).
@@ -157,8 +209,19 @@ function BTManager:powerOn()
 
     if bt_stack == "bluez" then
         -- BlueZ requires the bluetoothd daemon and an HCI adapter reset.
-        os.execute("bluetoothd 2>/dev/null &")
-        os.execute("sleep 1")
+        -- On Kobo Libra 2 / Io, the daemon lives at /libexec/bluetooth/
+        -- rather than on PATH (ref: OGKevin/kobo.koplugin BT investigation).
+        if not is_bluetoothd_running() then
+            local daemon = bluetoothd_path or "bluetoothd"
+            logger.dbg("BTManager: starting bluetoothd from:", daemon)
+            os.execute(daemon .. " 2>/dev/null &")
+            os.execute("sleep 1")
+            if not is_bluetoothd_running() then
+                logger.warn("BTManager: bluetoothd failed to start from", daemon)
+            end
+        else
+            logger.dbg("BTManager: bluetoothd already running")
+        end
         os.execute("hciconfig hci0 down 2>/dev/null && hciconfig hci0 up 2>/dev/null")
         os.execute("sleep 1")
     end
@@ -166,7 +229,11 @@ function BTManager:powerOn()
     local _, ok = set_property(ADAPTER_PATH, ADAPTER_IFACE, "Powered", "variant:boolean:true")
     -- Give the stack a moment to initialize
     if ok then os.execute("sleep 2") end
-    return self:isPowered()
+
+    local powered = self:isPowered()
+    logger.dbg("BTManager: powerOn result:", powered,
+        "bluetoothd running:", is_bluetoothd_running())
+    return powered
 end
 
 --- Power off the Bluetooth adapter.
@@ -179,7 +246,9 @@ function BTManager:powerOff()
     os.execute("sleep 1")
 
     if bt_stack == "bluez" then
+        -- Stop the daemon we started (safe even if it was already running)
         os.execute("killall bluetoothd 2>/dev/null")
+        os.execute("hciconfig hci0 down 2>/dev/null")
     end
 
     return not self:isPowered()
@@ -320,17 +389,52 @@ local function mac_to_path(address)
 end
 
 --- Pair with a device.
+-- Prefers bluetoothctl (which has a built-in pairing agent for "Just
+-- Works" SSP) over raw D-Bus Device1.Pair (which requires an external
+-- agent that we don't have).  Falls back to D-Bus if bluetoothctl is
+-- not available.
 -- @string address  MAC address
 -- @treturn bool success
 -- @treturn string error message (if any)
 function BTManager:pair(address)
     logger.dbg("BTManager: pairing with", address)
+
+    -- Always trust the device so auto-connect works on future boots
     local path = mac_to_path(address)
-    -- Trust first so auto-connect works later
     set_property(path, DEVICE_IFACE, "Trusted", "variant:boolean:true")
+
+    if has_bluetoothctl then
+        -- bluetoothctl handles the NoInputNoOutput agent internally,
+        -- which is required for pairing with audio devices ("Just Works").
+        logger.dbg("BTManager: pairing via bluetoothctl")
+        local cmd = string.format(
+            "echo -e 'agent NoInputNoOutput\\ndefault-agent\\ntrust %s\\npair %s\\nquit' "
+            .. "| bluetoothctl 2>&1",
+            address, address)
+        local h = io.popen(cmd)
+        local out = h and h:read("*a") or ""
+        if h then h:close() end
+        logger.dbg("BTManager: bluetoothctl pair output:", out:sub(1, 300))
+        -- Give pairing a moment to complete
+        os.execute("sleep 2")
+        -- Verify pairing succeeded via D-Bus property
+        local prop_out = get_property(path, DEVICE_IFACE, "Paired")
+        if prop_out:match("boolean true") then
+            return true
+        end
+        -- Check for known errors in output
+        local err = out:match("Failed to pair: (.-)\n") or
+                    out:match("org%.bluez%.Error%.([%w]+)") or
+                    "Pairing did not complete"
+        logger.warn("BTManager: bluetoothctl pairing failed:", err)
+        return false, err
+    end
+
+    -- Fallback: raw D-Bus (may fail without a registered agent)
+    logger.dbg("BTManager: pairing via D-Bus (no bluetoothctl)")
     local out, ok = dbus(dbus_cmd(path, DEVICE_IFACE .. ".Pair"))
     if not ok then
-        local err = out:match("Error[^\n]*") or "Pairing failed"
+        local err = out:match("Error[^\n]*") or "Pairing failed (no agent)"
         return false, err
     end
     return true

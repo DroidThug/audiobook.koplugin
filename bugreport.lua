@@ -226,6 +226,24 @@ local function collectAudioInfo(plugin)
     -- Kobo BT daemon
     info.bt_daemon_running = shellCapture("pidof mtkbtmwrpc 2>/dev/null || pidof bluetoothd 2>/dev/null", 2) or "not running"
 
+    -- bluetoothd binary location (key for Kobo pairing)
+    local daemon_paths = {
+        "/libexec/bluetooth/bluetoothd",
+        "/usr/libexec/bluetooth/bluetoothd",
+        "/usr/lib/bluetooth/bluetoothd",
+    }
+    info.bt_daemon_path = "not found"
+    for _, p in ipairs(daemon_paths) do
+        if fileExists(p) then
+            info.bt_daemon_path = p
+            break
+        end
+    end
+    if info.bt_daemon_path == "not found" then
+        local which_bt = shellCapture("which bluetoothd 2>/dev/null", 2)
+        if which_bt then info.bt_daemon_path = which_bt .. " (via PATH)" end
+    end
+
     -- Detected BT stack (MTK vs BlueZ)
     if plugin and plugin.bt_manager and plugin.bt_manager.getStackType then
         info.bt_stack = plugin.bt_manager:getStackType()

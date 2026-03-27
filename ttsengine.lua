@@ -1892,8 +1892,15 @@ Check if the audio player process is still running.
 --]]
 function TTSEngine:_isAudioProcessRunning()
     if not self.audio_pid then return false end
-    local ret = os.execute("kill -0 " .. self.audio_pid .. " 2>/dev/null")
-    return ret == 0
+    -- Use /proc test instead of spawning a shell on every poll.
+    -- This avoids fork+exec overhead on single-core ARM devices
+    -- where it can add up with 100ms polling intervals.
+    local f = io.open("/proc/" .. self.audio_pid .. "/stat", "r")
+    if f then
+        f:close()
+        return true
+    end
+    return false
 end
 
 --[[--
@@ -2009,6 +2016,36 @@ function TTSEngine:_startProcessWatcher(bt_retry_allowed, skip_on_fail)
                 end
             else
                 -- Normal completion (process streamed successfully then exited)
+                -- Detect rapid failure: if aplay exits in < 200ms and we have
+                -- no real audio output (no soundcard), this is likely an instant
+                -- failure.  Track consecutive rapid exits and bail out to prevent
+                -- a runaway loop that freezes single-core devices.
+                local RAPID_EXIT_MS = 200
+                if elapsed_ms < RAPID_EXIT_MS and engine._no_real_audio_output then
+                    engine._rapid_fail_count = (engine._rapid_fail_count or 0) + 1
+                    logger.warn("TTSEngine: rapid audio exit (" .. elapsed_ms
+                        .. "ms), no soundcard — count:", engine._rapid_fail_count)
+                    if engine._rapid_fail_count >= 3 then
+                        logger.err("TTSEngine: 3 consecutive rapid audio failures — "
+                            .. "no audio output available, stopping playback")
+                        engine.is_speaking = false
+                        engine.audio_pid = nil
+                        engine.play_generation = (engine.play_generation or 0) + 1
+                        engine:cleanup()
+                        engine._rapid_fail_count = 0
+                        UIManager:show(InfoMessage:new{
+                            text = _("No audio output available.\n\nThis device has no built-in speaker. Please connect a Bluetooth audio device first:\n\n1. Go to Audiobook > Bluetooth\n2. Turn Bluetooth on\n3. Scan and pair your headphones/speaker\n4. Then start read-along again."),
+                            timeout = 12,
+                        })
+                        if engine.on_fail_callback then
+                            engine.on_fail_callback()
+                        end
+                        return
+                    end
+                else
+                    -- Successful playback (or at least not instant failure)
+                    engine._rapid_fail_count = 0
+                end
                 logger.warn("TTSEngine: Process watcher → normal completion, elapsed=", elapsed_ms, "ms")
                 engine:onPlaybackComplete()
             end
