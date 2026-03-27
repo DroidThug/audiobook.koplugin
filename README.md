@@ -214,6 +214,7 @@ audiobook.koplugin/
   btmanager.lua        - Bluetooth device scanning and pairing
   btui.lua             - BT menu UI and disconnect watcher
   btmediacontrol.lua   - BT headset media buttons (AVRCP play/pause/skip)
+  benchmarkrunner.lua  - in-plugin TTS benchmark runner
   wavutils.lua         - WAV file reading, writing, and manipulation
   androidtts.lua       - Android TTS via JNI (DexClassLoader + TtsHelper)
   utils.lua            - shared helpers
@@ -367,6 +368,91 @@ hidden -- enable hidden files in your file manager to see it.
 |---------------------|:----------:|:---------:|
 | Device model, hardware specs, KOReader version, plugin version, audio output (ALSA, BT, GStreamer), TTS engines installed (espeak, Piper, Android), plugin settings (rate, highlight, voice), Bluetooth pairing and connection state | yes | no |
 | Lua errors and stack traces, TTS process spawning and fallback events, sentence progression and page turns, timing of operations (delays, freezes), Piper server startup and delivery, device freeze or resource exhaustion | no | yes |
+
+## Device benchmark
+
+The plugin includes a built-in benchmark that measures TTS synthesis speed on
+your device. It runs a fixed set of test sentences through each available engine
+(espeak-ng, Piper) and saves a report you can share on GitHub to help document
+device performance.
+
+### Running the benchmark
+
+**Tools > Audiobook Read-Along > Generate bug report > Run device benchmark**
+
+The benchmark synthesizes five sentences of varying length (short dialogue,
+narrative prose, technical text, academic text, and short fragments) with each
+engine and model it finds. espeak-ng tests finish in seconds; Piper tests may
+take several minutes on slow devices like Kobo.
+
+A progress message is shown between engine runs. The screen may appear
+unresponsive during individual synthesis calls -- this is expected.
+
+### Output
+
+When complete, a `.txt` report is saved to your device's root storage:
+
+| Platform | Report location |
+|----------|----------------|
+| Kobo | `/mnt/onboard/audiobook-benchmark-*.txt` |
+| Kindle | `/mnt/us/audiobook-benchmark-*.txt` |
+| Android | `/sdcard/audiobook-benchmark-*.txt` |
+| Linux | `~/audiobook-benchmark-*.txt` |
+
+The report contains:
+
+- Device info (platform, model, CPU cores, RAM, kernel)
+- Plugin version
+- Per-sentence synthesis time, audio duration, file size, and realtime factor
+  for each engine/model
+- Aggregate totals and average realtime factor
+
+No book content, highlights, or personal data is included.
+
+### Example output
+
+```
+=== Audiobook TTS Benchmark (v0.1.5.10) ===
+Generated: 2026-03-27T12:00:00Z
+
+── Device ──
+  platform: kobo
+  model: Kobo Clara 2E
+  cpu_cores: 1
+  memory: 510396 kB
+  kernel: 4.1.15
+
+── Test sentences ──
+  [1] short_dialogue (57 chars)
+  [2] medium_narrative (268 chars)
+  [3] medium_technical (254 chars)
+  [4] long_academic (362 chars)
+  [5] short_fragments (79 chars)
+
+── espeak-ng ──
+  short_dialogue          synth=   82ms  audio= 3200ms  size= 102444B  rt=0.03x
+  medium_narrative        synth=  310ms  audio=15800ms  size= 505244B  rt=0.02x
+  ...
+
+── Piper danny-low  (size=15.8MB, sr=16000Hz) ──
+  short_dialogue          synth= 4200ms  audio= 3100ms  size=  99244B  rt=1.35x
+  medium_narrative        synth=18200ms  audio=16800ms  size= 537644B  rt=1.08x
+  ...
+
+=== End of Benchmark ===
+```
+
+A realtime factor below 1.0x means synthesis is faster than playback (good).
+Above 1.0x means the user will hear pauses between sentences while the engine
+catches up.
+
+### Sharing your results
+
+Attach the report file to a
+[GitHub issue](https://github.com/stradichenko/audiobook.koplugin/issues) or
+include it in a bug report. Benchmark data from different devices helps the
+project tune batch sizes, choose default voices, and set realistic expectations
+for each platform.
 
 ## Android support
 
