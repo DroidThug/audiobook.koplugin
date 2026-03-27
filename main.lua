@@ -18,7 +18,7 @@ local _ = require("gettext")
 -- Every function in this file can reference them as upvalues; they start
 -- as nil and become usable after init() succeeds.
 local Device, UIManager, InfoMessage, T
-local BtUI, BtMediaControl, BugReport, MenuBuilder, Utils
+local BtUI, BtMediaControl, BugReport, BenchmarkRunner, MenuBuilder, Utils
 local PLUGIN_PATH
 
 local Audiobook = WidgetContainer:extend{
@@ -60,6 +60,7 @@ function Audiobook:init()
         BtUI = try_dofile(_utils_dir .. "btui.lua")
         BtMediaControl = try_dofile(_utils_dir .. "btmediacontrol.lua")
         BugReport = try_dofile(_utils_dir .. "bugreport.lua")
+        BenchmarkRunner = try_dofile(_utils_dir .. "benchmarkrunner.lua")
         MenuBuilder = try_dofile(_utils_dir .. "menubuilder.lua")
         Utils = try_dofile(_utils_dir .. "utils.lua")
     end)
@@ -428,6 +429,19 @@ function Audiobook:addToMainMenu(menu_items)
                     BugReport.menuCallback(self)
                 end,
                 help_text = _("Saves a diagnostic report to your device storage. The report contains device model, TTS engine status, and audio configuration — no personal data or book content. Share it when reporting issues on GitHub."),
+            },
+            {
+                text = _("Run device benchmark"),
+                callback = function()
+                    if not self._init_ok then self:_showInitError(); return end
+                    if BenchmarkRunner then
+                        BenchmarkRunner.menuCallback(self)
+                    end
+                end,
+                enabled_func = function()
+                    return self._init_ok and BenchmarkRunner ~= nil
+                end,
+                help_text = _("Runs a standardized TTS benchmark on test sentences using each available engine (espeak-ng, Piper). Saves a report you can share on GitHub to help document device performance. Piper tests may take several minutes on slow devices."),
             },
         },
     }
