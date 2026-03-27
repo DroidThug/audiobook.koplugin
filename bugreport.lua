@@ -172,7 +172,7 @@ local function collectPluginInfo(plugin)
 end
 
 --- Collect system audio and TTS tool availability.
-local function collectAudioInfo()
+local function collectAudioInfo(plugin)
     local info = {}
 
     -- TTS command availability
@@ -226,10 +226,16 @@ local function collectAudioInfo()
     -- Kobo BT daemon
     info.bt_daemon_running = shellCapture("pidof mtkbtmwrpc 2>/dev/null || pidof bluetoothd 2>/dev/null", 2) or "not running"
 
-    -- GStreamer BT sink (Kobo-specific)
+    -- Detected BT stack (MTK vs BlueZ)
+    if plugin and plugin.bt_manager and plugin.bt_manager.getStackType then
+        info.bt_stack = plugin.bt_manager:getStackType()
+        info.bt_gst_sink = plugin.bt_manager:getGstBtSink() or "none (aplay fallback)"
+    end
+
+    -- GStreamer BT sink
     if Utils.commandExists("gst-inspect-1.0") then
         local bt_sink = shellCapture("gst-inspect-1.0 mtkbtmwrpcaudiosink 2>/dev/null | head -5", 3)
-        info.gst_bt_sink = bt_sink or "not found"
+        info.gst_bt_sink_mtk = bt_sink or "not found"
         -- List all available audio sinks
         info.gst_audio_sinks = shellCapture("gst-inspect-1.0 --list-elements 2>/dev/null | grep -i 'sink\\|audio' || gst-inspect-1.0 2>/dev/null | grep -i 'sink\\|audio'", 3) or "none found"
     end
@@ -289,7 +295,7 @@ function BugReport.generate(plugin)
     local device = collectDeviceInfo()
     local koreader = collectKoreaderInfo()
     local pluginInfo = collectPluginInfo(plugin)
-    local audio = collectAudioInfo()
+    local audio = collectAudioInfo(plugin)
     local resources = collectResourceInfo()
     local timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
 

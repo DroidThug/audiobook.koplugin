@@ -1,14 +1,24 @@
 --[[--
 Bluetooth Manager for Kobo devices.
 
-Controls Bluetooth via D-Bus using the Kobo-specific mtkbtd service
-(com.kobo.mtk.bluedroid) which exposes standard BlueZ-compatible interfaces.
+Supports two Bluetooth stacks found on different Kobo hardware:
+  - MTK (Clara 2E, Sage, Libra Colour, etc.): uses the Kobo-specific
+    mtkbtd service (com.kobo.mtk.bluedroid) and GStreamer
+    mtkbtmwrpcaudiosink for audio.
+  - BlueZ (Libra 2/Io, etc.): uses the standard org.bluez D-Bus
+    interface and ALSA audio output.
+
+The stack is auto-detected on first use.  All D-Bus operations are
+routed through the detected destination transparently.
 
 Supported operations:
   - Power on/off the Bluetooth adapter
   - Start/stop device discovery (scanning)
   - List discovered and paired devices
   - Pair, connect, and disconnect devices
+
+Reference: OGKevin/kobo.koplugin BT investigation
+  https://ogkevin.github.io/kobo.koplugin/dev/investigations/bluetooth/
 
 @module btmanager
 --]]
@@ -17,15 +27,61 @@ local logger = require("logger")
 
 local BTManager = {}
 
--- D-Bus constants
-local DBUS_DEST = "com.kobo.mtk.bluedroid"
+-- D-Bus constants (DBUS_DEST is set by detectStack)
+local DBUS_DEST = "org.bluez"  -- safe default; overridden for MTK
 local ADAPTER_PATH = "/org/bluez/hci0"
 local ROOT_PATH = "/"
 local ADAPTER_IFACE = "org.bluez.Adapter1"
 local DEVICE_IFACE = "org.bluez.Device1"
 local PROPS_IFACE = "org.freedesktop.DBus.Properties"
 local OBJMGR_IFACE = "org.freedesktop.DBus.ObjectManager"
-local BLUEDROID_IFACE = "com.kobo.bluetooth.BluedroidManager1"
+
+-- Detected stack state (set once by detectStack, then cached)
+local bt_stack = nil        -- "mtk" or "bluez"
+local gst_bt_sink = nil     -- "mtkbtmwrpcaudiosink" or nil
+
+--- Detect which Bluetooth stack this Kobo device uses.
+-- Called lazily from dbus_cmd() on first BT operation; a no-op
+-- after the first successful detection.
+local function detectStack()
+    if bt_stack then return end
+
+    -- Method 1: The mtkbtmwrpcaudiosink GStreamer element is ONLY
+    -- present on MTK-based Kobo devices (Clara 2E, Sage, Libra Colour).
+    local h = io.popen("gst-inspect-1.0 mtkbtmwrpcaudiosink 2>/dev/null | head -1")
+    local result = h and h:read("*a") or ""
+    if h then h:close() end
+    if result:match("Factory Details") then
+        bt_stack = "mtk"
+        DBUS_DEST = "com.kobo.mtk.bluedroid"
+        gst_bt_sink = "mtkbtmwrpcaudiosink"
+        logger.dbg("BTManager: detected MTK Bluetooth stack")
+        return
+    end
+
+    -- Method 2: Check if the MTK D-Bus service is registered (covers
+    -- the case where GStreamer is not installed).
+    h = io.popen(
+        "dbus-send --system --print-reply "
+        .. "--dest=org.freedesktop.DBus /org/freedesktop/DBus "
+        .. "org.freedesktop.DBus.NameHasOwner "
+        .. "string:'com.kobo.mtk.bluedroid' 2>/dev/null")
+    result = h and h:read("*a") or ""
+    if h then h:close() end
+    if result:match("boolean true") then
+        bt_stack = "mtk"
+        DBUS_DEST = "com.kobo.mtk.bluedroid"
+        gst_bt_sink = "mtkbtmwrpcaudiosink"
+        logger.dbg("BTManager: detected MTK Bluetooth stack (D-Bus)")
+        return
+    end
+
+    -- Default: standard BlueZ (Kobo Libra 2 / Io, etc.)
+    bt_stack = "bluez"
+    DBUS_DEST = "org.bluez"
+    gst_bt_sink = nil
+    logger.dbg("BTManager: detected standard BlueZ Bluetooth stack")
+end
 
 --- Run a dbus-send command and return the raw output.
 -- @string cmd  full dbus-send command
@@ -47,6 +103,7 @@ end
 -- @string ...     additional arguments
 -- @treturn string command
 local function dbus_cmd(path, method, ...)
+    detectStack()  -- lazy init on first D-Bus operation
     local args = table.concat({...}, " ")
     return string.format(
         "dbus-send --system --print-reply --dest=%s %s %s %s",
@@ -91,9 +148,21 @@ function BTManager:isPowered()
 end
 
 --- Power on the Bluetooth adapter.
+-- For BlueZ devices, starts the bluetoothd daemon and resets the HCI
+-- adapter first (required on Kobo Libra 2 and similar).
 -- @treturn bool success
 function BTManager:powerOn()
-    logger.dbg("BTManager: powering on")
+    detectStack()
+    logger.dbg("BTManager: powering on (stack:", bt_stack, ")")
+
+    if bt_stack == "bluez" then
+        -- BlueZ requires the bluetoothd daemon and an HCI adapter reset.
+        os.execute("bluetoothd 2>/dev/null &")
+        os.execute("sleep 1")
+        os.execute("hciconfig hci0 down 2>/dev/null && hciconfig hci0 up 2>/dev/null")
+        os.execute("sleep 1")
+    end
+
     local _, ok = set_property(ADAPTER_PATH, ADAPTER_IFACE, "Powered", "variant:boolean:true")
     -- Give the stack a moment to initialize
     if ok then os.execute("sleep 2") end
@@ -101,11 +170,18 @@ function BTManager:powerOn()
 end
 
 --- Power off the Bluetooth adapter.
+-- For BlueZ devices, also stops the bluetoothd daemon.
 -- @treturn bool success
 function BTManager:powerOff()
+    detectStack()
     logger.dbg("BTManager: powering off")
     set_property(ADAPTER_PATH, ADAPTER_IFACE, "Powered", "variant:boolean:false")
     os.execute("sleep 1")
+
+    if bt_stack == "bluez" then
+        os.execute("killall bluetoothd 2>/dev/null")
+    end
+
     return not self:isPowered()
 end
 
@@ -265,6 +341,7 @@ end
 -- @treturn bool success
 -- @treturn string error message (if any)
 function BTManager:connect(address)
+    detectStack()
     logger.dbg("BTManager: connecting to", address)
     local path = mac_to_path(address)
     local out, ok = dbus(dbus_cmd(path, DEVICE_IFACE .. ".Connect"))
@@ -272,29 +349,34 @@ function BTManager:connect(address)
         local err = out:match("Error[^\n]*") or "Connection failed"
         return false, err
     end
-    -- Wait for A2DP profile to come up.  Device1.Connect returns as soon
-    -- as the ACL link is established, but the audio sink (mtkbtmwrpcaudiosink)
-    -- isn't usable until btservice sets up the A2DP channel.  Poll for up
-    -- to 5 seconds.
-    for attempt = 1, 10 do
-        os.execute("sleep 0.5")
-        -- Quick probe: try to open the audio sink.  gst-launch will exit
-        -- immediately with "Address already in use" or "Pipeline doesn't
-        -- want to pause" if A2DP isn't ready, or succeed and start prerolling.
-        local probe = io.popen(
-            "timeout 2 gst-launch-1.0 audiotestsrc num-buffers=1 ! audio/x-raw,format=S16LE,rate=48000,channels=2 ! mtkbtmwrpcaudiosink 2>&1; echo __RC:$?"
-        )
-        local pout = probe and probe:read("*a") or ""
-        if probe then probe:close() end
-        if pout:match("PLAYING") or pout:match("PREROLLED") or pout:match("__RC:0") then
-            logger.dbg("BTManager: A2DP audio sink ready after", attempt * 0.5, "s")
-            return true
+
+    if bt_stack == "mtk" then
+        -- MTK: Wait for A2DP profile to come up.  Device1.Connect returns
+        -- as soon as the ACL link is established, but mtkbtmwrpcaudiosink
+        -- isn't usable until btservice sets up the A2DP channel.  Poll for
+        -- up to 5 seconds.
+        for attempt = 1, 10 do
+            os.execute("sleep 0.5")
+            local probe = io.popen(
+                "timeout 2 gst-launch-1.0 audiotestsrc num-buffers=1 ! audio/x-raw,format=S16LE,rate=48000,channels=2 ! mtkbtmwrpcaudiosink 2>&1; echo __RC:$?"
+            )
+            local pout = probe and probe:read("*a") or ""
+            if probe then probe:close() end
+            if pout:match("PLAYING") or pout:match("PREROLLED") or pout:match("__RC:0") then
+                logger.dbg("BTManager: A2DP audio sink ready after", attempt * 0.5, "s")
+                return true
+            end
+            logger.dbg("BTManager: A2DP not ready yet, attempt", attempt)
         end
-        logger.dbg("BTManager: A2DP not ready yet, attempt", attempt)
+        logger.warn("BTManager: D-Bus connect OK but A2DP audio sink not ready after 5s")
+        return true, "Connected but audio may not be ready yet"
+    else
+        -- BlueZ: the A2DP transport is set up asynchronously after
+        -- Device1.Connect returns.  Give it a moment to settle.
+        os.execute("sleep 2")
+        logger.dbg("BTManager: BlueZ device connected, A2DP profile settling")
+        return true
     end
-    -- If we get here the D-Bus connect succeeded but A2DP never came up
-    logger.warn("BTManager: D-Bus connect OK but A2DP audio sink not ready after 5s")
-    return true, "Connected but audio may not be ready yet"
 end
 
 --- Disconnect a device.
@@ -341,6 +423,24 @@ end
 function BTManager:getAdapterAddress()
     local out = get_property(ADAPTER_PATH, ADAPTER_IFACE, "Address")
     return out:match('string "(.-)"') or ""
+end
+
+-----------------------------------------------------------------------
+-- Stack introspection (for ttsengine / bugreport)
+-----------------------------------------------------------------------
+
+--- Return the detected BT stack type.
+-- @treturn string "mtk" or "bluez" (triggers detection if needed)
+function BTManager:getStackType()
+    detectStack()
+    return bt_stack
+end
+
+--- Return the GStreamer BT audio sink element name, if any.
+-- @treturn string|nil e.g. "mtkbtmwrpcaudiosink", or nil for BlueZ
+function BTManager:getGstBtSink()
+    detectStack()
+    return gst_bt_sink
 end
 
 return BTManager

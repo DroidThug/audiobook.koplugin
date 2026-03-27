@@ -157,17 +157,27 @@ Browse all available voices:
 
 ## Bluetooth audio (Kobo)
 
-The plugin outputs audio through GStreamer's Bluetooth A2DP sink when a BT
+The plugin outputs audio through a Bluetooth A2DP connection when a BT
 device is paired. The connection is managed through the plugin menu:
 
 **Tools > Audiobook Read-Along > Bluetooth settings**
 
-The BT audio pipeline uses an exclusive abstract socket. If audio stops working
-after a crash, restart KOReader - the plugin kills orphan processes on startup.
+Two Bluetooth stacks are supported, auto-detected at runtime:
 
-> Kobo's BT stack (MediaTek mtkbtmwrpc) binds a single abstract socket.
+| Stack | Devices | Audio path |
+|-------|---------|------------|
+| **MTK** (mtkbtmwrpc) | Clara 2E, Sage, Libra Colour | GStreamer persistent pipeline |
+| **BlueZ** (bluetoothd) | Libra 2 / Io | aplay via ALSA |
+
+On MTK devices the BT audio pipeline uses an exclusive abstract socket. If
+audio stops working after a crash, restart KOReader -- the plugin kills
+orphan processes on startup.
+
+> On MTK Kobo devices, the mtkbtmwrpc daemon binds a single abstract socket.
 > Only one GStreamer pipeline can hold it at a time. The plugin keeps one
 > persistent pipeline alive across sentences to avoid reconnection gaps.
+> On BlueZ devices, the plugin starts `bluetoothd` and resets the HCI
+> adapter automatically when you power on Bluetooth.
 
 ## Playback controls
 
@@ -211,7 +221,7 @@ audiobook.koplugin/
   highlightmanager.lua - screen-coordinate highlight via crengine
   playbackbar.lua      - transport controls widget
   menubuilder.lua      - voice/highlight settings menus
-  btmanager.lua        - Bluetooth device scanning and pairing
+  btmanager.lua        - Bluetooth device scanning and pairing (MTK + BlueZ)
   btui.lua             - BT menu UI and disconnect watcher
   btmediacontrol.lua   - BT headset media buttons (AVRCP play/pause/skip)
   benchmarkrunner.lua  - in-plugin TTS benchmark runner
@@ -234,10 +244,12 @@ unreliable. The highlight manager uses the proportional estimate as an initial
 guess, then binary-searches the x coordinate by querying CRe until the selected
 text matches the target sentence. Converges in 2-4 queries.
 
-**Exclusive BT socket.** Kobo's MediaTek BT firmware exposes a single abstract
-socket (`@kobo:mtkbtmwrpc`). The plugin keeps one GStreamer pipeline alive for
-the entire reading session and feeds audio through a FIFO. Orphan pipelines from
-crashes are killed on startup via PID files and `pkill`.
+**Exclusive BT socket (MTK only).** Kobo's MediaTek BT firmware exposes a
+single abstract socket (`@kobo:mtkbtmwrpc`). The plugin keeps one GStreamer
+pipeline alive for the entire reading session and feeds audio through a FIFO.
+Orphan pipelines from crashes are killed on startup via PID files and `pkill`.
+On BlueZ devices (Libra 2, etc.) audio goes through standard ALSA and this
+socket management is not needed.
 
 **Long-sentence splitting.** Piper's attention mechanism scales quadratically
 with input length. On Kobo's 512 MB of RAM the server OOMs on sentences above
