@@ -326,6 +326,7 @@ function AndroidTts:synthesizeToFile(text, output_path)
         env[0].DeleteLocalRef(env, j_text)
         env[0].DeleteLocalRef(env, j_path)
         if checkException(env) then
+            logger.err("AndroidTts: synthesizeToFile threw exception")
             return -1
         end
         return result
@@ -340,8 +341,13 @@ function AndroidTts:getSynthStatus()
     if not self._initialized or not self._helper_ref then return -1 end
     local android = self._android
     return android.jni:context(android.app.activity.vm, function(jni)
-        return jni.env[0].CallIntMethod(jni.env,
+        local result = jni.env[0].CallIntMethod(jni.env,
             self._helper_ref, self._method.getSynthStatus)
+        if checkException(jni.env) then
+            logger.err("AndroidTts: getSynthStatus threw exception")
+            return 2  -- treat as error
+        end
+        return result
     end)
 end
 
@@ -409,6 +415,10 @@ function AndroidTts:playFile(path)
         local result = env[0].CallIntMethod(env,
             self._helper_ref, self._method.playFile, j_path)
         env[0].DeleteLocalRef(env, j_path)
+        if checkException(env) then
+            logger.err("AndroidTts: playFile threw exception")
+            return -1
+        end
         return result
     end)
 end
@@ -434,8 +444,13 @@ function AndroidTts:isPlaybackDone()
     if not self._initialized or not self._helper_ref then return true end
     local android = self._android
     return android.jni:context(android.app.activity.vm, function(jni)
-        return jni.env[0].CallBooleanMethod(jni.env,
-            self._helper_ref, self._method.isPlaybackDone) ~= 0
+        local result = jni.env[0].CallBooleanMethod(jni.env,
+            self._helper_ref, self._method.isPlaybackDone)
+        if checkException(jni.env) then
+            logger.err("AndroidTts: isPlaybackDone threw exception")
+            return true  -- treat as done so the chain doesn't stall
+        end
+        return result ~= 0
     end)
 end
 

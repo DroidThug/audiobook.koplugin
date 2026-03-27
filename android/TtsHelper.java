@@ -74,7 +74,16 @@ public class TtsHelper implements TextToSpeech.OnInitListener {
         if (parent != null && !parent.exists()) {
             parent.mkdirs();
         }
-        return tts.synthesizeToFile(text, params, file, "audiobook_utterance");
+        try {
+            // Use a unique utterance ID per call so the TTS engine treats
+            // each request as distinct.  Some engines ignore onDone for
+            // reused IDs.
+            String uttId = "audiobook_" + System.currentTimeMillis();
+            return tts.synthesizeToFile(text, params, file, uttId);
+        } catch (Exception e) {
+            synthStatus = 2;
+            return -1;
+        }
     }
 
     /** Returns -1 idle, 0 in-progress, 1 done, 2 error. */
@@ -141,8 +150,15 @@ public class TtsHelper implements TextToSpeech.OnInitListener {
                 mediaPlayer.prepare();
                 mediaPlayer.start();
                 return mediaPlayer.getDuration();
-            } catch (IOException e) {
+            } catch (Exception e) {
+                // Catch all exceptions (IOException, IllegalStateException,
+                // SecurityException, etc.) so a failure here doesn't crash
+                // the JNI bridge and poison subsequent calls.
                 playbackDone = true;
+                if (mediaPlayer != null) {
+                    try { mediaPlayer.release(); } catch (Exception ignored) {}
+                    mediaPlayer = null;
+                }
                 return -1;
             }
         }
@@ -178,7 +194,9 @@ public class TtsHelper implements TextToSpeech.OnInitListener {
                         mediaPlayer.stop();
                     }
                 } catch (IllegalStateException ignored) {}
-                mediaPlayer.release();
+                try {
+                    mediaPlayer.release();
+                } catch (Exception ignored) {}
                 mediaPlayer = null;
             }
             playbackDone = false;

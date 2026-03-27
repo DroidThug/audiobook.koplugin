@@ -1117,8 +1117,13 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         -- Start timing loop for word highlighting
         self:startTimingLoop()
 
-        -- Poll for playback completion
+        -- Poll for playback completion with safety timeout.
+        -- If the Java completion listener never fires (device quirk, JNI
+        -- exception, etc.), force completion so the chain doesn't stall.
         local engine = self
+        local poll_count = 0
+        -- Max polls: at least 300 (30s) or 3x expected duration
+        local max_polls = math.max(300, math.floor(dur_ms * 3 / 100))
         local function pollPlaybackDone()
             if (engine.play_generation or 0) ~= my_gen then return end
             if not engine.is_speaking then return end
@@ -1126,8 +1131,14 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                 UIManager:scheduleIn(0.3, pollPlaybackDone)
                 return
             end
+            poll_count = poll_count + 1
             if atts:isPlaybackDone() then
                 logger.dbg("TTSEngine: Android playback complete")
+                engine:onPlaybackComplete()
+            elseif poll_count >= max_polls then
+                logger.warn("TTSEngine: Android playback timed out after",
+                    poll_count * 0.1, "s -- forcing completion")
+                atts:stopPlayback()
                 engine:onPlaybackComplete()
             else
                 UIManager:scheduleIn(0.1, pollPlaybackDone)
