@@ -406,17 +406,28 @@ function BTManager:pair(address)
     if has_bluetoothctl then
         -- bluetoothctl handles the NoInputNoOutput agent internally,
         -- which is required for pairing with audio devices ("Just Works").
+        --
+        -- We write a small shell script to /tmp and pipe it into
+        -- bluetoothctl.  Using printf instead of echo -e because Kobo's
+        -- busybox ash does not interpret \n in echo -e.  Each command
+        -- needs a small delay so bluetoothctl can process it.
         logger.dbg("BTManager: pairing via bluetoothctl")
-        local cmd = string.format(
-            "echo -e 'agent NoInputNoOutput\\ndefault-agent\\ntrust %s\\npair %s\\nquit' "
-            .. "| bluetoothctl 2>&1",
+        local script = string.format(
+            "{ "
+            .. "printf 'power on\\n'; sleep 1; "
+            .. "printf 'agent NoInputNoOutput\\n'; sleep 0.5; "
+            .. "printf 'default-agent\\n'; sleep 0.5; "
+            .. "printf 'pairable on\\n'; sleep 0.5; "
+            .. "printf 'trust %s\\n'; sleep 0.5; "
+            .. "printf 'pair %s\\n'; sleep 6; "
+            .. "printf 'quit\\n'; "
+            .. "} | bluetoothctl 2>&1",
             address, address)
-        local h = io.popen(cmd)
+        local h = io.popen(script)
         local out = h and h:read("*a") or ""
         if h then h:close() end
-        logger.dbg("BTManager: bluetoothctl pair output:", out:sub(1, 300))
-        -- Give pairing a moment to complete
-        os.execute("sleep 2")
+        logger.dbg("BTManager: bluetoothctl pair output:", out:sub(1, 500))
+
         -- Verify pairing succeeded via D-Bus property
         local prop_out = get_property(path, DEVICE_IFACE, "Paired")
         if prop_out:match("boolean true") then

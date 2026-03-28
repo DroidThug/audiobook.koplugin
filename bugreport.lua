@@ -216,7 +216,12 @@ local function collectAudioInfo(plugin)
     if Utils.commandExists("bluetoothctl") then
         info.bt_paired_devices = shellCapture("bluetoothctl devices Paired 2>/dev/null || bluetoothctl paired-devices 2>/dev/null", 3) or "none"
         info.bt_connected_devices = shellCapture("bluetoothctl devices Connected 2>/dev/null || bluetoothctl info 2>/dev/null | grep -E 'Device|Name|Connected'", 3) or "none"
+        -- Adapter state: powered/pairable/discoverable
+        info.bt_adapter_info = shellCapture("bluetoothctl show 2>/dev/null | grep -E 'Powered|Pairable|Discoverable|Controller'", 3) or "unavailable"
     end
+
+    -- Shell printf portability (Kobo busybox ash needs printf, not echo -e)
+    info.bt_printf_test = shellCapture("printf 'line1\\nline2\\n' 2>/dev/null | wc -l", 2) or "unknown"
 
     -- hcitool fallback (older Kobo firmware)
     if Utils.commandExists("hcitool") then

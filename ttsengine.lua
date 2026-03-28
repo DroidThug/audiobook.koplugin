@@ -1066,15 +1066,31 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
     logger.dbg("TTSEngine: Audio file:", self.current_audio_file)
     logger.warn("TTSEngine: play() findPlayer took", time.to_ms(UIManager:getTime() - t0), "ms")
 
-    -- One-time warning when no real audio output exists (no soundcard, no BT)
-    if self._no_real_audio_output and not self._no_audio_warned then
-        self._no_audio_warned = true
-        logger.warn("TTSEngine: No soundcard and no Bluetooth — audio will be silent")
-        if Device:isKobo() then
+    -- Block playback when no real audio output exists and no BT device is
+    -- connected.  On single-core Kobos (no speaker), silently looping
+    -- through aplay for every sentence wastes CPU and can crash the device.
+    if self._no_real_audio_output then
+        local bt_connected = false
+        if self.plugin and self.plugin.bt_manager then
+            local ok, devices = pcall(self.plugin.bt_manager.listAudioDevices,
+                                      self.plugin.bt_manager)
+            if ok and devices then
+                for _, dev in ipairs(devices) do
+                    if dev.connected then
+                        bt_connected = true
+                        break
+                    end
+                end
+            end
+        end
+        if not bt_connected then
+            logger.warn("TTSEngine: No soundcard and no BT connected — refusing to play")
+            self.is_speaking = false
             UIManager:show(InfoMessage:new{
-                text = _("No audio output detected.\n\nKobo has no built-in speaker. Please pair Bluetooth headphones to hear audio.\n\nText highlighting will still work."),
-                timeout = 6,
+                text = _("No audio output available.\n\nThis device has no built-in speaker. Please connect a Bluetooth audio device first:\n\n1. Go to Audiobook > Bluetooth\n2. Turn Bluetooth on\n3. Scan and pair your headphones/speaker\n4. Then start read-along again."),
+                timeout = 10,
             })
+            return false
         end
     end
     
