@@ -604,9 +604,13 @@ function TTSEngine:synthesizeAndroid(text, audio_file, callback)
 
     -- Poll for completion via UIManager (keeps UI responsive)
     local engine = self
+    self._android_synth_gen = (self._android_synth_gen or 0) + 1
+    local my_gen = self._android_synth_gen
     local poll_count = 0
     local max_polls = 120  -- 60 seconds max (120 x 0.5s)
     local function pollAndroidDone()
+        -- Stale poll guard: another synthesis was dispatched
+        if (engine._android_synth_gen or 0) ~= my_gen then return end
         poll_count = poll_count + 1
         local status = atts:getSynthStatus()
         if status == 1 then
@@ -839,6 +843,14 @@ so when the current sentence finishes we can skip straight to playback.
 --]]
 function TTSEngine:prefetch(text)
     if not self.backend or not text or text == "" then
+        return false
+    end
+    -- Android TTS: skip prefetch.  synthesizeAndroid() is async, but
+    -- prefetch() assumes synchronous completion (save/restore of
+    -- current_audio_file).  The async callback overwrites current_audio_file,
+    -- then cleanup() deletes the prefetched WAV, breaking the chain.
+    -- Android TTS synthesis is fast enough that prefetching isn't needed.
+    if self.backend == self.BACKENDS.ANDROID then
         return false
     end
     -- Piper: delegate to the async queue-based prefetcher
