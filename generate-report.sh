@@ -128,13 +128,25 @@ BT_AVAILABLE=$(bool sh -c 'command -v bluetoothctl >/dev/null || command -v hcit
 BT_HCI_DEVICES=$(ls -1 /sys/class/bluetooth/ 2>/dev/null || echo "none")
 
 # Paired / connected devices
+# Older BlueZ (< 5.65) doesn't support "devices Paired" and outputs
+# "Too many arguments".  Try paired-devices first (works on all versions).
 BT_PAIRED="n/a"
 BT_CONNECTED="n/a"
+BT_ADAPTER_INFO="n/a"
+BT_SLEEP_TEST="n/a"
 if command -v bluetoothctl >/dev/null 2>&1; then
-    BT_PAIRED=$(capture bluetoothctl devices Paired 2>/dev/null || capture bluetoothctl paired-devices 2>/dev/null)
+    BT_PAIRED=$(capture bluetoothctl paired-devices)
+    # Fallback: if paired-devices isn't supported, try devices list
+    if [ -z "$BT_PAIRED" ] || echo "$BT_PAIRED" | grep -qi "invalid\|error"; then
+        BT_PAIRED=$(capture bluetoothctl devices | head -10)
+    fi
     [ -z "$BT_PAIRED" ] && BT_PAIRED="none"
-    BT_CONNECTED=$(capture bluetoothctl devices Connected 2>/dev/null || capture bluetoothctl info 2>/dev/null | grep -E 'Device|Name|Connected')
+    BT_CONNECTED=$(capture bluetoothctl info 2>/dev/null | grep -E 'Device|Name|Connected|Paired')
     [ -z "$BT_CONNECTED" ] && BT_CONNECTED="none"
+    BT_ADAPTER_INFO=$(capture bluetoothctl show 2>/dev/null | grep -E 'Powered|Pairable|Discoverable|Controller')
+    [ -z "$BT_ADAPTER_INFO" ] && BT_ADAPTER_INFO="unavailable"
+    # Test fractional sleep support
+    if sleep 0.1 2>/dev/null; then BT_SLEEP_TEST="ok"; else BT_SLEEP_TEST="unsupported"; fi
 fi
 
 # hcitool fallback
@@ -225,6 +237,8 @@ $(printf '%b' "$PLAYER_CMDS")  alsa_cards: ${ALSA_CARDS}
   bt_hci_devices: ${BT_HCI_DEVICES}
   bt_paired_devices: ${BT_PAIRED}
   bt_connected_devices: ${BT_CONNECTED}
+  bt_adapter_info: ${BT_ADAPTER_INFO}
+  bt_sleep_test: ${BT_SLEEP_TEST}
   bt_hcitool_con: ${BT_HCITOOL_CON}
   bt_daemon: ${BT_DAEMON}
   gst_bt_sink: ${GST_BT_SINK}

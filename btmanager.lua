@@ -1,21 +1,18 @@
 --[[--
-Bluetooth Manager for Kobo devices.
+Bluetooth Manager for Kobo and Kindle devices.
 
-Supports two Bluetooth stacks found on different Kobo hardware:
+Supports three Bluetooth environments:
   - MTK (Clara 2E, Sage, Libra Colour, etc.): uses the Kobo-specific
     mtkbtd service (com.kobo.mtk.bluedroid) and GStreamer
     mtkbtmwrpcaudiosink for audio.
   - BlueZ (Libra 2/Io, etc.): uses the standard org.bluez D-Bus
     interface and ALSA audio output.
+  - Kindle: BT is managed by Amazon firmware via lipc (Lab126 IPC).
+    The plugin can toggle BT on/off via lipc but cannot scan, pair,
+    or enumerate devices -- users must pair through Kindle Settings.
 
 The stack is auto-detected on first use.  All D-Bus operations are
 routed through the detected destination transparently.
-
-Supported operations:
-  - Power on/off the Bluetooth adapter
-  - Start/stop device discovery (scanning)
-  - List discovered and paired devices
-  - Pair, connect, and disconnect devices
 
 Reference: OGKevin/kobo.koplugin BT investigation
   https://ogkevin.github.io/kobo.koplugin/dev/investigations/bluetooth/
@@ -23,6 +20,7 @@ Reference: OGKevin/kobo.koplugin BT investigation
 @module btmanager
 --]]
 
+local Device = require("device")
 local logger = require("logger")
 
 local BTManager = {}
@@ -37,16 +35,30 @@ local PROPS_IFACE = "org.freedesktop.DBus.Properties"
 local OBJMGR_IFACE = "org.freedesktop.DBus.ObjectManager"
 
 -- Detected stack state (set once by detectStack, then cached)
-local bt_stack = nil        -- "mtk" or "bluez"
+local bt_stack = nil        -- "mtk", "bluez", or "kindle"
 local gst_bt_sink = nil     -- "mtkbtmwrpcaudiosink" or nil
 local bluetoothd_path = nil -- resolved path to bluetoothd binary
 local has_bluetoothctl = nil -- cached availability of bluetoothctl
+local has_lipc = nil         -- cached availability of lipc (Kindle)
 
---- Detect which Bluetooth stack this Kobo device uses.
+--- Detect which Bluetooth stack this device uses.
 -- Called lazily from dbus_cmd() on first BT operation; a no-op
 -- after the first successful detection.
 local function detectStack()
     if bt_stack then return end
+
+    -- Kindle: BT is managed by Amazon firmware, not BlueZ.
+    -- Detect early to avoid useless BlueZ probes.
+    if Device.isKindle and Device:isKindle() then
+        bt_stack = "kindle"
+        -- Check for lipc (Lab126 IPC) to toggle BT power
+        local lh = io.popen("which lipc-get-prop 2>/dev/null")
+        local lr = lh and lh:read("*a") or ""
+        if lh then lh:close() end
+        has_lipc = lr:match("%S") ~= nil
+        logger.warn("BTManager: detected Kindle platform (lipc:", has_lipc, ")")
+        return
+    end
 
     -- Method 1: The mtkbtmwrpcaudiosink GStreamer element is ONLY
     -- present on MTK-based Kobo devices (Clara 2E, Sage, Libra Colour).
@@ -57,7 +69,7 @@ local function detectStack()
         bt_stack = "mtk"
         DBUS_DEST = "com.kobo.mtk.bluedroid"
         gst_bt_sink = "mtkbtmwrpcaudiosink"
-        logger.dbg("BTManager: detected MTK Bluetooth stack")
+        logger.warn("BTManager: detected MTK Bluetooth stack")
         return
     end
 
@@ -74,7 +86,7 @@ local function detectStack()
         bt_stack = "mtk"
         DBUS_DEST = "com.kobo.mtk.bluedroid"
         gst_bt_sink = "mtkbtmwrpcaudiosink"
-        logger.dbg("BTManager: detected MTK Bluetooth stack (D-Bus)")
+        logger.warn("BTManager: detected MTK Bluetooth stack (D-Bus)")
         return
     end
 
@@ -82,7 +94,7 @@ local function detectStack()
     bt_stack = "bluez"
     DBUS_DEST = "org.bluez"
     gst_bt_sink = nil
-    logger.dbg("BTManager: detected standard BlueZ Bluetooth stack")
+    logger.warn("BTManager: detected standard BlueZ Bluetooth stack")
 
     -- Resolve the bluetoothd binary path.
     -- On Kobo Libra 2 / Io it lives at /libexec/bluetooth/bluetoothd
@@ -97,7 +109,7 @@ local function detectStack()
         if f then
             f:close()
             bluetoothd_path = p
-            logger.dbg("BTManager: found bluetoothd at", p)
+            logger.warn("BTManager: found bluetoothd at", p)
             break
         end
     end
@@ -109,7 +121,7 @@ local function detectStack()
         r = r:gsub("%s+$", "")
         if r ~= "" then
             bluetoothd_path = r
-            logger.dbg("BTManager: found bluetoothd via PATH:", r)
+            logger.warn("BTManager: found bluetoothd via PATH:", r)
         else
             bluetoothd_path = "bluetoothd"  -- last resort
             logger.warn("BTManager: bluetoothd not found at known paths, using bare name")
@@ -121,7 +133,7 @@ local function detectStack()
     local bctl_r = bctl and bctl:read("*a") or ""
     if bctl then bctl:close() end
     has_bluetoothctl = bctl_r:match("%S") ~= nil
-    logger.dbg("BTManager: bluetoothctl available:", has_bluetoothctl)
+    logger.warn("BTManager: bluetoothctl available:", has_bluetoothctl)
 end
 
 --- Run a dbus-send command and return the raw output.
@@ -186,6 +198,17 @@ end
 --- Check whether the BT adapter is powered on.
 -- @treturn bool powered state
 function BTManager:isPowered()
+    detectStack()
+    if bt_stack == "kindle" then
+        if has_lipc then
+            local h = io.popen("lipc-get-prop com.lab126.btfd btEnabled 2>/dev/null")
+            local r = h and h:read("*a") or ""
+            if h then h:close() end
+            return r:match("1") ~= nil
+        end
+        -- No lipc: assume BT may be on (externally managed)
+        return true
+    end
     local out = get_property(ADAPTER_PATH, ADAPTER_IFACE, "Powered")
     return out:match("boolean true") ~= nil
 end
@@ -202,10 +225,23 @@ end
 --- Power on the Bluetooth adapter.
 -- For BlueZ devices, starts the bluetoothd daemon and resets the HCI
 -- adapter first (required on Kobo Libra 2 and similar).
+-- For Kindle, uses lipc to enable BT through Amazon firmware.
 -- @treturn bool success
 function BTManager:powerOn()
     detectStack()
-    logger.dbg("BTManager: powering on (stack:", bt_stack, ")")
+    logger.warn("BTManager: powering on (stack:", bt_stack, ")")
+
+    if bt_stack == "kindle" then
+        if has_lipc then
+            os.execute("lipc-set-prop com.lab126.btfd btEnabled 1 2>/dev/null")
+            os.execute("sleep 2")
+            local powered = self:isPowered()
+            logger.warn("BTManager: Kindle powerOn result:", powered)
+            return powered
+        end
+        logger.warn("BTManager: Kindle has no lipc -- cannot manage BT")
+        return false
+    end
 
     if bt_stack == "bluez" then
         -- BlueZ requires the bluetoothd daemon and an HCI adapter reset.
@@ -213,14 +249,14 @@ function BTManager:powerOn()
         -- rather than on PATH (ref: OGKevin/kobo.koplugin BT investigation).
         if not is_bluetoothd_running() then
             local daemon = bluetoothd_path or "bluetoothd"
-            logger.dbg("BTManager: starting bluetoothd from:", daemon)
+            logger.warn("BTManager: starting bluetoothd from:", daemon)
             os.execute(daemon .. " 2>/dev/null &")
             os.execute("sleep 1")
             if not is_bluetoothd_running() then
                 logger.warn("BTManager: bluetoothd failed to start from", daemon)
             end
         else
-            logger.dbg("BTManager: bluetoothd already running")
+            logger.warn("BTManager: bluetoothd already running")
         end
         os.execute("hciconfig hci0 down 2>/dev/null && hciconfig hci0 up 2>/dev/null")
         os.execute("sleep 1")
@@ -231,7 +267,7 @@ function BTManager:powerOn()
     if ok then os.execute("sleep 2") end
 
     local powered = self:isPowered()
-    logger.dbg("BTManager: powerOn result:", powered,
+    logger.warn("BTManager: powerOn result:", powered,
         "bluetoothd running:", is_bluetoothd_running())
     return powered
 end
@@ -242,6 +278,15 @@ end
 function BTManager:powerOff()
     detectStack()
     logger.dbg("BTManager: powering off")
+
+    if bt_stack == "kindle" then
+        if has_lipc then
+            os.execute("lipc-set-prop com.lab126.btfd btEnabled 0 2>/dev/null")
+            os.execute("sleep 1")
+        end
+        return true
+    end
+
     set_property(ADAPTER_PATH, ADAPTER_IFACE, "Powered", "variant:boolean:false")
     os.execute("sleep 1")
 
@@ -261,6 +306,7 @@ end
 --- Start BT device discovery.
 -- @treturn bool success
 function BTManager:startDiscovery()
+    if bt_stack == "kindle" then return false end
     logger.dbg("BTManager: starting discovery")
     local _, ok = dbus(dbus_cmd(ADAPTER_PATH, ADAPTER_IFACE .. ".StartDiscovery"))
     return ok
@@ -269,6 +315,7 @@ end
 --- Stop BT device discovery.
 -- @treturn bool success
 function BTManager:stopDiscovery()
+    if bt_stack == "kindle" then return true end
     logger.dbg("BTManager: stopping discovery")
     local _, ok = dbus(dbus_cmd(ADAPTER_PATH, ADAPTER_IFACE .. ".StopDiscovery"))
     return ok
@@ -277,6 +324,7 @@ end
 --- Check whether discovery is active.
 -- @treturn bool
 function BTManager:isDiscovering()
+    if bt_stack == "kindle" then return false end
     local out = get_property(ADAPTER_PATH, ADAPTER_IFACE, "Discovering")
     return out:match("boolean true") ~= nil
 end
@@ -289,6 +337,7 @@ end
 -- Parses the output of ObjectManager.GetManagedObjects.
 -- @treturn table array of {path, address, name, paired, connected, icon}
 function BTManager:listDevices()
+    if bt_stack == "kindle" then return {} end
     local cmd = dbus_cmd(ROOT_PATH, OBJMGR_IFACE .. ".GetManagedObjects")
     local output, ok = dbus(cmd)
     if not ok then return {} end
@@ -389,63 +438,105 @@ local function mac_to_path(address)
 end
 
 --- Pair with a device.
--- Prefers bluetoothctl (which has a built-in pairing agent for "Just
--- Works" SSP) over raw D-Bus Device1.Pair (which requires an external
--- agent that we don't have).  Falls back to D-Bus if bluetoothctl is
--- not available.
+-- Tries three strategies in order:
+--   1. bluetoothctl --agent (BlueZ >= 5.49, cleanest)
+--   2. bluetoothctl with piped agent commands (older BlueZ)
+--   3. Raw D-Bus Device1.Pair (last resort, needs external agent)
 -- @string address  MAC address
 -- @treturn bool success
 -- @treturn string error message (if any)
 function BTManager:pair(address)
-    logger.dbg("BTManager: pairing with", address)
+    logger.warn("BTManager: pairing with", address)
+
+    if bt_stack == "kindle" then
+        return false, "Pair through Kindle Settings"
+    end
 
     -- Always trust the device so auto-connect works on future boots
     local path = mac_to_path(address)
     set_property(path, DEVICE_IFACE, "Trusted", "variant:boolean:true")
 
     if has_bluetoothctl then
-        -- bluetoothctl handles the NoInputNoOutput agent internally,
-        -- which is required for pairing with audio devices ("Just Works").
-        --
-        -- We write a small shell script to /tmp and pipe it into
-        -- bluetoothctl.  Using printf instead of echo -e because Kobo's
-        -- busybox ash does not interpret \n in echo -e.  Each command
-        -- needs a small delay so bluetoothctl can process it.
-        logger.dbg("BTManager: pairing via bluetoothctl")
+        -- Strategy 1: bluetoothctl --agent NoInputNoOutput (BlueZ >= 5.49)
+        -- The --agent flag registers the agent at startup, avoiding the need
+        -- to pipe separate agent/default-agent commands.
+        -- All sleeps use integer seconds for busybox portability.
+        logger.warn("BTManager: trying bluetoothctl --agent NoInputNoOutput")
         local script = string.format(
             "{ "
             .. "printf 'power on\\n'; sleep 1; "
-            .. "printf 'agent NoInputNoOutput\\n'; sleep 0.5; "
-            .. "printf 'default-agent\\n'; sleep 0.5; "
-            .. "printf 'pairable on\\n'; sleep 0.5; "
-            .. "printf 'trust %s\\n'; sleep 0.5; "
-            .. "printf 'pair %s\\n'; sleep 6; "
+            .. "printf 'trust %s\\n'; sleep 1; "
+            .. "printf 'pair %s\\n'; sleep 12; "
             .. "printf 'quit\\n'; "
-            .. "} | bluetoothctl 2>&1",
+            .. "} | bluetoothctl --agent NoInputNoOutput 2>&1",
             address, address)
+        logger.warn("BTManager: running:", script:sub(1, 200))
         local h = io.popen(script)
         local out = h and h:read("*a") or ""
         if h then h:close() end
-        logger.dbg("BTManager: bluetoothctl pair output:", out:sub(1, 500))
+        logger.warn("BTManager: bluetoothctl --agent output:", out:sub(1, 800))
 
-        -- Verify pairing succeeded via D-Bus property
+        -- Check if --agent flag was rejected (older BlueZ)
+        local agent_unsupported = out:match("unrecognized option")
+            or out:match("invalid option")
+            or out:match("unknown option")
+
+        if not agent_unsupported then
+            local prop_out = get_property(path, DEVICE_IFACE, "Paired")
+            if prop_out:match("boolean true") then
+                logger.warn("BTManager: pairing succeeded (--agent method)")
+                return true
+            end
+        end
+
+        -- Strategy 2: pipe agent commands manually (older BlueZ fallback)
+        if agent_unsupported then
+            logger.warn("BTManager: --agent flag not supported, trying manual agent")
+        else
+            logger.warn("BTManager: --agent method failed, retrying with manual agent")
+        end
+        script = string.format(
+            "{ "
+            .. "printf 'power on\\n'; sleep 1; "
+            .. "printf 'agent NoInputNoOutput\\n'; sleep 1; "
+            .. "printf 'default-agent\\n'; sleep 1; "
+            .. "printf 'trust %s\\n'; sleep 1; "
+            .. "printf 'pair %s\\n'; sleep 12; "
+            .. "printf 'quit\\n'; "
+            .. "} | bluetoothctl 2>&1",
+            address, address)
+        logger.warn("BTManager: running:", script:sub(1, 200))
+        h = io.popen(script)
+        out = h and h:read("*a") or ""
+        if h then h:close() end
+        logger.warn("BTManager: bluetoothctl manual output:", out:sub(1, 800))
+
         local prop_out = get_property(path, DEVICE_IFACE, "Paired")
         if prop_out:match("boolean true") then
+            logger.warn("BTManager: pairing succeeded (manual agent method)")
             return true
         end
-        -- Check for known errors in output
+
+        -- Parse error from combined output
         local err = out:match("Failed to pair: (.-)\n") or
                     out:match("org%.bluez%.Error%.([%w]+)") or
-                    "Pairing did not complete"
-        logger.warn("BTManager: bluetoothctl pairing failed:", err)
+                    "did not complete"
+        -- Include a snippet of bluetoothctl output for debugging
+        local snippet = out:gsub("%c+", " "):sub(1, 120)
+        logger.warn("BTManager: pairing failed:", err, "output:", snippet)
         return false, err
     end
 
-    -- Fallback: raw D-Bus (may fail without a registered agent)
-    logger.dbg("BTManager: pairing via D-Bus (no bluetoothctl)")
-    local out, ok = dbus(dbus_cmd(path, DEVICE_IFACE .. ".Pair"))
+    -- Strategy 3: raw D-Bus (may fail without a registered agent)
+    -- Use extended timeout (15s) since pairing can be slow
+    logger.warn("BTManager: pairing via D-Bus (no bluetoothctl)")
+    local pair_cmd = string.format(
+        "dbus-send --system --print-reply --reply-timeout=15000 --dest=%s %s %s.Pair",
+        DBUS_DEST, path, DEVICE_IFACE)
+    local out, ok = dbus(pair_cmd)
     if not ok then
         local err = out:match("Error[^\n]*") or "Pairing failed (no agent)"
+        logger.warn("BTManager: D-Bus pair failed:", err)
         return false, err
     end
     return true
@@ -457,7 +548,10 @@ end
 -- @treturn string error message (if any)
 function BTManager:connect(address)
     detectStack()
-    logger.dbg("BTManager: connecting to", address)
+    if bt_stack == "kindle" then
+        return false, "Connect through Kindle Settings"
+    end
+    logger.warn("BTManager: connecting to", address)
     local path = mac_to_path(address)
     local out, ok = dbus(dbus_cmd(path, DEVICE_IFACE .. ".Connect"))
     if not ok then
@@ -489,7 +583,7 @@ function BTManager:connect(address)
         -- BlueZ: the A2DP transport is set up asynchronously after
         -- Device1.Connect returns.  Give it a moment to settle.
         os.execute("sleep 2")
-        logger.dbg("BTManager: BlueZ device connected, A2DP profile settling")
+        logger.warn("BTManager: BlueZ device connected, A2DP profile settling")
         return true
     end
 end

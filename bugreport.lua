@@ -213,15 +213,28 @@ local function collectAudioInfo(plugin)
     info.bt_hci_devices = shellCapture("ls -1 /sys/class/bluetooth/ 2>/dev/null", 2) or "none"
 
     -- Paired / connected BT devices (bluetoothctl)
+    -- Older BlueZ (< 5.65) doesn't support "devices Paired" subcommand
+    -- and outputs "Too many arguments" to stdout.
     if Utils.commandExists("bluetoothctl") then
-        info.bt_paired_devices = shellCapture("bluetoothctl devices Paired 2>/dev/null || bluetoothctl paired-devices 2>/dev/null", 3) or "none"
-        info.bt_connected_devices = shellCapture("bluetoothctl devices Connected 2>/dev/null || bluetoothctl info 2>/dev/null | grep -E 'Device|Name|Connected'", 3) or "none"
+        local paired = shellCapture("bluetoothctl paired-devices 2>/dev/null", 3)
+            or shellCapture("bluetoothctl devices Paired 2>/dev/null", 3)
+        if not paired or paired:match("[Tt]oo many") or paired:match("[Ii]nvalid") then
+            paired = shellCapture("bluetoothctl devices 2>/dev/null | head -10", 3)
+        end
+        info.bt_paired_devices = paired or "none"
+
+        local connected = shellCapture("bluetoothctl info 2>/dev/null | grep -E 'Device|Name|Connected|Paired'", 3)
+        info.bt_connected_devices = connected or "none"
+
         -- Adapter state: powered/pairable/discoverable
         info.bt_adapter_info = shellCapture("bluetoothctl show 2>/dev/null | grep -E 'Powered|Pairable|Discoverable|Controller'", 3) or "unavailable"
     end
 
     -- Shell printf portability (Kobo busybox ash needs printf, not echo -e)
     info.bt_printf_test = shellCapture("printf 'line1\\nline2\\n' 2>/dev/null | wc -l", 2) or "unknown"
+
+    -- Busybox sleep fractional support
+    info.bt_sleep_test = shellCapture("sleep 0.1 2>&1 && echo 'ok' || echo 'unsupported'", 2) or "unknown"
 
     -- hcitool fallback (older Kobo firmware)
     if Utils.commandExists("hcitool") then
@@ -265,6 +278,13 @@ local function collectAudioInfo(plugin)
 
     -- Kobo BT socket (abstract socket used by mtkbtmwrpc)
     info.bt_abstract_socket = shellCapture("cat /proc/net/unix 2>/dev/null | grep -i 'kobo\\|mtk\\|bluetooth' | head -5", 2) or "none"
+
+    -- Kindle BT diagnostics via lipc
+    if Device.isKindle and Device:isKindle() and Utils.commandExists("lipc-get-prop") then
+        info.kindle_bt_enabled = shellCapture("lipc-get-prop com.lab126.btfd btEnabled 2>/dev/null", 2) or "unknown"
+        info.kindle_bt_paired = shellCapture("lipc-get-prop com.lab126.btfd btPairedDevicesList 2>/dev/null", 2) or "unknown"
+        info.kindle_bt_connected = shellCapture("lipc-get-prop com.lab126.btfd btConnectedDevices 2>/dev/null", 2) or "unknown"
+    end
 
     -- /tmp writable (needed for WAV files)
     info.tmp_writable = fileExists("/tmp") and os.execute("touch /tmp/.audiobook_test 2>/dev/null && rm /tmp/.audiobook_test 2>/dev/null") ~= nil

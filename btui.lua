@@ -43,6 +43,11 @@ end
 -- Shows connected device name when available.
 function BtUI.btMenuLabel(plugin)
     local bt = plugin.bt_manager
+    -- On Kindle, BT is managed by the OS; show simple status
+    if bt:getStackType() == "kindle" then
+        local powered = bt:isPowered()
+        return powered and _("Bluetooth (Kindle)") or _("Bluetooth (off)")
+    end
     if not bt:isPowered() then
         return _("Bluetooth (off)")
     end
@@ -64,6 +69,55 @@ end
 
 function BtUI.buildBluetoothMenu(plugin)
     local bt = plugin.bt_manager
+    local menu = {}
+
+    -- On Kindle, BT is managed by the Amazon firmware.
+    -- We can toggle power via lipc but cannot scan/pair/connect.
+    if bt:getStackType() == "kindle" then
+        local powered = bt:isPowered()
+        table.insert(menu, {
+            text = powered and _("Turn Bluetooth off") or _("Turn Bluetooth on"),
+            callback = function()
+                if powered then
+                    bt:powerOff()
+                    UIManager:show(InfoMessage:new{
+                        text = _("Bluetooth turned off."),
+                        timeout = 2,
+                    })
+                else
+                    bt:powerOn()
+                    UIManager:show(InfoMessage:new{
+                        text = bt:isPowered()
+                            and _("Bluetooth is on.\n\nPair your audio device through Kindle Settings.")
+                            or _("Could not turn Bluetooth on.\n\nTry enabling it from Kindle Settings."),
+                        timeout = 4,
+                    })
+                end
+            end,
+        })
+        table.insert(menu, {
+            text = _("How to connect Bluetooth audio:"),
+            enabled = false,
+        })
+        table.insert(menu, {
+            text = _("  1. Exit KOReader to Kindle Home"),
+            enabled = false,
+        })
+        table.insert(menu, {
+            text = _("  2. Tap Settings → Bluetooth"),
+            enabled = false,
+        })
+        table.insert(menu, {
+            text = _("  3. Pair and connect your audio device"),
+            enabled = false,
+        })
+        table.insert(menu, {
+            text = _("  4. Return to KOReader and start read-along"),
+            enabled = false,
+        })
+        return menu
+    end
+
     local powered = bt:isPowered()
     local menu = {}
 
@@ -285,6 +339,14 @@ end
 function BtUI.btScanAndShow(plugin)
     local bt = plugin.bt_manager
 
+    if bt:getStackType() == "kindle" then
+        UIManager:show(InfoMessage:new{
+            text = _("Bluetooth scanning is not available on Kindle.\n\nPair your audio device through Kindle Settings."),
+            timeout = 5,
+        })
+        return
+    end
+
     -- Ensure powered
     if not bt:isPowered() then
         local ok = bt:powerOn()
@@ -340,6 +402,9 @@ end
 -- disconnects.  Runs only while this plugin is in use to avoid
 -- unnecessary battery drain.
 function BtUI.startWatcher(plugin)
+    -- On Kindle, we can't enumerate BT devices via BlueZ, so the
+    -- disconnect watcher would always report "no devices". Skip it.
+    if plugin.bt_manager:getStackType() == "kindle" then return end
     local interval = plugin:getSetting("bt_disconnect_check", 30)
     if interval == 0 then
         return  -- user disabled the alert
