@@ -204,6 +204,11 @@ local function collectAudioInfo(plugin)
         info.alsa_cards = "not available (/proc/asound/cards missing)"
     end
 
+    -- ALSA PCM devices (may reveal BT sinks not in /proc/asound/cards)
+    if Utils.commandExists("aplay") then
+        info.alsa_pcm_devices = shellCapture("aplay -L 2>/dev/null | head -20", 3) or "none"
+    end
+
     -- Bluetooth
     info.bt_available = Utils.commandExists("bluetoothctl") or
                         Utils.commandExists("hcitool") or
@@ -283,22 +288,43 @@ local function collectAudioInfo(plugin)
     if Device.isKindle and Device:isKindle() then
         info.kindle_lipc_available = Utils.commandExists("lipc-get-prop") and "yes" or "no"
         if Utils.commandExists("lipc-get-prop") then
-            -- Probe multiple possible BT services (varies by Kindle generation)
-            local services = { "com.lab126.btfd", "com.lab126.cmd" }
+            -- Probe service+property combinations (varies by Kindle generation)
+            local services = {
+                "com.lab126.btfd",
+                "com.lab126.btService",
+                "com.lab126.cmd",
+                "com.lab126.acsbt",
+            }
+            local properties = { "btEnabled", "btPowerState" }
             for _, svc in ipairs(services) do
-                local val = shellCapture("lipc-get-prop " .. svc .. " btEnabled 2>&1", 2)
-                if val and val:match("^%d") then
-                    info.kindle_bt_service = svc
-                    info.kindle_bt_enabled = val
-                    info.kindle_bt_paired = shellCapture("lipc-get-prop " .. svc .. " btPairedDevicesList 2>/dev/null", 2) or "n/a"
-                    info.kindle_bt_connected = shellCapture("lipc-get-prop " .. svc .. " btConnectedDevices 2>/dev/null", 2) or "n/a"
-                    break
+                for _, prop in ipairs(properties) do
+                    local val = shellCapture("lipc-get-prop " .. svc .. " " .. prop .. " 2>/dev/null", 2)
+                    if val and val ~= "" then
+                        info.kindle_bt_service = svc
+                        info.kindle_bt_prop = prop
+                        info.kindle_bt_enabled = val
+                        info.kindle_bt_paired = shellCapture("lipc-get-prop " .. svc .. " btPairedDevicesList 2>/dev/null", 2) or "n/a"
+                        info.kindle_bt_connected = shellCapture("lipc-get-prop " .. svc .. " btConnectedDevices 2>/dev/null", 2) or "n/a"
+                        break
+                    end
                 end
+                if info.kindle_bt_service then break end
             end
             if not info.kindle_bt_service then
                 info.kindle_bt_service = "none responded"
                 -- List available lipc services for debugging
                 info.kindle_lipc_services = shellCapture("lipc-probe -l 2>/dev/null | grep -i 'bt\\|blue' | head -5", 2) or "none"
+                -- Dump available properties for each BT service
+                local props_dump = {}
+                for _, svc in ipairs(services) do
+                    local props = shellCapture("lipc-hash-prop -n " .. svc .. " 2>/dev/null | head -20", 3)
+                    if props and props ~= "" then
+                        table.insert(props_dump, svc .. ": " .. props)
+                    end
+                end
+                if #props_dump > 0 then
+                    info.kindle_bt_props = table.concat(props_dump, "\n")
+                end
             end
         end
     end

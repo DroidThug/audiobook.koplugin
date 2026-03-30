@@ -172,6 +172,61 @@ fi
 # Kobo BT abstract socket
 BT_SOCKET=$(cat /proc/net/unix 2>/dev/null | grep -i 'kobo\|mtk\|bluetooth' | head -5 || echo "none")
 
+# ALSA PCM devices (may reveal BT sinks not in /proc/asound/cards)
+ALSA_PCM_DEVICES="n/a"
+if command -v aplay >/dev/null 2>&1; then
+    ALSA_PCM_DEVICES=$(capture aplay -L 2>/dev/null | head -20)
+    [ -z "$ALSA_PCM_DEVICES" ] && ALSA_PCM_DEVICES="none"
+fi
+
+# Kindle BT diagnostics via lipc
+KINDLE_SECTION=""
+if [ "$PLATFORM" = "kindle" ] && command -v lipc-get-prop >/dev/null 2>&1; then
+    KINDLE_BT_SERVICE="none responded"
+    KINDLE_BT_PROP=""
+    KINDLE_BT_ENABLED=""
+    KINDLE_BT_PAIRED="n/a"
+    KINDLE_BT_CONNECTED="n/a"
+    KINDLE_BT_PROPS=""
+    # Probe service+property combinations
+    for svc in com.lab126.btfd com.lab126.btService com.lab126.cmd com.lab126.acsbt; do
+        for prop in btEnabled btPowerState; do
+            val=$(lipc-get-prop "$svc" "$prop" 2>/dev/null)
+            if [ -n "$val" ]; then
+                KINDLE_BT_SERVICE="$svc"
+                KINDLE_BT_PROP="$prop"
+                KINDLE_BT_ENABLED="$val"
+                KINDLE_BT_PAIRED=$(capture lipc-get-prop "$svc" btPairedDevicesList)
+                [ -z "$KINDLE_BT_PAIRED" ] && KINDLE_BT_PAIRED="n/a"
+                KINDLE_BT_CONNECTED=$(capture lipc-get-prop "$svc" btConnectedDevices)
+                [ -z "$KINDLE_BT_CONNECTED" ] && KINDLE_BT_CONNECTED="n/a"
+                break 2
+            fi
+        done
+    done
+    if [ "$KINDLE_BT_SERVICE" = "none responded" ]; then
+        # List available BT-related lipc services
+        KINDLE_LIPC_SERVICES=$(capture lipc-probe -l 2>/dev/null | grep -i 'bt\|blue' | head -5)
+        [ -z "$KINDLE_LIPC_SERVICES" ] && KINDLE_LIPC_SERVICES="none"
+        # Dump properties for each known BT service
+        for svc in com.lab126.btfd com.lab126.btService com.lab126.cmd com.lab126.acsbt; do
+            p=$(lipc-hash-prop -n "$svc" 2>/dev/null | head -20)
+            [ -n "$p" ] && KINDLE_BT_PROPS="${KINDLE_BT_PROPS}    ${svc}: ${p}\n"
+        done
+    fi
+    KINDLE_SECTION="  kindle_lipc_available: yes
+  kindle_bt_service: ${KINDLE_BT_SERVICE}
+  kindle_bt_prop: ${KINDLE_BT_PROP:-n/a}
+  kindle_bt_enabled: ${KINDLE_BT_ENABLED:-unknown}
+  kindle_bt_paired: ${KINDLE_BT_PAIRED}
+  kindle_bt_connected: ${KINDLE_BT_CONNECTED}"
+    [ -n "$KINDLE_LIPC_SERVICES" ] && KINDLE_SECTION="${KINDLE_SECTION}
+  kindle_lipc_services: ${KINDLE_LIPC_SERVICES}"
+    [ -n "$KINDLE_BT_PROPS" ] && KINDLE_SECTION="${KINDLE_SECTION}
+  kindle_bt_props:
+$(printf '%b' "$KINDLE_BT_PROPS")"
+fi
+
 # Android extras
 ANDROID_SECTION=""
 if [ "$PLATFORM" = "android" ]; then
@@ -233,6 +288,7 @@ ${SETTINGS_SECTION}
   tts_in_path:
 $(printf '%b' "$TTS_CMDS")  players_in_path:
 $(printf '%b' "$PLAYER_CMDS")  alsa_cards: ${ALSA_CARDS}
+  alsa_pcm_devices: ${ALSA_PCM_DEVICES}
   bt_available: ${BT_AVAILABLE}
   bt_hci_devices: ${BT_HCI_DEVICES}
   bt_paired_devices: ${BT_PAIRED}
@@ -244,7 +300,8 @@ $(printf '%b' "$PLAYER_CMDS")  alsa_cards: ${ALSA_CARDS}
   gst_bt_sink: ${GST_BT_SINK}
   gst_audio_sinks: ${GST_AUDIO_SINKS}
   bt_abstract_socket: ${BT_SOCKET}
-  tmp_writable: ${TMP_WRITABLE}
+${KINDLE_SECTION:+${KINDLE_SECTION}
+}  tmp_writable: ${TMP_WRITABLE}
 
 ── Resources ──
   meminfo:

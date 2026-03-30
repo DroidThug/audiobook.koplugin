@@ -38,9 +38,13 @@ support. Works offline on Kobo, Kindle, Android, and Linux.
 
 ### 1. Download and copy the plugin
 
-Download the latest release (includes espeak-ng and Piper) from
-[GitHub Releases](https://github.com/stradichenko/audiobook.koplugin/releases/latest),
-unzip it, and copy the `audiobook.koplugin` folder into KOReader's plugins
+Download the **`.zip` file** from the
+[latest release](https://github.com/stradichenko/audiobook.koplugin/releases/latest)
+(look for `audiobook-koplugin-v*.zip` under **Assets**). Do **not** download
+"Source code (zip)" -- that only contains the Lua sources without the bundled
+TTS engines.
+
+Unzip it and copy the `audiobook.koplugin` folder into KOReader's plugins
 directory:
 
 | Platform | Path |
@@ -56,7 +60,7 @@ Restart KOReader after copying.
 ### 2. Install a TTS engine (if not using the pre-built release)
 
 The pre-built release from step 1 **already includes espeak-ng and Piper** --
-no extra install needed on Kobo. Skip to step 3.
+no extra install needed on Kobo or Kindle. Skip to step 3.
 
 If you cloned the repository instead:
 

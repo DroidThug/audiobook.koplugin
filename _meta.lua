@@ -8,7 +8,7 @@ local _ = require("gettext")
 
 return {
     name = "audiobook",
-    version = "0.1.5.17",
+    version = "0.1.5.18",
     fullname = _("Audiobook Read-Along"),
     description = _([[Text-to-Speech with synchronized word highlighting.
 
