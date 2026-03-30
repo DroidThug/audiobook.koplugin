@@ -40,6 +40,7 @@ local gst_bt_sink = nil     -- "mtkbtmwrpcaudiosink" or nil
 local bluetoothd_path = nil -- resolved path to bluetoothd binary
 local has_bluetoothctl = nil -- cached availability of bluetoothctl
 local has_lipc = nil         -- cached availability of lipc (Kindle)
+local lipc_bt_service = nil  -- "com.lab126.btfd" or similar
 
 --- Detect which Bluetooth stack this device uses.
 -- Called lazily from dbus_cmd() on first BT operation; a no-op
@@ -51,12 +52,36 @@ local function detectStack()
     -- Detect early to avoid useless BlueZ probes.
     if Device.isKindle and Device:isKindle() then
         bt_stack = "kindle"
-        -- Check for lipc (Lab126 IPC) to toggle BT power
+        -- Check for lipc (Lab126 IPC) to toggle BT power.
+        -- The BT service name varies across Kindle generations:
+        --   com.lab126.btfd  (newer Kindles, PW5+)
+        --   com.lab126.cmd   (older Kindles, some PW4)
         local lh = io.popen("which lipc-get-prop 2>/dev/null")
         local lr = lh and lh:read("*a") or ""
         if lh then lh:close() end
-        has_lipc = lr:match("%S") ~= nil
-        logger.warn("BTManager: detected Kindle platform (lipc:", has_lipc, ")")
+        if lr:match("%S") then
+            -- Probe which BT service responds
+            local services = { "com.lab126.btfd", "com.lab126.cmd" }
+            for _, svc in ipairs(services) do
+                local ph = io.popen("lipc-get-prop " .. svc .. " btEnabled 2>/dev/null")
+                local pr = ph and ph:read("*a") or ""
+                if ph then ph:close() end
+                if pr:match("^%d") then
+                    has_lipc = true
+                    lipc_bt_service = svc
+                    logger.warn("BTManager: Kindle lipc BT service:", svc, "btEnabled:", pr:gsub("%s+$", ""))
+                    break
+                end
+            end
+            if not has_lipc then
+                has_lipc = false
+                logger.warn("BTManager: Kindle lipc available but no BT service responded")
+            end
+        else
+            has_lipc = false
+            logger.warn("BTManager: Kindle has no lipc binary")
+        end
+        logger.warn("BTManager: detected Kindle platform (lipc:", has_lipc, "service:", lipc_bt_service or "none", ")")
         return
     end
 
@@ -200,13 +225,13 @@ end
 function BTManager:isPowered()
     detectStack()
     if bt_stack == "kindle" then
-        if has_lipc then
-            local h = io.popen("lipc-get-prop com.lab126.btfd btEnabled 2>/dev/null")
+        if has_lipc and lipc_bt_service then
+            local h = io.popen("lipc-get-prop " .. lipc_bt_service .. " btEnabled 2>/dev/null")
             local r = h and h:read("*a") or ""
             if h then h:close() end
             return r:match("1") ~= nil
         end
-        -- No lipc: assume BT may be on (externally managed)
+        -- No working lipc: assume BT may be on (externally managed)
         return true
     end
     local out = get_property(ADAPTER_PATH, ADAPTER_IFACE, "Powered")
@@ -232,14 +257,14 @@ function BTManager:powerOn()
     logger.warn("BTManager: powering on (stack:", bt_stack, ")")
 
     if bt_stack == "kindle" then
-        if has_lipc then
-            os.execute("lipc-set-prop com.lab126.btfd btEnabled 1 2>/dev/null")
+        if has_lipc and lipc_bt_service then
+            os.execute("lipc-set-prop " .. lipc_bt_service .. " btEnabled 1 2>/dev/null")
             os.execute("sleep 2")
             local powered = self:isPowered()
             logger.warn("BTManager: Kindle powerOn result:", powered)
             return powered
         end
-        logger.warn("BTManager: Kindle has no lipc -- cannot manage BT")
+        logger.warn("BTManager: Kindle has no working lipc BT service -- cannot manage BT")
         return false
     end
 
@@ -280,8 +305,8 @@ function BTManager:powerOff()
     logger.dbg("BTManager: powering off")
 
     if bt_stack == "kindle" then
-        if has_lipc then
-            os.execute("lipc-set-prop com.lab126.btfd btEnabled 0 2>/dev/null")
+        if has_lipc and lipc_bt_service then
+            os.execute("lipc-set-prop " .. lipc_bt_service .. " btEnabled 0 2>/dev/null")
             os.execute("sleep 1")
         end
         return true

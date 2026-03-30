@@ -280,10 +280,27 @@ local function collectAudioInfo(plugin)
     info.bt_abstract_socket = shellCapture("cat /proc/net/unix 2>/dev/null | grep -i 'kobo\\|mtk\\|bluetooth' | head -5", 2) or "none"
 
     -- Kindle BT diagnostics via lipc
-    if Device.isKindle and Device:isKindle() and Utils.commandExists("lipc-get-prop") then
-        info.kindle_bt_enabled = shellCapture("lipc-get-prop com.lab126.btfd btEnabled 2>/dev/null", 2) or "unknown"
-        info.kindle_bt_paired = shellCapture("lipc-get-prop com.lab126.btfd btPairedDevicesList 2>/dev/null", 2) or "unknown"
-        info.kindle_bt_connected = shellCapture("lipc-get-prop com.lab126.btfd btConnectedDevices 2>/dev/null", 2) or "unknown"
+    if Device.isKindle and Device:isKindle() then
+        info.kindle_lipc_available = Utils.commandExists("lipc-get-prop") and "yes" or "no"
+        if Utils.commandExists("lipc-get-prop") then
+            -- Probe multiple possible BT services (varies by Kindle generation)
+            local services = { "com.lab126.btfd", "com.lab126.cmd" }
+            for _, svc in ipairs(services) do
+                local val = shellCapture("lipc-get-prop " .. svc .. " btEnabled 2>&1", 2)
+                if val and val:match("^%d") then
+                    info.kindle_bt_service = svc
+                    info.kindle_bt_enabled = val
+                    info.kindle_bt_paired = shellCapture("lipc-get-prop " .. svc .. " btPairedDevicesList 2>/dev/null", 2) or "n/a"
+                    info.kindle_bt_connected = shellCapture("lipc-get-prop " .. svc .. " btConnectedDevices 2>/dev/null", 2) or "n/a"
+                    break
+                end
+            end
+            if not info.kindle_bt_service then
+                info.kindle_bt_service = "none responded"
+                -- List available lipc services for debugging
+                info.kindle_lipc_services = shellCapture("lipc-probe -l 2>/dev/null | grep -i 'bt\\|blue' | head -5", 2) or "none"
+            end
+        end
     end
 
     -- /tmp writable (needed for WAV files)
