@@ -11,6 +11,7 @@ as their first parameter to access settings, bt_manager, etc.
 
 local InfoMessage = require("ui/widget/infomessage")
 local UIManager = require("ui/uimanager")
+local logger = require("logger")
 local _ = require("gettext")
 local T = require("ffi/util").template
 
@@ -221,14 +222,16 @@ function BtUI.btQuickConnect(plugin, dev, touchmenu_instance)
         -- Pair first if needed
         if not dev.paired then
             local ok, err = bt:pair(dev.address)
-            if not ok then
-                UIManager:show(InfoMessage:new{
-                    text = T(_("Pairing failed: %1"), err or "unknown"),
-                    timeout = 4,
-                })
-                return
+            if ok then
+                dev.paired = true
+            else
+                -- Pairing may report failure but the device could still be
+                -- connectable (e.g. already paired from a previous session
+                -- but D-Bus Paired property lagged behind).  Try connecting
+                -- anyway instead of bailing out immediately.
+                logger.warn("BtUI: pairing reported failure:", err,
+                            "-- attempting connect anyway")
             end
-            dev.paired = true
         end
         local ok, err = bt:connect(dev.address)
         if ok then

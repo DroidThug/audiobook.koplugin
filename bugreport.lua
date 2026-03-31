@@ -141,21 +141,15 @@ local function collectPluginInfo(plugin)
     info.tts_backend_error = engine.backend_error or "none"
     info.player_error = engine.player_error and "yes" or "no"
 
-    -- Bundled binaries presence
+    -- Bundled binaries presence (check both original and .bin-renamed variants)
     local plugin_dir = engine.plugin_dir or _utils_dir:sub(1, -2)
     local espeak_path = plugin_dir .. "/espeak-ng/bin/espeak-ng"
     local piper_path = plugin_dir .. "/piper/piper"
-    info.has_bundled_espeak = fileExists(espeak_path)
-    info.has_bundled_piper = fileExists(piper_path)
-    -- Capture io.open error messages for diagnostics
-    local _, espeak_err = io.open(espeak_path, "r")
-    local _, piper_err = io.open(piper_path, "r")
-    if espeak_err or piper_err then
-        info.io_open_error = (espeak_err or "") .. "; " .. (piper_err or "")
-    end
+    info.has_bundled_espeak = fileExists(espeak_path) or fileExists(espeak_path .. ".bin")
+    info.has_bundled_piper = fileExists(piper_path) or fileExists(piper_path .. ".bin")
     -- Show what's on disk in the binary directories
     info.espeak_bin_ls = shellCapture("ls -la '" .. plugin_dir .. "/espeak-ng/bin/' 2>/dev/null", 3)
-    info.piper_bin_ls = shellCapture("ls -la '" .. plugin_dir .. "/piper/piper' 2>/dev/null", 3)
+    info.piper_bin_ls = shellCapture("ls -la '" .. plugin_dir .. "/piper/' 2>/dev/null | head -10", 3)
     info.has_piper_model = false
     local piper_dir = plugin_dir .. "/piper"
     local piper_ls = shellCapture("ls " .. piper_dir .. "/*.onnx 2>/dev/null", 3)

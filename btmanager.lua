@@ -492,28 +492,47 @@ function BTManager:pair(address)
         return false, "Pair through Kindle Settings"
     end
 
-    -- Always trust the device so auto-connect works on future boots
     local path = mac_to_path(address)
+
+    -- Fast path: if the device is already paired (e.g. from a previous
+    -- session), skip the slow bluetoothctl scripts entirely.
+    local prop_out = get_property(path, DEVICE_IFACE, "Paired")
+    if prop_out:match("boolean true") then
+        logger.warn("BTManager: device already paired, skipping pairing")
+        -- Still ensure trust is set for auto-reconnect
+        set_property(path, DEVICE_IFACE, "Trusted", "variant:boolean:true")
+        return true
+    end
+
+    -- Always trust the device so auto-connect works on future boots
     set_property(path, DEVICE_IFACE, "Trusted", "variant:boolean:true")
+
+    --- Strip ANSI escape codes from bluetoothctl output.
+    local function stripAnsi(s)
+        return s:gsub("\27%[[%d;]*%a", ""):gsub("\27%[%?%d+[hl]", "")
+    end
 
     if has_bluetoothctl then
         -- Strategy 1: bluetoothctl --agent NoInputNoOutput (BlueZ >= 5.49)
         -- The --agent flag registers the agent at startup, avoiding the need
         -- to pipe separate agent/default-agent commands.
         -- All sleeps use integer seconds for busybox portability.
+        -- After pair, also send connect so A2DP gets established.
         logger.warn("BTManager: trying bluetoothctl --agent NoInputNoOutput")
         local script = string.format(
             "{ "
             .. "printf 'power on\\n'; sleep 1; "
             .. "printf 'trust %s\\n'; sleep 1; "
-            .. "printf 'pair %s\\n'; sleep 12; "
+            .. "printf 'pair %s\\n'; sleep 8; "
+            .. "printf 'connect %s\\n'; sleep 4; "
             .. "printf 'quit\\n'; "
             .. "} | bluetoothctl --agent NoInputNoOutput 2>&1",
-            address, address)
+            address, address, address)
         logger.warn("BTManager: running:", script:sub(1, 200))
         local h = io.popen(script)
         local out = h and h:read("*a") or ""
         if h then h:close() end
+        out = stripAnsi(out)
         logger.warn("BTManager: bluetoothctl --agent output:", out:sub(1, 800))
 
         -- Check if --agent flag was rejected (older BlueZ)
@@ -522,14 +541,17 @@ function BTManager:pair(address)
             or out:match("unknown option")
 
         if not agent_unsupported then
-            local prop_out = get_property(path, DEVICE_IFACE, "Paired")
-            if prop_out:match("boolean true") then
+            prop_out = get_property(path, DEVICE_IFACE, "Paired")
+            local conn_out = get_property(path, DEVICE_IFACE, "Connected")
+            if prop_out:match("boolean true") or conn_out:match("boolean true") then
                 logger.warn("BTManager: pairing succeeded (--agent method)")
                 return true
             end
         end
 
         -- Strategy 2: pipe agent commands manually (older BlueZ fallback)
+        -- Only try if --agent was unsupported; if it was supported but pairing
+        -- didn't complete, also try manual as some BlueZ versions need it.
         if agent_unsupported then
             logger.warn("BTManager: --agent flag not supported, trying manual agent")
         else
@@ -541,18 +563,21 @@ function BTManager:pair(address)
             .. "printf 'agent NoInputNoOutput\\n'; sleep 1; "
             .. "printf 'default-agent\\n'; sleep 1; "
             .. "printf 'trust %s\\n'; sleep 1; "
-            .. "printf 'pair %s\\n'; sleep 12; "
+            .. "printf 'pair %s\\n'; sleep 8; "
+            .. "printf 'connect %s\\n'; sleep 4; "
             .. "printf 'quit\\n'; "
             .. "} | bluetoothctl 2>&1",
-            address, address)
-        logger.warn("BTManager: running:", script:sub(1, 200))
+            address, address, address)
+        logger.warn("BTManager: running:", script:sub(1, 250))
         h = io.popen(script)
         out = h and h:read("*a") or ""
         if h then h:close() end
+        out = stripAnsi(out)
         logger.warn("BTManager: bluetoothctl manual output:", out:sub(1, 800))
 
-        local prop_out = get_property(path, DEVICE_IFACE, "Paired")
-        if prop_out:match("boolean true") then
+        prop_out = get_property(path, DEVICE_IFACE, "Paired")
+        local conn_out = get_property(path, DEVICE_IFACE, "Connected")
+        if prop_out:match("boolean true") or conn_out:match("boolean true") then
             logger.warn("BTManager: pairing succeeded (manual agent method)")
             return true
         end
@@ -562,7 +587,7 @@ function BTManager:pair(address)
                     out:match("org%.bluez%.Error%.([%w]+)") or
                     "did not complete"
         -- Include a snippet of bluetoothctl output for debugging
-        local snippet = out:gsub("%c+", " "):sub(1, 120)
+        local snippet = out:gsub("%c+", " "):sub(1, 200)
         logger.warn("BTManager: pairing failed:", err, "output:", snippet)
         return false, err
     end

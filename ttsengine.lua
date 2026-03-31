@@ -103,11 +103,37 @@ function TTSEngine:detectBackend()
             f:close()
             return true
         end
-        -- io.open failed — try shell-based check as fallback
+        -- io.open failed -- try shell-based check as fallback
         local rc = os.execute("test -f '" .. path .. "' 2>/dev/null")
         if rc == 0 or rc == true then
             logger.warn("TTSEngine: io.open failed for", path, "(" .. tostring(err) .. ") but test -f succeeded")
             return true
+        end
+        return false
+    end
+
+    --- Rename a .bin-suffixed file back to its original name.
+    -- The release zip ships ELF binaries with a .bin extension so they
+    -- survive Windows extraction / antivirus.  On first run we rename
+    -- them back.  Returns true if the file now exists at `path`.
+    local function ensureBinary(path)
+        if fileAccessible(path) then return true end
+        local bin_path = path .. ".bin"
+        if fileAccessible(bin_path) then
+            local ok = os.rename(bin_path, path)
+            if ok then
+                os.execute("chmod +x '" .. path .. "' 2>/dev/null")
+                logger.warn("TTSEngine: renamed", bin_path, "->", path)
+                return true
+            end
+            -- os.rename failed (cross-device?), try shell mv
+            local rc = os.execute("mv '" .. bin_path .. "' '" .. path .. "' 2>/dev/null")
+            if rc == 0 or rc == true then
+                os.execute("chmod +x '" .. path .. "' 2>/dev/null")
+                logger.warn("TTSEngine: mv renamed", bin_path, "->", path)
+                return true
+            end
+            logger.warn("TTSEngine: found .bin but rename failed:", bin_path)
         end
         return false
     end
@@ -120,11 +146,11 @@ function TTSEngine:detectBackend()
         local plugin_dir = self.plugin_dir or "/mnt/onboard/.adds/koreader/plugins/audiobook.koplugin"
         logger.warn("TTSEngine: detectBackend plugin_dir =", plugin_dir)
 
-        -- Check for bundled espeak-ng
+        -- Check for bundled espeak-ng (rename .bin -> original if needed)
         local bundled_base = plugin_dir .. "/espeak-ng"
         local bundled_bin = bundled_base .. "/bin/espeak-ng"
         local found_espeak = false
-        if fileAccessible(bundled_bin) then
+        if ensureBinary(bundled_bin) then
             found_espeak = true
             self.backend_cmd = bundled_bin
             self.espeak_bin = bundled_bin  -- keep reference for fallback even when Piper is active
@@ -136,13 +162,17 @@ function TTSEngine:detectBackend()
             logger.warn("TTSEngine: bundled espeak-ng not found at", bundled_bin)
         end
 
-        -- Check for bundled Piper TTS binary
-        local bundled_piper_bin = plugin_dir .. "/piper/piper"
+        -- Check for bundled Piper TTS binary (rename .bin -> original if needed)
+        local piper_dir = plugin_dir .. "/piper"
+        local bundled_piper_bin = piper_dir .. "/piper"
         local found_piper = false
-        if fileAccessible(bundled_piper_bin) then
+        if ensureBinary(bundled_piper_bin) then
+            -- Also rename Piper's helper binaries (.bin -> original)
+            ensureBinary(piper_dir .. "/piper_phonemize")
+            ensureBinary(piper_dir .. "/espeak-ng")
             found_piper = true
             self.piper_cmd = bundled_piper_bin
-            self.piper_model_dir = plugin_dir .. "/piper"
+            self.piper_model_dir = piper_dir
             logger.dbg("TTSEngine: Found bundled Piper TTS at", bundled_piper_bin)
         else
             logger.warn("TTSEngine: bundled Piper not found at", bundled_piper_bin)

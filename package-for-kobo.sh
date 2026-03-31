@@ -214,6 +214,21 @@ fi
 echo ""
 echo "=== Bundle ready ==="
 du -sh "$PLUGIN_DEST"
+
+# ── Rename ELF binaries to .bin extension ──────────────────────────────
+# Some Windows zip extractors / antivirus software silently quarantine or
+# skip Linux ELF executables that have no file extension.  Adding .bin
+# ensures they survive extraction intact.  The plugin renames them back
+# on first run (see ttsengine.lua detectBackend).
+echo ""
+echo "=== Renaming ELF binaries to .bin (Windows extraction workaround) ==="
+for elf in "$ESPEAK_DEST/bin/espeak-ng" "$PIPER_DEST/piper" "$PIPER_DEST/piper_phonemize" "$PIPER_DEST/espeak-ng"; do
+    if [ -f "$elf" ]; then
+        mv "$elf" "${elf}.bin"
+        echo "  $(basename "$elf") -> $(basename "$elf").bin"
+    fi
+done
+
 echo ""
 echo "=== Deploy to Kobo ==="
 echo "One command — copy the whole plugin folder:"

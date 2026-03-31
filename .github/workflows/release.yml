@@ -68,7 +68,7 @@ jobs:
           ls -la kobo-tts-bundle/audiobook.koplugin/espeak-ng/bin/
           echo ""
           echo "=== Piper binary + voice ==="
-          ls -la kobo-tts-bundle/audiobook.koplugin/piper/piper
+          ls -la kobo-tts-bundle/audiobook.koplugin/piper/piper.bin
           ls -la kobo-tts-bundle/audiobook.koplugin/piper/*.onnx
           echo ""
           echo "=== Android TTS helper ==="
