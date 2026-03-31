@@ -71,6 +71,11 @@ jobs:
           ls -la kobo-tts-bundle/audiobook.koplugin/piper/piper.bin
           ls -la kobo-tts-bundle/audiobook.koplugin/piper/*.onnx
           echo ""
+          echo "=== BlueALSA (BT audio bridge) ==="
+          ls -la kobo-tts-bundle/audiobook.koplugin/bluealsa/bin/
+          ls -la kobo-tts-bundle/audiobook.koplugin/bluealsa/lib/alsa-lib/
+          ls -la kobo-tts-bundle/audiobook.koplugin/bluealsa/lib/
+          echo ""
           echo "=== Android TTS helper ==="
           ls -la kobo-tts-bundle/audiobook.koplugin/android/
           echo ""
@@ -96,6 +101,7 @@ jobs:
             - Plugin (all Lua files)
             - Bundled espeak-ng (cross-compiled for Kobo armv7l)
             - Bundled Piper neural TTS + en_US-danny-low voice
+            - Bundled BlueALSA (BT audio bridge for BlueZ Kobo devices)
             - Android TTS helper (pre-built tts_helper.dex)
 
             ### Install paths
