@@ -314,10 +314,10 @@ local function collectAudioInfo(plugin)
                 info.kindle_bt_service = "none responded"
                 -- List available lipc services for debugging
                 info.kindle_lipc_services = shellCapture("lipc-probe -l 2>/dev/null | grep -i 'bt\\|blue' | head -5", 2) or "none"
-                -- Dump available properties for each BT service
+                -- List available properties for each BT service
                 local props_dump = {}
                 for _, svc in ipairs(services) do
-                    local props = shellCapture("lipc-hash-prop -n " .. svc .. " 2>/dev/null | head -20", 3)
+                    local props = shellCapture("lipc-probe -p " .. svc .. " 2>/dev/null | head -20", 3)
                     if props and props ~= "" then
                         table.insert(props_dump, svc .. ": " .. props)
                     end

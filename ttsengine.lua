@@ -188,7 +188,22 @@ function TTSEngine:detectBackend()
     if is_android then
         self.backend_error = _("No TTS engine available on this device.\n\nThe plugin needs the Android TTS helper (.dex) which is not yet included.\n\nAs a workaround, install espeak-ng via Termux:\n  pkg install espeak-ng\n\nThen add Termux to your PATH before launching KOReader.")
     else
-        self.backend_error = _("No TTS engine found. Please install espeak-ng.")
+        -- Check if the user has .onnx voice models but no binaries.
+        -- This means they installed from source code instead of the
+        -- pre-built release bundle.
+        local plugin_dir = self.plugin_dir or "."
+        local has_onnx = false
+        local lh = io.popen("ls " .. plugin_dir .. "/piper/*.onnx 2>/dev/null")
+        if lh then
+            local lr = lh:read("*a") or ""
+            lh:close()
+            has_onnx = lr:match("%.onnx")
+        end
+        if has_onnx then
+            self.backend_error = _("No TTS engine found.\n\nVoice model files were found but the TTS binaries (espeak-ng, piper) are missing. This usually means the plugin was installed from source code instead of the pre-built release.\n\nDownload the .zip file (audiobook-koplugin-v*.zip) from:\nhttps://github.com/stradichenko/audiobook.koplugin/releases/latest\n\nDo not download 'Source code' -- it does not include the TTS engines.")
+        else
+            self.backend_error = _("No TTS engine found. Please install espeak-ng.")
+        end
     end
 end
 
