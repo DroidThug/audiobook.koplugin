@@ -618,9 +618,24 @@ function BTManager:connect(address)
     end
     logger.warn("BTManager: connecting to", address)
     local path = mac_to_path(address)
+
+    -- Fast path: if already connected (e.g. from the pairing script's
+    -- "connect" command), skip the D-Bus call entirely.
+    local conn_out = get_property(path, DEVICE_IFACE, "Connected")
+    if conn_out:match("boolean true") then
+        logger.warn("BTManager: device already connected, skipping D-Bus Connect")
+        return true
+    end
+
     local out, ok = dbus(dbus_cmd(path, DEVICE_IFACE .. ".Connect"))
     if not ok then
+        -- Treat AlreadyConnected as success
+        if out:match("AlreadyConnected") then
+            logger.warn("BTManager: D-Bus reports AlreadyConnected, treating as success")
+            return true
+        end
         local err = out:match("Error[^\n]*") or "Connection failed"
+        logger.warn("BTManager: connect failed:", err)
         return false, err
     end
 

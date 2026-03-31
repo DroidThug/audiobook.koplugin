@@ -239,10 +239,26 @@ function BtUI.btQuickConnect(plugin, dev, touchmenu_instance)
             -- Remember this as the preferred device
             plugin:setSetting("bt_device_addr", dev.address)
             plugin:setSetting("bt_device_name", name)
-            UIManager:show(InfoMessage:new{
-                text = T(_("Connected to %1."), name),
-                timeout = 2,
-            })
+
+            -- Check if there's an actual audio output path to this BT device.
+            -- On BlueZ Kobo without mtkbtmwrpcaudiosink, audio won't reach
+            -- the headphones even if the connection succeeds.
+            local engine = plugin.tts_engine
+            local has_bt_audio = engine and (
+                engine.audio_player_type == "gst-bt"
+                or engine.audio_player_type == "android")
+            if has_bt_audio then
+                UIManager:show(InfoMessage:new{
+                    text = T(_("Connected to %1."), name),
+                    timeout = 2,
+                })
+            else
+                logger.warn("BtUI: BT connected but no BT audio sink found")
+                UIManager:show(InfoMessage:new{
+                    text = T(_("Connected to %1.\n\nNote: no Bluetooth audio sink was detected on this device. Audio may play through the internal speaker only.\n\nIf you hear no sound, your device model may not support Bluetooth audio streaming."), name),
+                    timeout = 8,
+                })
+            end
             -- Scan for AVRCP media control input device (may appear after connect)
             UIManager:scheduleIn(2.0, function()
                 local BtMediaControl = dofile(
@@ -251,10 +267,16 @@ function BtUI.btQuickConnect(plugin, dev, touchmenu_instance)
                 pcall(BtMediaControl.rescan)
             end)
         else
+            logger.warn("BtUI: connection failed:", err)
             UIManager:show(InfoMessage:new{
-                text = T(_("Connection failed: %1"), err or "unknown"),
-                timeout = 3,
+                text = T(_("Connection failed: %1\n\nBluetooth will be turned off to prevent device standby issues."), err or "unknown"),
+                timeout = 4,
             })
+            -- Power off BT to prevent the Kobo standby death spiral:
+            -- when BT is powered on, the kernel blocks writes to
+            -- /sys/power/state, causing repeated standby failures
+            -- that eventually escalate to a full device power-off.
+            bt:powerOff()
         end
         -- Refresh the menu to show updated connection state
         if touchmenu_instance then
