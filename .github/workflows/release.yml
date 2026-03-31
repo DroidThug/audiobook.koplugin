@@ -26,7 +26,7 @@ jobs:
             ~/.nix-defexpr
             /nix/store
             /nix/var
-          key: nix-store-${{ hashFiles('flake.lock', 'flake.nix') }}
+          key: nix-store-${{ hashFiles('flake.lock', 'flake.nix', 'cross-build-*.nix') }}
           restore-keys: nix-store-
 
       - name: Cache Piper downloads
