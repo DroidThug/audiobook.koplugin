@@ -18,4 +18,16 @@ in
   # No AAC -- SBC is sufficient for BT audio on Kobo and avoids
   # pulling in fdk-aac (large, patent-encumbered).
   aacSupport = false;
+}).overrideAttrs (old: {
+  # The upstream nixpkgs derivation puts glib only in buildInputs
+  # (target arch).  During cross-compilation gdbus-codegen (a glib
+  # build tool) must run on the build host, so we add the native
+  # (x86_64) glib to nativeBuildInputs.
+  nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.glib ];
+  # Kobo has no systemd; disable hcitop/rfcomm to trim deps.
+  configureFlags = (old.configureFlags or []) ++ [
+    "--disable-systemd"
+    "--disable-hcitop"
+    "--disable-rfcomm"
+  ];
 })

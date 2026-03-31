@@ -31,9 +31,16 @@
         let
           crossPkgs = pkgs.pkgsCross.armv7l-hf-multiplatform;
         in
-        crossPkgs.bluez-alsa.override {
+        (crossPkgs.bluez-alsa.override {
           aacSupport = false;
-        };
+        }).overrideAttrs (old: {
+          nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.glib ];
+          configureFlags = (old.configureFlags or []) ++ [
+            "--disable-systemd"
+            "--disable-hcitop"
+            "--disable-rfcomm"
+          ];
+        });
 
       # Plugin source files to bundle
       pluginFiles = [
