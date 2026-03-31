@@ -19,7 +19,15 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@main
 
       - name: Cache Nix store
-        uses: DeterminateSystems/magic-nix-cache-action@main
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.nix-profile
+            ~/.nix-defexpr
+            /nix/store
+            /nix/var
+          key: nix-store-${{ hashFiles('flake.lock', 'flake.nix') }}
+          restore-keys: nix-store-
 
       - name: Cache Piper downloads
         uses: actions/cache@v4
