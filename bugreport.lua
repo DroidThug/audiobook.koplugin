@@ -281,6 +281,9 @@ local function collectAudioInfo(plugin)
     if plugin and plugin.bt_manager and plugin.bt_manager.getStackType then
         info.bt_stack = plugin.bt_manager:getStackType()
         info.bt_gst_sink = plugin.bt_manager:getGstBtSink() or "none (aplay fallback)"
+        -- BlueALSA diagnostics
+        info.bluealsa_bundled = plugin.bt_manager:hasBluealsaBundled() and "yes" or "no"
+        info.bluealsa_running = plugin.bt_manager:isBluealsaRunning() and "yes" or "no"
     end
 
     -- GStreamer BT sink
@@ -305,7 +308,7 @@ local function collectAudioInfo(plugin)
                 "com.lab126.cmd",
                 "com.lab126.acsbt",
             }
-            local properties = { "btEnabled", "btPowerState" }
+            local properties = { "btEnabled", "btPowerState", "BTstate" }
             for _, svc in ipairs(services) do
                 for _, prop in ipairs(properties) do
                     local val = shellCapture("lipc-get-prop " .. svc .. " " .. prop .. " 2>/dev/null", 2)
@@ -315,6 +318,7 @@ local function collectAudioInfo(plugin)
                         info.kindle_bt_enabled = val
                         info.kindle_bt_paired = shellCapture("lipc-get-prop " .. svc .. " btPairedDevicesList 2>/dev/null", 2) or "n/a"
                         info.kindle_bt_connected = shellCapture("lipc-get-prop " .. svc .. " btConnectedDevices 2>/dev/null", 2) or "n/a"
+                        info.kindle_bt_connected_name = shellCapture("lipc-get-prop " .. svc .. " BTconnectedDevName 2>/dev/null", 2) or "n/a"
                         break
                     end
                 end

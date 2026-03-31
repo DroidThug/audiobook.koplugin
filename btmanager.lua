@@ -41,7 +41,9 @@ local bluetoothd_path = nil -- resolved path to bluetoothd binary
 local has_bluetoothctl = nil -- cached availability of bluetoothctl
 local has_lipc = nil         -- cached availability of lipc (Kindle)
 local lipc_bt_service = nil  -- "com.lab126.btfd" or similar
-local lipc_bt_prop = nil     -- property name that responded ("btEnabled" etc.)
+local lipc_bt_prop = nil     -- readable property ("btEnabled", "BTstate", etc.)
+local lipc_bt_write_prop = nil  -- writable property (may differ from read prop)
+local lipc_bt_write_is_str = false -- true if write prop takes string "true"/"false"
 
 --- Detect which Bluetooth stack this device uses.
 -- Called lazily from dbus_cmd() on first BT operation; a no-op
@@ -59,7 +61,8 @@ local function detectStack()
         --   com.lab126.btService  btEnabled   (PW11 and others)
         --   com.lab126.cmd        btEnabled   (older Kindles, some PW4)
         --   com.lab126.acsbt      btEnabled   (some models)
-        -- Some models may use btPowerState instead of btEnabled.
+        -- Some models use btPowerState instead of btEnabled.
+        -- Kindle Basic 2022 (11th Gen) uses BTstate (read) + BTenable (write).
         local lh = io.popen("which lipc-get-prop 2>/dev/null")
         local lr = lh and lh:read("*a") or ""
         if lh then lh:close() end
@@ -71,7 +74,7 @@ local function detectStack()
                 "com.lab126.cmd",
                 "com.lab126.acsbt",
             }
-            local properties = { "btEnabled", "btPowerState" }
+            local properties = { "btEnabled", "btPowerState", "BTstate" }
             for _, svc in ipairs(services) do
                 for _, prop in ipairs(properties) do
                     local ph = io.popen("lipc-get-prop " .. svc .. " " .. prop .. " 2>/dev/null")
@@ -82,7 +85,17 @@ local function detectStack()
                         has_lipc = true
                         lipc_bt_service = svc
                         lipc_bt_prop = prop
-                        logger.warn("BTManager: Kindle lipc BT service:", svc, prop .. ":", pr)
+                        -- Map read property to its write counterpart
+                        if prop == "BTstate" then
+                            -- BTstate is read-only; BTenable on same service is write-only (String)
+                            lipc_bt_write_prop = "BTenable"
+                            lipc_bt_write_is_str = true
+                        else
+                            lipc_bt_write_prop = prop
+                            lipc_bt_write_is_str = false
+                        end
+                        logger.warn("BTManager: Kindle lipc BT service:", svc, prop .. ":", pr,
+                                    "write_prop:", lipc_bt_write_prop)
                         break
                     end
                 end
@@ -244,7 +257,8 @@ function BTManager:isPowered()
             local h = io.popen("lipc-get-prop " .. lipc_bt_service .. " " .. lipc_bt_prop .. " 2>/dev/null")
             local r = h and h:read("*a") or ""
             if h then h:close() end
-            return r:match("1") ~= nil or r:lower():match("true") ~= nil
+            -- BTstate returns an Int (0=off, non-zero=on); btEnabled returns 0/1 or "true"/"false"
+            return r:match("[1-9]") ~= nil or r:lower():match("true") ~= nil
         end
         -- No working lipc: assume BT may be on (externally managed)
         return true
@@ -272,8 +286,9 @@ function BTManager:powerOn()
     logger.warn("BTManager: powering on (stack:", bt_stack, ")")
 
     if bt_stack == "kindle" then
-        if has_lipc and lipc_bt_service and lipc_bt_prop then
-            os.execute("lipc-set-prop " .. lipc_bt_service .. " " .. lipc_bt_prop .. " 1 2>/dev/null")
+        if has_lipc and lipc_bt_service and lipc_bt_write_prop then
+            local val = lipc_bt_write_is_str and "true" or "1"
+            os.execute("lipc-set-prop " .. lipc_bt_service .. " " .. lipc_bt_write_prop .. " " .. val .. " 2>/dev/null")
             os.execute("sleep 2")
             local powered = self:isPowered()
             logger.warn("BTManager: Kindle powerOn result:", powered)
@@ -320,8 +335,9 @@ function BTManager:powerOff()
     logger.dbg("BTManager: powering off")
 
     if bt_stack == "kindle" then
-        if has_lipc and lipc_bt_service and lipc_bt_prop then
-            os.execute("lipc-set-prop " .. lipc_bt_service .. " " .. lipc_bt_prop .. " 0 2>/dev/null")
+        if has_lipc and lipc_bt_service and lipc_bt_write_prop then
+            local val = lipc_bt_write_is_str and "false" or "0"
+            os.execute("lipc-set-prop " .. lipc_bt_service .. " " .. lipc_bt_write_prop .. " " .. val .. " 2>/dev/null")
             os.execute("sleep 1")
         end
         return true
@@ -331,12 +347,203 @@ function BTManager:powerOff()
     os.execute("sleep 1")
 
     if bt_stack == "bluez" then
+        -- Stop bluealsa daemon if we started it
+        self:stopBluealsa()
         -- Stop the daemon we started (safe even if it was already running)
         os.execute("killall bluetoothd 2>/dev/null")
         os.execute("hciconfig hci0 down 2>/dev/null")
     end
 
     return not self:isPowered()
+end
+
+-----------------------------------------------------------------------
+-- BlueALSA daemon lifecycle (BlueZ Kobo devices only)
+-----------------------------------------------------------------------
+
+-- Cached path to bundled bluealsa binary (set on first use)
+local bluealsa_bin = nil
+
+--- Resolve the bundled bluealsa binary path.
+-- @treturn string|nil path to bluealsa binary, or nil if not bundled
+local function findBluealsaBin()
+    if bluealsa_bin then return bluealsa_bin end
+    -- Same directory structure as espeak-ng: plugin_dir/bluealsa/bin/bluealsa
+    local info = debug.getinfo(1, "S")
+    local plugin_dir = info.source:match("^@(.*/)[^/]*$") or "./"
+    local candidates = {
+        plugin_dir .. "bluealsa/bin/bluealsa",
+        plugin_dir .. "bluealsa/bin/bluealsa.bin",
+    }
+    for _, p in ipairs(candidates) do
+        local f = io.open(p, "r")
+        if f then
+            f:close()
+            -- Rename .bin → original if needed (Windows extraction workaround)
+            if p:match("%.bin$") then
+                local orig = p:gsub("%.bin$", "")
+                os.rename(p, orig)
+                os.execute("chmod +x " .. orig .. " 2>/dev/null")
+                p = orig
+            end
+            bluealsa_bin = p
+            logger.warn("BTManager: found bundled bluealsa at", p)
+            return bluealsa_bin
+        end
+    end
+    return nil
+end
+
+--- Resolve the bundled bluealsa directory (parent of bin/).
+-- @treturn string|nil path to bluealsa/ directory
+local function findBluealsaDir()
+    local bin = findBluealsaBin()
+    if not bin then return nil end
+    return bin:match("^(.*/)[^/]*$"):gsub("bin/$", "")
+end
+
+--- Check if the bluealsa daemon is running.
+-- @treturn bool
+function BTManager:isBluealsaRunning()
+    local h = io.popen("pidof bluealsa 2>/dev/null")
+    local r = h and h:read("*a") or ""
+    if h then h:close() end
+    return r:match("%d+") ~= nil
+end
+
+--- Start the BlueALSA daemon for BT audio bridging.
+-- Only meaningful on BlueZ Kobo devices where there is no native
+-- BT audio sink (no mtkbtmwrpcaudiosink, no PulseAudio).
+-- The daemon registers A2DP profile with BlueZ and creates ALSA
+-- PCM devices for connected BT audio devices.
+-- @treturn bool success
+function BTManager:startBluealsa()
+    detectStack()
+    if bt_stack ~= "bluez" then return false end
+    if self:isBluealsaRunning() then
+        logger.warn("BTManager: bluealsa already running")
+        return true
+    end
+
+    local bin = findBluealsaBin()
+    if not bin then
+        logger.warn("BTManager: bluealsa binary not bundled")
+        return false
+    end
+
+    local ba_dir = findBluealsaDir()
+    -- Install D-Bus policy if not already present
+    local policy_src = ba_dir .. "share/dbus-1/system.d/bluealsa.conf"
+    local policy_dst = "/etc/dbus-1/system.d/bluealsa.conf"
+    local pf = io.open(policy_dst, "r")
+    if not pf then
+        -- Copy policy file (allows root to own org.bluealsa on system bus)
+        local ps = io.open(policy_src, "r")
+        if ps then
+            local content = ps:read("*a")
+            ps:close()
+            local pd = io.open(policy_dst, "w")
+            if pd then
+                pd:write(content)
+                pd:close()
+                -- Reload dbus config
+                os.execute("killall -HUP dbus-daemon 2>/dev/null")
+                os.execute("sleep 0.5")
+                logger.warn("BTManager: installed bluealsa D-Bus policy")
+            end
+        end
+    else
+        pf:close()
+    end
+
+    -- Install ALSA config for bluealsa PCM device
+    -- On Kobo, /etc/asound.conf is read by libasound and defines the
+    -- "bluealsa" PCM type that routes audio to BT headphones.
+    local asound_dst = "/etc/asound.conf"
+    local af = io.open(asound_dst, "r")
+    local need_asound = true
+    if af then
+        local content = af:read("*a")
+        af:close()
+        need_asound = not content:match("pcm%.bluealsa")
+    end
+    if need_asound then
+        local asound_src = ba_dir .. "etc/alsa/conf.d/20-bluealsa.conf"
+        local as = io.open(asound_src, "r")
+        if as then
+            local content = as:read("*a")
+            as:close()
+            local ad = io.open(asound_dst, "a")  -- append, don't overwrite
+            if ad then
+                ad:write("\n# BlueALSA PCM (installed by audiobook.koplugin)\n")
+                ad:write(content)
+                ad:close()
+                logger.warn("BTManager: installed bluealsa ALSA config to", asound_dst)
+            end
+        end
+    end
+
+    -- Build the LD_LIBRARY_PATH from bundled libs + espeak-ng libs (glibc)
+    local espeak_lib = ba_dir:gsub("bluealsa/$", "") .. "espeak-ng/lib"
+    local ld_path = ba_dir .. "lib:" .. espeak_lib
+
+    -- Use the bundled dynamic linker (same as espeak-ng uses)
+    local linker = espeak_lib .. "/ld-linux-armhf.so.3"
+    local lf = io.open(linker, "r")
+    local use_bundled_linker = lf ~= nil
+    if lf then lf:close() end
+
+    local cmd
+    if use_bundled_linker then
+        cmd = string.format(
+            "LD_LIBRARY_PATH=%s %s %s --profile=a2dp-sink 2>/dev/null &",
+            ld_path, linker, bin)
+    else
+        cmd = string.format(
+            "LD_LIBRARY_PATH=%s %s --profile=a2dp-sink 2>/dev/null &",
+            ld_path, bin)
+    end
+
+    logger.warn("BTManager: starting bluealsa:", cmd)
+    os.execute(cmd)
+    os.execute("sleep 1")
+
+    local running = self:isBluealsaRunning()
+    logger.warn("BTManager: bluealsa started:", running)
+    return running
+end
+
+--- Stop the BlueALSA daemon.
+function BTManager:stopBluealsa()
+    if self:isBluealsaRunning() then
+        os.execute("killall bluealsa 2>/dev/null")
+        os.execute("sleep 0.5")
+        logger.warn("BTManager: bluealsa stopped")
+    end
+end
+
+--- Check whether bluealsa is bundled with the plugin.
+-- @treturn bool
+function BTManager:hasBluealsaBundled()
+    return findBluealsaBin() ~= nil
+end
+
+--- Get the ALSA device string for bluealsa playback.
+-- @string address  optional MAC address (default: most recent device)
+-- @treturn string ALSA device string like "bluealsa:DEV=XX:XX:XX:XX:XX:XX,PROFILE=a2dp"
+function BTManager:getBluealsaDevice(address)
+    if address then
+        return string.format("bluealsa:DEV=%s,PROFILE=a2dp", address)
+    end
+    return "bluealsa"
+end
+
+--- Get the directory containing bluealsa ALSA plugins.
+-- @treturn string|nil path to lib/alsa-lib/ directory
+function BTManager:getBluealsaPluginDir()
+    local ba_dir = findBluealsaDir()
+    if not ba_dir then return nil end
+    return ba_dir .. "lib/alsa-lib"
 end
 
 -----------------------------------------------------------------------
@@ -663,6 +870,10 @@ function BTManager:connect(address)
         -- BlueZ: the A2DP transport is set up asynchronously after
         -- Device1.Connect returns.  Give it a moment to settle.
         os.execute("sleep 2")
+        -- Start bluealsa daemon if bundled (provides ALSA PCM for BT audio)
+        if self:hasBluealsaBundled() then
+            self:startBluealsa()
+        end
         logger.warn("BTManager: BlueZ device connected, A2DP profile settling")
         return true
     end

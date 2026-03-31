@@ -240,13 +240,20 @@ function BtUI.btQuickConnect(plugin, dev, touchmenu_instance)
             plugin:setSetting("bt_device_addr", dev.address)
             plugin:setSetting("bt_device_name", name)
 
+            -- Re-probe audio player now that BT is connected and bluealsa
+            -- may have been started by connect().
+            local engine = plugin.tts_engine
+            if engine then
+                engine.player_cmd = engine:findAudioPlayer()
+            end
+
             -- Check if there's an actual audio output path to this BT device.
             -- On BlueZ Kobo without mtkbtmwrpcaudiosink, audio won't reach
             -- the headphones even if the connection succeeds.
-            local engine = plugin.tts_engine
             local has_bt_audio = engine and (
                 engine.audio_player_type == "gst-bt"
-                or engine.audio_player_type == "android")
+                or engine.audio_player_type == "android"
+                or engine.audio_player_type == "bluealsa")
             if has_bt_audio then
                 UIManager:show(InfoMessage:new{
                     text = T(_("Connected to %1."), name),

@@ -135,6 +135,75 @@ fi
 
 chmod +x "$ESPEAK_DEST/bin/espeak-ng"
 
+# ── BlueALSA (BT audio bridge for BlueZ Kobo) ─────────────────────────
+echo ""
+echo "=== Building BlueALSA for armv7l via Nix cross-compilation ==="
+BLUEALSA_OUT=$(nix-build "$SCRIPT_DIR/cross-build-bluealsa.nix" --no-out-link)
+echo "BlueALSA Nix store path: $BLUEALSA_OUT"
+
+BLUEALSA_DEST="$PLUGIN_DEST/bluealsa"
+mkdir -p "$BLUEALSA_DEST/bin" "$BLUEALSA_DEST/lib/alsa-lib" \
+         "$BLUEALSA_DEST/etc/alsa/conf.d" "$BLUEALSA_DEST/share/dbus-1/system.d"
+
+# Daemon binary
+cp "$BLUEALSA_OUT/bin/bluealsa" "$BLUEALSA_DEST/bin/"
+chmod +x "$BLUEALSA_DEST/bin/bluealsa"
+
+# ALSA plugins (loaded by system aplay to route audio to BT)
+cp "$BLUEALSA_OUT/lib/alsa-lib/libasound_module_pcm_bluealsa.so" "$BLUEALSA_DEST/lib/alsa-lib/"
+cp "$BLUEALSA_OUT/lib/alsa-lib/libasound_module_ctl_bluealsa.so" "$BLUEALSA_DEST/lib/alsa-lib/"
+
+# ALSA config (defines "bluealsa" PCM device)
+cp "$BLUEALSA_OUT/etc/alsa/conf.d/20-bluealsa.conf" "$BLUEALSA_DEST/etc/alsa/conf.d/"
+
+# D-Bus policy (allows root to use org.bluealsa)
+cp "$BLUEALSA_OUT/share/dbus-1/system.d/bluealsa.conf" "$BLUEALSA_DEST/share/dbus-1/system.d/"
+
+# Bundle runtime dependencies (cross-compiled shared libs)
+echo "Bundling BlueALSA runtime dependencies..."
+# Find the linked libraries from the bluealsa binary
+BLUEALSA_DEPS=$(nix-shell -p binutils --run "readelf -d $BLUEALSA_OUT/bin/bluealsa" 2>/dev/null \
+    | grep -oP 'NEEDED.*\[(.+)\]' | grep -oP '\[(.+)\]' | tr -d '[]')
+echo "  BlueALSA NEEDED: $BLUEALSA_DEPS"
+
+# Collect all .so files from Nix closure that bluealsa needs at runtime
+# (skip glibc since we already bundle it from espeak-ng)
+for so in $(nix-shell -p binutils --run "ldd $BLUEALSA_OUT/bin/bluealsa" 2>/dev/null \
+    | grep -oP '/nix/store/\S+' | sort -u); do
+    soname=$(basename "$so")
+    case "$soname" in
+        ld-linux*|libc.so*|libm.so*|libdl.so*|libpthread*|librt.so*|libgcc_s*)
+            ;; # Already bundled with espeak-ng glibc
+        *)
+            if [ -f "$so" ]; then
+                cp "$so" "$BLUEALSA_DEST/lib/"
+                echo "  + $soname"
+            fi
+            ;;
+    esac
+done
+
+# Also check the ALSA PCM plugin's deps
+for so in $(nix-shell -p binutils --run "ldd $BLUEALSA_OUT/lib/alsa-lib/libasound_module_pcm_bluealsa.so" 2>/dev/null \
+    | grep -oP '/nix/store/\S+' | sort -u); do
+    soname=$(basename "$so")
+    if [ ! -f "$BLUEALSA_DEST/lib/$soname" ]; then
+        case "$soname" in
+            ld-linux*|libc.so*|libm.so*|libdl.so*|libpthread*|librt.so*|libgcc_s*)
+                ;;
+            *)
+                if [ -f "$so" ]; then
+                    cp "$so" "$BLUEALSA_DEST/lib/"
+                    echo "  + $soname (from PCM plugin)"
+                fi
+                ;;
+        esac
+    fi
+done
+
+echo "BlueALSA bundle contents:"
+du -sh "$BLUEALSA_DEST"
+
 # ── Piper TTS (optional) ──────────────────────────────────────────────
 if [ "$WITH_PIPER" = true ]; then
     echo ""
@@ -222,7 +291,7 @@ du -sh "$PLUGIN_DEST"
 # on first run (see ttsengine.lua detectBackend).
 echo ""
 echo "=== Renaming ELF binaries to .bin (Windows extraction workaround) ==="
-for elf in "$ESPEAK_DEST/bin/espeak-ng" "$PIPER_DEST/piper" "$PIPER_DEST/piper_phonemize" "$PIPER_DEST/espeak-ng"; do
+for elf in "$ESPEAK_DEST/bin/espeak-ng" "$PIPER_DEST/piper" "$PIPER_DEST/piper_phonemize" "$PIPER_DEST/espeak-ng" "$BLUEALSA_DEST/bin/bluealsa"; do
     if [ -f "$elf" ]; then
         mv "$elf" "${elf}.bin"
         echo "  $(basename "$elf") -> $(basename "$elf").bin"

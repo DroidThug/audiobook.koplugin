@@ -1555,6 +1555,37 @@ function TTSEngine:findAudioPlayer()
         end
     end
 
+    -- 1b) BlueALSA: bundled BT audio bridge for BlueZ Kobo devices.
+    -- When bluealsa daemon is running, aplay can route audio to BT
+    -- headphones via the "bluealsa" ALSA PCM device.
+    local bt = self.plugin and self.plugin.bt_manager
+    if self:commandExists("aplay") and bt then
+        if bt:isBluealsaRunning() then
+            local plugin_dir = bt:getBluealsaPluginDir()
+            local ba_dev = bt:getBluealsaDevice()
+            -- ALSA_PLUGIN_DIR tells libasound where to find the bluealsa
+            -- PCM plugin .so. The PCM type "bluealsa" is defined in
+            -- /etc/asound.conf (installed by startBluealsa).
+            -- LD_LIBRARY_PATH is needed so that when aplay loads the PCM
+            -- plugin, the plugin's own deps (libsbc, libglib, libdbus,
+            -- libbluetooth) can be resolved from our bundled libs.
+            local lib_dir = plugin_dir and plugin_dir:gsub("/alsa%-lib$", "")
+            local env = ""
+            if plugin_dir then
+                env = "ALSA_PLUGIN_DIR=" .. plugin_dir .. " "
+            end
+            if lib_dir then
+                env = "LD_LIBRARY_PATH=" .. lib_dir .. " " .. env
+            end
+            self.audio_player_type = "bluealsa"
+            self._bluealsa_env = env
+            logger.warn("TTSEngine: Found BlueALSA audio bridge, device:", ba_dev)
+            return env .. "aplay -q -D " .. ba_dev
+        elseif bt:hasBluealsaBundled() and bt:getStackType() == "bluez" then
+            logger.warn("TTSEngine: BlueALSA bundled but daemon not running")
+        end
+    end
+
     -- 2) Check if any ALSA soundcard exists
     local has_soundcard = false
     local cards = io.open("/proc/asound/cards", "r")

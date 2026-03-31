@@ -25,6 +25,16 @@
           postInstall = "";
         });
 
+      # Cross-compiled bluez-alsa for Kobo (armv7l, minimal -- no AAC)
+      # Provides BT audio bridging on BlueZ Kobo devices (Libra 2, Io)
+      mkBluealsaKobo = pkgs:
+        let
+          crossPkgs = pkgs.pkgsCross.armv7l-hf-multiplatform;
+        in
+        crossPkgs.bluez-alsa.override {
+          aacSupport = false;
+        };
+
       # Plugin source files to bundle
       pluginFiles = [
         "main.lua"
@@ -50,10 +60,14 @@
         let
           pkgs = import nixpkgs { inherit system; };
           espeakKobo = mkEspeakKobo pkgs;
+          bluealsaKobo = mkBluealsaKobo pkgs;
         in
         {
           # Cross-compiled espeak-ng binary + data for Kobo armv7l
           espeak-ng-kobo = espeakKobo;
+
+          # Cross-compiled bluez-alsa for Kobo armv7l
+          bluealsa-kobo = bluealsaKobo;
 
           # Full plugin bundle with espeak-ng (Lua + binaries + data)
           kobo-bundle =
@@ -134,6 +148,33 @@
                 cp -r "${espeakKobo}/share/espeak-ng-data/voices/!v" \
                   "$espeak/share/espeak-ng-data/voices/"
               fi
+
+              # ── BlueALSA (Bluetooth audio bridge for BlueZ Kobo) ──
+              ba=$dest/bluealsa
+              mkdir -p "$ba/bin" "$ba/lib/alsa-lib" "$ba/etc/alsa/conf.d" "$ba/share/dbus-1/system.d"
+              cp ${bluealsaKobo}/bin/bluealsa "$ba/bin/"
+              cp ${bluealsaKobo}/lib/alsa-lib/libasound_module_pcm_bluealsa.so "$ba/lib/alsa-lib/"
+              cp ${bluealsaKobo}/lib/alsa-lib/libasound_module_ctl_bluealsa.so "$ba/lib/alsa-lib/"
+              cp ${bluealsaKobo}/etc/alsa/conf.d/20-bluealsa.conf "$ba/etc/alsa/conf.d/"
+              cp ${bluealsaKobo}/share/dbus-1/system.d/bluealsa.conf "$ba/share/dbus-1/system.d/"
+
+              # BlueALSA runtime deps (libsbc, libglib, libdbus, libbluetooth)
+              # These are cross-compiled and linked automatically by Nix.
+              # Bundle them so the Kobo's old system libs don't conflict.
+              for dep in ${crossPkgs.sbc}/lib/libsbc.so* \
+                         ${crossPkgs.glib}/lib/libglib-2.0.so* \
+                         ${crossPkgs.glib}/lib/libgobject-2.0.so* \
+                         ${crossPkgs.dbus}/lib/libdbus-1.so* \
+                         ${crossPkgs.bluez}/lib/libbluetooth.so*; do
+                [ -e "$dep" ] && cp -P "$dep" "$ba/lib/" 2>/dev/null || true
+              done
+              # Resolve symlinks to real files
+              for f in "$ba/lib/"*.so*; do
+                if [ -L "$f" ]; then
+                  target=$(readlink -f "$f")
+                  [ -f "$target" ] && cp "$target" "$f"
+                fi
+              done
             '';
 
             meta = with pkgs.lib; {
