@@ -46,9 +46,13 @@ local function shellCapture(cmd, timeout_s)
 end
 
 --- Check if a file/dir exists.
+-- Uses io.open with a shell fallback for devices where io.open may fail
+-- on binary files (observed on some Kindle models).
 local function fileExists(path)
     local f = io.open(path, "r")
     if f then f:close() return true end
+    local rc = os.execute("test -f '" .. path .. "' 2>/dev/null")
+    if rc == 0 or rc == true then return true end
     return false
 end
 
@@ -124,6 +128,7 @@ local function collectPluginInfo(plugin)
     end
 
     info.plugin_dir = sanitizePath(_utils_dir)
+    info.cwd = shellCapture("pwd", 2)
 
     if not engine then
         info.tts_backend = "engine not initialized"
@@ -138,8 +143,19 @@ local function collectPluginInfo(plugin)
 
     -- Bundled binaries presence
     local plugin_dir = engine.plugin_dir or _utils_dir:sub(1, -2)
-    info.has_bundled_espeak = fileExists(plugin_dir .. "/espeak-ng/bin/espeak-ng")
-    info.has_bundled_piper = fileExists(plugin_dir .. "/piper/piper")
+    local espeak_path = plugin_dir .. "/espeak-ng/bin/espeak-ng"
+    local piper_path = plugin_dir .. "/piper/piper"
+    info.has_bundled_espeak = fileExists(espeak_path)
+    info.has_bundled_piper = fileExists(piper_path)
+    -- Capture io.open error messages for diagnostics
+    local _, espeak_err = io.open(espeak_path, "r")
+    local _, piper_err = io.open(piper_path, "r")
+    if espeak_err or piper_err then
+        info.io_open_error = (espeak_err or "") .. "; " .. (piper_err or "")
+    end
+    -- Show what's on disk in the binary directories
+    info.espeak_bin_ls = shellCapture("ls -la '" .. plugin_dir .. "/espeak-ng/bin/' 2>/dev/null", 3)
+    info.piper_bin_ls = shellCapture("ls -la '" .. plugin_dir .. "/piper/piper' 2>/dev/null", 3)
     info.has_piper_model = false
     local piper_dir = plugin_dir .. "/piper"
     local piper_ls = shellCapture("ls " .. piper_dir .. "/*.onnx 2>/dev/null", 3)
@@ -317,7 +333,7 @@ local function collectAudioInfo(plugin)
                 -- List available properties for each BT service
                 local props_dump = {}
                 for _, svc in ipairs(services) do
-                    local props = shellCapture("lipc-probe -p " .. svc .. " 2>/dev/null | head -20", 3)
+                    local props = shellCapture("lipc-probe " .. svc .. " 2>/dev/null | head -20", 3)
                     if props and props ~= "" then
                         table.insert(props_dump, svc .. ": " .. props)
                     end

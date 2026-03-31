@@ -210,7 +210,7 @@ if [ "$PLATFORM" = "kindle" ] && command -v lipc-get-prop >/dev/null 2>&1; then
         [ -z "$KINDLE_LIPC_SERVICES" ] && KINDLE_LIPC_SERVICES="none"
         # List properties for each known BT service
         for svc in com.lab126.btfd com.lab126.btService com.lab126.cmd com.lab126.acsbt; do
-            p=$(lipc-probe -p "$svc" 2>/dev/null | head -20)
+            p=$(lipc-probe "$svc" 2>/dev/null | head -20)
             [ -n "$p" ] && KINDLE_BT_PROPS="${KINDLE_BT_PROPS}    ${svc}: ${p}\n"
         done
     fi

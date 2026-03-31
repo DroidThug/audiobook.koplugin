@@ -95,20 +95,36 @@ Detect available TTS backend.
 function TTSEngine:detectBackend()
     local is_android = Device:isAndroid()
 
+    --- Check if a file exists, with shell fallback for devices where
+    --- io.open may fail on binary files (observed on some Kindle models).
+    local function fileAccessible(path)
+        local f, err = io.open(path, "r")
+        if f then
+            f:close()
+            return true
+        end
+        -- io.open failed — try shell-based check as fallback
+        local rc = os.execute("test -f '" .. path .. "' 2>/dev/null")
+        if rc == 0 or rc == true then
+            logger.warn("TTSEngine: io.open failed for", path, "(" .. tostring(err) .. ") but test -f succeeded")
+            return true
+        end
+        return false
+    end
+
     -- On Android, the bundled espeak-ng/Piper binaries are compiled for Linux
     -- (glibc) and won't run on Android's Bionic libc.  Skip bundled binaries
     -- and go straight to system PATH detection.
     if not is_android then
         -- Detect all available bundled engines first, then pick the best default.
         local plugin_dir = self.plugin_dir or "/mnt/onboard/.adds/koreader/plugins/audiobook.koplugin"
+        logger.warn("TTSEngine: detectBackend plugin_dir =", plugin_dir)
 
         -- Check for bundled espeak-ng
         local bundled_base = plugin_dir .. "/espeak-ng"
         local bundled_bin = bundled_base .. "/bin/espeak-ng"
         local found_espeak = false
-        local f = io.open(bundled_bin, "r")
-        if f then
-            f:close()
+        if fileAccessible(bundled_bin) then
             found_espeak = true
             self.backend_cmd = bundled_bin
             self.espeak_bin = bundled_bin  -- keep reference for fallback even when Piper is active
@@ -116,18 +132,20 @@ function TTSEngine:detectBackend()
             self.espeak_data_path = bundled_base .. "/share"
             self.espeak_linker = bundled_base .. "/lib/ld-linux-armhf.so.3"
             logger.dbg("TTSEngine: Found bundled espeak-ng at", bundled_bin)
+        else
+            logger.warn("TTSEngine: bundled espeak-ng not found at", bundled_bin)
         end
 
         -- Check for bundled Piper TTS binary
         local bundled_piper_bin = plugin_dir .. "/piper/piper"
         local found_piper = false
-        f = io.open(bundled_piper_bin, "r")
-        if f then
-            f:close()
+        if fileAccessible(bundled_piper_bin) then
             found_piper = true
             self.piper_cmd = bundled_piper_bin
             self.piper_model_dir = plugin_dir .. "/piper"
             logger.dbg("TTSEngine: Found bundled Piper TTS at", bundled_piper_bin)
+        else
+            logger.warn("TTSEngine: bundled Piper not found at", bundled_piper_bin)
         end
 
         -- Pick default backend: espeak-ng first (lighter), then Piper
@@ -189,18 +207,17 @@ function TTSEngine:detectBackend()
         self.backend_error = _("No TTS engine available on this device.\n\nThe plugin needs the Android TTS helper (.dex) which is not yet included.\n\nAs a workaround, install espeak-ng via Termux:\n  pkg install espeak-ng\n\nThen add Termux to your PATH before launching KOReader.")
     else
         -- Check if the user has .onnx voice models but no binaries.
-        -- This means they installed from source code instead of the
-        -- pre-built release bundle.
+        -- This usually means a source-code install or incomplete extraction.
         local plugin_dir = self.plugin_dir or "."
         local has_onnx = false
-        local lh = io.popen("ls " .. plugin_dir .. "/piper/*.onnx 2>/dev/null")
+        local lh = io.popen("ls '" .. plugin_dir .. "'/piper/*.onnx 2>/dev/null")
         if lh then
             local lr = lh:read("*a") or ""
             lh:close()
             has_onnx = lr:match("%.onnx")
         end
         if has_onnx then
-            self.backend_error = _("No TTS engine found.\n\nVoice model files were found but the TTS binaries (espeak-ng, piper) are missing. This usually means the plugin was installed from source code instead of the pre-built release.\n\nDownload the .zip file (audiobook-koplugin-v*.zip) from:\nhttps://github.com/stradichenko/audiobook.koplugin/releases/latest\n\nDo not download 'Source code' -- it does not include the TTS engines.")
+            self.backend_error = _("No TTS engine found.\n\nVoice model files were found but the TTS binaries (espeak-ng, piper) are missing.\n\nPlease download the .zip file (audiobook-koplugin-v*.zip) from:\nhttps://github.com/stradichenko/audiobook.koplugin/releases/latest\n\nDo not download 'Source code' -- it does not include the TTS engines.\n\nIf you already installed from the .zip, please generate a bug report from the plugin menu and post it on GitHub.")
         else
             self.backend_error = _("No TTS engine found. Please install espeak-ng.")
         end
