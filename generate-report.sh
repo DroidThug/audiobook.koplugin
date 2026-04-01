@@ -239,6 +239,30 @@ if [ "$PLATFORM" = "kindle" ] && command -v lipc-get-prop >/dev/null 2>&1; then
     KINDLE_SND_MODULES=$(lsmod 2>/dev/null | grep -i snd | head -10 || echo "n/a")
     KINDLE_ASOUND_CONF=$(cat /etc/asound.conf 2>/dev/null | head -10 || echo "not found")
 
+    # btfd A2DP reverse-engineering: understand how Amazon routes
+    # BT audio so we can inject PCM data into the same path.
+    KINDLE_BTFD_PID=$(pidof btfd 2>/dev/null || echo "not running")
+    KINDLE_BTFD_CMDLINE="n/a"
+    KINDLE_BTFD_FDS="n/a"
+    KINDLE_BTFD_SOCKETS="n/a"
+    KINDLE_BTFD_MAPS="n/a"
+    if echo "$KINDLE_BTFD_PID" | grep -qE '^[0-9]+$'; then
+        KINDLE_BTFD_CMDLINE=$(cat /proc/$KINDLE_BTFD_PID/cmdline 2>/dev/null | tr '\0' ' ' || echo "n/a")
+        KINDLE_BTFD_FDS=$(ls -la /proc/$KINDLE_BTFD_PID/fd/ 2>/dev/null | head -30 || echo "n/a")
+        KINDLE_BTFD_SOCKETS=$(cat /proc/$KINDLE_BTFD_PID/net/unix 2>/dev/null | head -20 || echo "n/a")
+        KINDLE_BTFD_MAPS=$(cat /proc/$KINDLE_BTFD_PID/maps 2>/dev/null | grep -iE 'audio|alsa|pulse|blue|a2dp|sbc|socket|pipe' | head -20 || echo "n/a")
+    fi
+    KINDLE_HCI_DEVS=$(ls -la /dev/hci* 2>/dev/null || echo "none")
+    KINDLE_SYS_BT=$(ls -la /sys/class/bluetooth/ 2>/dev/null || echo "none")
+    KINDLE_HCICONFIG=$(hciconfig -a 2>/dev/null | head -20 || echo "not available")
+    KINDLE_DBUS_RUNNING=$(pidof dbus-daemon 2>/dev/null || echo "not running")
+    KINDLE_DBUS_BLUEZ=$(dbus-send --system --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.ListNames 2>/dev/null | grep -i blue | head -5 || echo "no bluez on dbus")
+    KINDLE_BT_SOCKETS=$(cat /proc/net/unix 2>/dev/null | grep -iE 'bt|audio|a2dp|blue|sbc' | head -15 || echo "none")
+    KINDLE_LIPC_TTS_PROPS=$(capture lipc-probe com.lab126.kaf.TTSService 2>/dev/null | head -15)
+    [ -z "$KINDLE_LIPC_TTS_PROPS" ] && KINDLE_LIPC_TTS_PROPS="not found"
+    KINDLE_LIPC_AUDIO_PLAYER=$(capture lipc-probe com.lab126.audioPlayer 2>/dev/null | head -15)
+    [ -z "$KINDLE_LIPC_AUDIO_PLAYER" ] && KINDLE_LIPC_AUDIO_PLAYER="not found"
+
     KINDLE_SECTION="  kindle_lipc_available: yes
   kindle_bt_service: ${KINDLE_BT_SERVICE}
   kindle_bt_prop: ${KINDLE_BT_PROP:-n/a}
@@ -256,7 +280,20 @@ if [ "$PLATFORM" = "kindle" ] && command -v lipc-get-prop >/dev/null 2>&1; then
   kindle_lipc_audio_svcs: ${KINDLE_LIPC_AUDIO_SVCS}
   kindle_audio_bins:
 $(printf '%b' "$KINDLE_AUDIO_BINS")  kindle_snd_modules: ${KINDLE_SND_MODULES}
-  kindle_asound_conf: ${KINDLE_ASOUND_CONF}"
+  kindle_asound_conf: ${KINDLE_ASOUND_CONF}
+  kindle_btfd_pid: ${KINDLE_BTFD_PID}
+  kindle_btfd_cmdline: ${KINDLE_BTFD_CMDLINE}
+  kindle_btfd_fds: ${KINDLE_BTFD_FDS}
+  kindle_btfd_sockets: ${KINDLE_BTFD_SOCKETS}
+  kindle_btfd_maps: ${KINDLE_BTFD_MAPS}
+  kindle_hci_devs: ${KINDLE_HCI_DEVS}
+  kindle_sys_bt: ${KINDLE_SYS_BT}
+  kindle_hciconfig: ${KINDLE_HCICONFIG}
+  kindle_dbus_running: ${KINDLE_DBUS_RUNNING}
+  kindle_dbus_bluez: ${KINDLE_DBUS_BLUEZ}
+  kindle_bt_sockets: ${KINDLE_BT_SOCKETS}
+  kindle_lipc_tts_props: ${KINDLE_LIPC_TTS_PROPS}
+  kindle_lipc_audio_player: ${KINDLE_LIPC_AUDIO_PLAYER}"
     [ -n "$KINDLE_LIPC_SERVICES" ] && KINDLE_SECTION="${KINDLE_SECTION}
   kindle_lipc_services: ${KINDLE_LIPC_SERVICES}"
     [ -n "$KINDLE_BT_PROPS" ] && KINDLE_SECTION="${KINDLE_SECTION}

@@ -169,11 +169,23 @@ starts immediately.
    - `aplay -l` and `aplay -L` output
    - `/proc/asound/pcm` content
    - Running audio-related processes
-   - PulseAudio availability check
+   - PulseAudio availability and sink listing
    - lipc audio/sound/media service enumeration
    - Available audio binaries scan
    - Kernel sound modules
    - ALSA config (`/etc/asound.conf`)
+
+4. **btfd A2DP reverse-engineering diagnostics** (`bugreport.lua`, `generate-report.sh`):
+   Amazon's `btfd` daemon manages BT audio routing on Kindle via a proprietary
+   stack (Lab126 IPC, not BlueZ/D-Bus). To understand how it pipes PCM data to
+   BT headphones -- and whether we can inject into that path -- the bug report
+   now collects:
+   - `btfd` PID, command line, open file descriptors, unix sockets, memory maps
+   - HCI device presence (`/dev/hci*`, `/sys/class/bluetooth/`, `hciconfig -a`)
+   - D-Bus daemon presence and BlueZ registration status
+   - System-wide unix sockets matching bt/audio/a2dp/blue/sbc
+   - LIPC service probing: `com.lab126.kaf.TTSService` and
+     `com.lab126.audioPlayer` property listings
 
 ### Status
 

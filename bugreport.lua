@@ -371,6 +371,30 @@ local function collectAudioInfo(plugin)
         info.kindle_snd_modules = shellCapture("lsmod 2>/dev/null | grep -i snd | head -10", 3) or "n/a"
         -- ALSA config files
         info.kindle_asound_conf = shellCapture("cat /etc/asound.conf 2>/dev/null | head -10", 3) or "not found"
+
+        -- btfd A2DP reverse-engineering: understand how Amazon routes
+        -- BT audio so we can inject PCM data into the same path.
+        local btfd_pid = shellCapture("pidof btfd 2>/dev/null", 2)
+        info.kindle_btfd_pid = btfd_pid or "not running"
+        if btfd_pid and btfd_pid:match("%d") then
+            local pid = btfd_pid:match("(%d+)")
+            info.kindle_btfd_cmdline = shellCapture("cat /proc/" .. pid .. "/cmdline 2>/dev/null | tr '\\0' ' '", 2) or "n/a"
+            info.kindle_btfd_fds = shellCapture("ls -la /proc/" .. pid .. "/fd/ 2>/dev/null | head -30", 3) or "n/a"
+            info.kindle_btfd_sockets = shellCapture("cat /proc/" .. pid .. "/net/unix 2>/dev/null | head -20", 3) or "n/a"
+            info.kindle_btfd_maps = shellCapture("cat /proc/" .. pid .. "/maps 2>/dev/null | grep -iE 'audio|alsa|pulse|blue|a2dp|sbc|socket|pipe' | head -20", 3) or "n/a"
+        end
+        -- BT HCI interface: is BlueZ's /dev/hci0 or /sys/class/bluetooth present?
+        info.kindle_hci_devs = shellCapture("ls -la /dev/hci* 2>/dev/null", 2) or "none"
+        info.kindle_sys_bt = shellCapture("ls -la /sys/class/bluetooth/ 2>/dev/null", 2) or "none"
+        info.kindle_hciconfig = shellCapture("hciconfig -a 2>/dev/null | head -20", 3) or "not available"
+        -- D-Bus: does it exist? Is BlueZ registered?
+        info.kindle_dbus_running = shellCapture("pidof dbus-daemon 2>/dev/null", 2) or "not running"
+        info.kindle_dbus_bluez = shellCapture("dbus-send --system --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.ListNames 2>/dev/null | grep -i blue | head -5", 3) or "no bluez on dbus"
+        -- Unix/network sockets that mention bt/audio/a2dp
+        info.kindle_bt_sockets = shellCapture("cat /proc/net/unix 2>/dev/null | grep -iE 'bt|audio|a2dp|blue|sbc' | head -15", 3) or "none"
+        -- LIPC: what happens when Amazon plays audio internally?
+        info.kindle_lipc_tts_props = shellCapture("lipc-probe com.lab126.kaf.TTSService 2>/dev/null | head -15", 3) or "not found"
+        info.kindle_lipc_audio_player = shellCapture("lipc-probe com.lab126.audioPlayer 2>/dev/null | head -15", 3) or "not found"
     end
 
     -- /tmp writable (needed for WAV files)
