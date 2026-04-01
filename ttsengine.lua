@@ -1105,7 +1105,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         self.player_error = true
         local msg
         if Device:isKindle() then
-            msg = _("No audio output available.\n\nPair Bluetooth headphones via the Kindle menu, then try again.\n\nIf already paired, try restarting KOReader.")
+            msg = _("No audio output available.\n\nKindle has no built-in speaker. Audio needs Bluetooth headphones connected via Kindle Settings.\n\nPlease generate a bug report (Audiobook > Report a bug) and share it on the GitHub issue -- it will help identify the correct audio path for this Kindle model.")
         elseif Device:isKobo() then
             msg = _("No audio output available.\n\nKobo has no built-in speaker.\n\nPlease pair Bluetooth headphones:\nSettings → Bluetooth → Pair\n\nThen try again.")
         else
@@ -1148,8 +1148,14 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         if not bt_connected then
             logger.warn("TTSEngine: No soundcard and no BT connected — refusing to play")
             self.is_speaking = false
+            local msg
+            if Device:isKindle() then
+                msg = _("No audio output available.\n\nKindle has no built-in speaker. Please connect Bluetooth headphones via Kindle Settings, then try again.\n\nIf you already have headphones connected, please generate a bug report (Audiobook > Report a bug) and share it on GitHub — it will help identify the correct audio path for this Kindle model.")
+            else
+                msg = _("No audio output available.\n\nThis device has no built-in speaker. Please connect a Bluetooth audio device first:\n\n1. Go to Audiobook > Bluetooth\n2. Turn Bluetooth on\n3. Scan and pair your headphones/speaker\n4. Then start read-along again.")
+            end
             UIManager:show(InfoMessage:new{
-                text = _("No audio output available.\n\nThis device has no built-in speaker. Please connect a Bluetooth audio device first:\n\n1. Go to Audiobook > Bluetooth\n2. Turn Bluetooth on\n3. Scan and pair your headphones/speaker\n4. Then start read-along again."),
+                text = msg,
                 timeout = 10,
             })
             return false
@@ -1595,13 +1601,109 @@ function TTSEngine:findAudioPlayer()
         has_soundcard = content and not content:match("no soundcards")
     end
 
-    -- On Kindle, the OS handles BT-to-ALSA routing at the system level.
-    -- /proc/asound/cards may report "no soundcards" even with BT audio
-    -- paired, so we try aplay regardless.
     local is_kindle = Device:isKindle()
 
-    -- Order by preference
+    -- Kindle audio device probing.
+    -- /proc/asound/cards may say "no soundcards" even when BT audio
+    -- is paired -- Amazon manages BT audio at the OS level via its own
+    -- daemon (btfd/Lab126 IPC) and does NOT expose a standard ALSA PCM
+    -- device.  Probe aplay -l, aplay -L, /dev/snd/ and PulseAudio for
+    -- any dynamically registered device that appears when a BT headset
+    -- connects.  If found, use it with an explicit -D argument; if
+    -- nothing is found, flag _no_real_audio_output so the process
+    -- watcher can detect rapid aplay failures instead of silently
+    -- cycling through sentences.
+    local kindle_audio_device = nil  -- explicit -D value when found
+    if is_kindle and not has_soundcard then
+        local has_aplay = self:commandExists("aplay")
+        -- 1) aplay -l: registered ALSA cards (may include BT)
+        if has_aplay then
+            local al = io.popen("aplay -l 2>/dev/null")
+            if al then
+                local al_out = al:read("*a") or ""
+                al:close()
+                local card, dev = al_out:match("card (%d+):.+device (%d+):")
+                if card and dev then
+                    kindle_audio_device = "hw:" .. card .. "," .. dev
+                    has_soundcard = true
+                    logger.warn("TTSEngine: Kindle found ALSA hw device:", kindle_audio_device)
+                end
+            end
+        end
+        -- 2) aplay -L: named PCM devices.  Prefer BT-related names
+        --    (bluealsa:*, bluetooth, a2dp) over generic ones; skip
+        --    default / null / surround* which are not real sinks on a
+        --    speakerless Kindle.
+        if has_aplay and not has_soundcard then
+            local aL = io.popen("aplay -L 2>/dev/null")
+            if aL then
+                local pcm_list = aL:read("*a") or ""
+                aL:close()
+                local bt_pcm, first_pcm = nil, nil
+                for line in pcm_list:gmatch("([^\n]+)") do
+                    local name = line:match("^(%S+)$")
+                    if name then
+                        local lower = name:lower()
+                        if lower:match("blue") or lower:match("a2dp") or lower:match("bt") then
+                            bt_pcm = name
+                            break  -- BT device found, stop searching
+                        end
+                        if not first_pcm
+                            and lower ~= "default" and lower ~= "null"
+                            and not lower:match("^surround") then
+                            first_pcm = name
+                        end
+                    end
+                end
+                kindle_audio_device = bt_pcm or first_pcm
+                if kindle_audio_device then
+                    has_soundcard = true
+                    logger.warn("TTSEngine: Kindle found PCM device:", kindle_audio_device)
+                end
+            end
+        end
+        -- 3) /dev/snd/ pcm nodes
+        if not has_soundcard then
+            local snd = io.popen("ls /dev/snd/ 2>/dev/null")
+            if snd then
+                local snd_out = snd:read("*a") or ""
+                snd:close()
+                if snd_out:match("pcm") then
+                    has_soundcard = true
+                    logger.warn("TTSEngine: Kindle found /dev/snd/ pcm node")
+                end
+            end
+        end
+        -- 4) PulseAudio: check for a running sink (Amazon may route BT
+        --    through PulseAudio on newer firmware).
+        if not has_soundcard and self:commandExists("pactl") then
+            local pa = io.popen("pactl list sinks short 2>/dev/null")
+            if pa then
+                local pa_out = pa:read("*a") or ""
+                pa:close()
+                if pa_out:match("%S") then
+                    has_soundcard = true
+                    self._kindle_use_pulseaudio = true
+                    logger.warn("TTSEngine: Kindle found PulseAudio sink")
+                end
+            end
+        end
+        if not has_soundcard then
+            logger.warn("TTSEngine: Kindle - no ALSA card, no PCM device, "
+                        .. "no /dev/snd pcm, no PulseAudio. Audio will likely fail.")
+        end
+    end
+
+    -- Build player candidate list, ordered by preference.
     local players = {}
+    -- Kindle-discovered device with explicit -D (highest priority)
+    if is_kindle and kindle_audio_device then
+        table.insert(players, {cmd = "aplay", args = "-q -D " .. kindle_audio_device})
+    end
+    -- Kindle with PulseAudio: try paplay before generic aplay
+    if is_kindle and self._kindle_use_pulseaudio then
+        table.insert(players, {cmd = "paplay", args = ""})
+    end
     if has_soundcard or is_kindle then
         table.insert(players, {cmd = "aplay", args = "-q -D default"})
         table.insert(players, {cmd = "aplay", args = "-q -D hw:0,0"})
@@ -1611,10 +1713,12 @@ function TTSEngine:findAudioPlayer()
     table.insert(players, {cmd = "mpv", args = "--no-video --really-quiet"})
     table.insert(players, {cmd = "mplayer", args = "-really-quiet"})
     table.insert(players, {cmd = "play", args = "-q"})
-    -- Last resort: try aplay even without a detected soundcard (BT audio
-    -- may be available through the OS audio stack)
+    -- Last resort: try aplay even without a detected soundcard
     if not has_soundcard and not is_kindle then
         table.insert(players, {cmd = "aplay", args = "-q"})
+    end
+    -- Flag no real audio output for rapid-fail detection.
+    if not has_soundcard then
         self._no_real_audio_output = true
     end
 
@@ -2142,7 +2246,8 @@ function TTSEngine:_startProcessWatcher(bt_retry_allowed, skip_on_fail)
                 -- failure.  Track consecutive rapid exits and bail out to prevent
                 -- a runaway loop that freezes single-core devices.
                 local RAPID_EXIT_MS = 200
-                if elapsed_ms < RAPID_EXIT_MS and engine._no_real_audio_output then
+                local is_kindle_dev = Device:isKindle()
+                if elapsed_ms < RAPID_EXIT_MS and (engine._no_real_audio_output or is_kindle_dev) then
                     engine._rapid_fail_count = (engine._rapid_fail_count or 0) + 1
                     logger.warn("TTSEngine: rapid audio exit (" .. elapsed_ms
                         .. "ms), no soundcard — count:", engine._rapid_fail_count)
@@ -2154,8 +2259,14 @@ function TTSEngine:_startProcessWatcher(bt_retry_allowed, skip_on_fail)
                         engine.play_generation = (engine.play_generation or 0) + 1
                         engine:cleanup()
                         engine._rapid_fail_count = 0
+                        local msg
+                        if is_kindle_dev then
+                            msg = _("No audio output available.\n\nKindle has no built-in speaker. Audio needs Bluetooth headphones connected via Kindle Settings.\n\nThe Kindle audio subsystem did not expose a usable ALSA device. Please generate a bug report (Audiobook > Report a bug) and share it on the GitHub issue -- it will help identify the correct audio path for this Kindle model.")
+                        else
+                            msg = _("No audio output available.\n\nThis device has no built-in speaker. Please connect a Bluetooth audio device first:\n\n1. Go to Audiobook > Bluetooth\n2. Turn Bluetooth on\n3. Scan and pair your headphones/speaker\n4. Then start read-along again.")
+                        end
                         UIManager:show(InfoMessage:new{
-                            text = _("No audio output available.\n\nThis device has no built-in speaker. Please connect a Bluetooth audio device first:\n\n1. Go to Audiobook > Bluetooth\n2. Turn Bluetooth on\n3. Scan and pair your headphones/speaker\n4. Then start read-along again."),
+                            text = msg,
                             timeout = 12,
                         })
                         if engine.on_fail_callback then

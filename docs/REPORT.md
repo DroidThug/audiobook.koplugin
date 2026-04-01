@@ -124,3 +124,59 @@ Root cause: orphan gst-launch processes from previous sessions holding the
 exclusive `@kobo:mtkbtmwrpc` abstract socket. Fixed by:
 - `cleanup()` preserving `audio_pid` when persistent pipeline is active
 - Startup orphan killer in `_killOrphanProcessesFromPreviousSession()`
+
+---
+
+## 4. Kindle Audio Output Investigation (v0.1.5.24)
+
+### Problem
+
+Issue #11: Kindle Basic 2022 (11th Gen, speakerless) -- TTS engine detected,
+BT headphones connected, but no audio output.
+
+### Root Cause
+
+Kindle Basic 2022 has no built-in speaker.  `/proc/asound/cards` reports
+"no soundcards".  Amazon manages BT audio routing internally via `btfd`
+(Lab126 IPC), but does not expose the BT headphone as a standard ALSA device.
+The plugin forced `aplay` on Kindle regardless, but `aplay` exited immediately
+with no audio device.
+
+The rapid-fail detection in the process watcher was gated on
+`_no_real_audio_output`, which was never set for Kindle (the code specifically
+bypassed it).  This caused sentences to advance silently -- aplay exits in
+<200ms, the watcher treats it as "normal completion", and the next sentence
+starts immediately.
+
+### Fix
+
+1. **Active ALSA probing** (`ttsengine.lua findAudioPlayer`):
+   - Probe `aplay -l` for dynamically registered ALSA cards (BT devices)
+   - Probe `aplay -L` for named PCM devices, preferring BT-related names
+     (`bluealsa:*`, `bluetooth`, `a2dp`) over generic sinks
+   - Check `/dev/snd/` for kernel pcm device nodes
+   - Probe PulseAudio (`pactl list sinks short`) for BT sinks
+   - If a device is found, use it with explicit `-D` argument (or `paplay`)
+   - If no device found, set `_no_real_audio_output = true` for Kindle too
+
+2. **Rapid-fail detection for Kindle** (`ttsengine.lua _startProcessWatcher`):
+   - Extended rapid-exit (<200ms) tracking to also trigger on Kindle devices
+   - After 3 consecutive rapid failures, stops playback with actionable error
+     asking user to generate a bug report
+
+3. **Comprehensive Kindle audio diagnostics** (`bugreport.lua`, `generate-report.sh`):
+   - `/dev/snd/` listing
+   - `aplay -l` and `aplay -L` output
+   - `/proc/asound/pcm` content
+   - Running audio-related processes
+   - PulseAudio availability check
+   - lipc audio/sound/media service enumeration
+   - Available audio binaries scan
+   - Kernel sound modules
+   - ALSA config (`/etc/asound.conf`)
+
+### Status
+
+The diagnostics will reveal what audio subsystem Amazon exposes on the Kindle
+Basic 2022 when BT headphones are connected, enabling the correct audio
+backend to be implemented in a follow-up version.

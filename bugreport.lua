@@ -341,6 +341,36 @@ local function collectAudioInfo(plugin)
                 end
             end
         end
+
+        -- Kindle audio subsystem probing.
+        -- Kindle Basic 2022 (and similar speakerless models) has no
+        -- standard ALSA card.  These fields help identify what audio
+        -- path Amazon exposes when BT headphones are connected.
+        info.kindle_dev_snd = shellCapture("ls -la /dev/snd/ 2>/dev/null", 3) or "not found"
+        info.kindle_aplay_l = shellCapture("aplay -l 2>&1 | head -15", 3) or "n/a"
+        info.kindle_aplay_L = shellCapture("aplay -L 2>&1 | head -20", 3) or "n/a"
+        info.kindle_proc_asound_pcm = shellCapture("cat /proc/asound/pcm 2>/dev/null", 3) or "not found"
+        info.kindle_audio_procs = shellCapture(
+            "ps 2>/dev/null | grep -iE 'audio|alsa|pulse|btfd|a2dp|bluez|sound' | grep -v grep | head -10", 3
+        ) or "none"
+        info.kindle_pulseaudio = shellCapture("pactl info 2>/dev/null | head -10", 3) or "not available"
+        info.kindle_pa_sinks = shellCapture("pactl list sinks short 2>/dev/null", 3) or "none"
+        -- lipc audio/sound services
+        info.kindle_lipc_audio = shellCapture("lipc-probe com.lab126.audio 2>/dev/null | head -20", 3) or "not found"
+        info.kindle_lipc_audio_svcs = shellCapture(
+            "lipc-probe -l 2>/dev/null | grep -iE 'audio|sound|media|player' | head -5", 3
+        ) or "none"
+        -- Audio-related binaries
+        local audio_bins = {}
+        for _, b in ipairs({"aplay", "paplay", "mpv", "mplayer", "play", "madplay", "mpg123", "ffplay", "sox"}) do
+            local loc = shellCapture("which " .. b .. " 2>/dev/null", 2)
+            if loc then audio_bins[b] = loc end
+        end
+        info.kindle_audio_bins = audio_bins
+        -- Kernel sound modules
+        info.kindle_snd_modules = shellCapture("lsmod 2>/dev/null | grep -i snd | head -10", 3) or "n/a"
+        -- ALSA config files
+        info.kindle_asound_conf = shellCapture("cat /etc/asound.conf 2>/dev/null | head -10", 3) or "not found"
     end
 
     -- /tmp writable (needed for WAV files)

@@ -190,7 +190,7 @@ if [ "$PLATFORM" = "kindle" ] && command -v lipc-get-prop >/dev/null 2>&1; then
     KINDLE_BT_PROPS=""
     # Probe service+property combinations
     for svc in com.lab126.btfd com.lab126.btService com.lab126.cmd com.lab126.acsbt; do
-        for prop in btEnabled btPowerState; do
+        for prop in btEnabled btPowerState BTstate; do
             val=$(lipc-get-prop "$svc" "$prop" 2>/dev/null)
             if [ -n "$val" ]; then
                 KINDLE_BT_SERVICE="$svc"
@@ -214,12 +214,49 @@ if [ "$PLATFORM" = "kindle" ] && command -v lipc-get-prop >/dev/null 2>&1; then
             [ -n "$p" ] && KINDLE_BT_PROPS="${KINDLE_BT_PROPS}    ${svc}: ${p}\n"
         done
     fi
+
+    # Kindle audio subsystem probing: identify what audio path Amazon
+    # exposes when BT headphones are connected (speakerless models).
+    KINDLE_DEV_SND=$(ls -la /dev/snd/ 2>/dev/null || echo "not found")
+    KINDLE_APLAY_L=$(aplay -l 2>&1 | head -15 || echo "n/a")
+    KINDLE_APLAY_LP=$(aplay -L 2>&1 | head -20 || echo "n/a")
+    KINDLE_PROC_ASOUND_PCM=$(cat /proc/asound/pcm 2>/dev/null || echo "not found")
+    KINDLE_AUDIO_PROCS=$(ps 2>/dev/null | grep -iE 'audio|alsa|pulse|btfd|a2dp|bluez|sound' | grep -v grep | head -10 || echo "none")
+    KINDLE_PULSEAUDIO=$(capture pactl info 2>/dev/null | head -10)
+    [ -z "$KINDLE_PULSEAUDIO" ] && KINDLE_PULSEAUDIO="not available"
+    KINDLE_PA_SINKS=$(capture pactl list sinks short 2>/dev/null)
+    [ -z "$KINDLE_PA_SINKS" ] && KINDLE_PA_SINKS="none"
+    KINDLE_LIPC_AUDIO=$(capture lipc-probe com.lab126.audio 2>/dev/null | head -20)
+    [ -z "$KINDLE_LIPC_AUDIO" ] && KINDLE_LIPC_AUDIO="not found"
+    KINDLE_LIPC_AUDIO_SVCS=$(capture lipc-probe -l 2>/dev/null | grep -iE 'audio|sound|media|player' | head -5)
+    [ -z "$KINDLE_LIPC_AUDIO_SVCS" ] && KINDLE_LIPC_AUDIO_SVCS="none"
+    KINDLE_AUDIO_BINS=""
+    for b in aplay paplay mpv mplayer play madplay mpg123 ffplay sox; do
+        loc=$(command -v "$b" 2>/dev/null || true)
+        [ -n "$loc" ] && KINDLE_AUDIO_BINS="${KINDLE_AUDIO_BINS}    ${b}: ${loc}\n"
+    done
+    [ -z "$KINDLE_AUDIO_BINS" ] && KINDLE_AUDIO_BINS="    (none found)\n"
+    KINDLE_SND_MODULES=$(lsmod 2>/dev/null | grep -i snd | head -10 || echo "n/a")
+    KINDLE_ASOUND_CONF=$(cat /etc/asound.conf 2>/dev/null | head -10 || echo "not found")
+
     KINDLE_SECTION="  kindle_lipc_available: yes
   kindle_bt_service: ${KINDLE_BT_SERVICE}
   kindle_bt_prop: ${KINDLE_BT_PROP:-n/a}
   kindle_bt_enabled: ${KINDLE_BT_ENABLED:-unknown}
   kindle_bt_paired: ${KINDLE_BT_PAIRED}
-  kindle_bt_connected: ${KINDLE_BT_CONNECTED}"
+  kindle_bt_connected: ${KINDLE_BT_CONNECTED}
+  kindle_dev_snd: ${KINDLE_DEV_SND}
+  kindle_aplay_l: ${KINDLE_APLAY_L}
+  kindle_aplay_L: ${KINDLE_APLAY_LP}
+  kindle_proc_asound_pcm: ${KINDLE_PROC_ASOUND_PCM}
+  kindle_audio_procs: ${KINDLE_AUDIO_PROCS}
+  kindle_pulseaudio: ${KINDLE_PULSEAUDIO}
+  kindle_pa_sinks: ${KINDLE_PA_SINKS}
+  kindle_lipc_audio: ${KINDLE_LIPC_AUDIO}
+  kindle_lipc_audio_svcs: ${KINDLE_LIPC_AUDIO_SVCS}
+  kindle_audio_bins:
+$(printf '%b' "$KINDLE_AUDIO_BINS")  kindle_snd_modules: ${KINDLE_SND_MODULES}
+  kindle_asound_conf: ${KINDLE_ASOUND_CONF}"
     [ -n "$KINDLE_LIPC_SERVICES" ] && KINDLE_SECTION="${KINDLE_SECTION}
   kindle_lipc_services: ${KINDLE_LIPC_SERVICES}"
     [ -n "$KINDLE_BT_PROPS" ] && KINDLE_SECTION="${KINDLE_SECTION}
