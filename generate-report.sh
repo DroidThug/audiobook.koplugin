@@ -263,6 +263,28 @@ if [ "$PLATFORM" = "kindle" ] && command -v lipc-get-prop >/dev/null 2>&1; then
     KINDLE_LIPC_AUDIO_PLAYER=$(capture lipc-probe com.lab126.audioPlayer 2>/dev/null | head -15)
     [ -z "$KINDLE_LIPC_AUDIO_PLAYER" ] && KINDLE_LIPC_AUDIO_PLAYER="not found"
 
+    # audiomgrd: Amazon's audio manager daemon (discovered in v0.1.5.24 report)
+    KINDLE_AUDIOMGRD_PID=$(pidof audiomgrd 2>/dev/null || echo "not running")
+    KINDLE_AUDIOMGRD_CMDLINE="n/a"
+    KINDLE_AUDIOMGRD_FDS="n/a"
+    KINDLE_AUDIOMGRD_MAPS="n/a"
+    if echo "$KINDLE_AUDIOMGRD_PID" | grep -qE '^[0-9]+$'; then
+        KINDLE_AUDIOMGRD_CMDLINE=$(cat /proc/$KINDLE_AUDIOMGRD_PID/cmdline 2>/dev/null | tr '\0' ' ' || echo "n/a")
+        KINDLE_AUDIOMGRD_FDS=$(ls -la /proc/$KINDLE_AUDIOMGRD_PID/fd/ 2>/dev/null | head -30 || echo "n/a")
+        KINDLE_AUDIOMGRD_MAPS=$(cat /proc/$KINDLE_AUDIOMGRD_PID/maps 2>/dev/null | grep -iE 'audio|alsa|snd|pcm|mixer|pipe|socket|hw' | head -20 || echo "n/a")
+    fi
+    # LIPC services discovered in v0.1.5.24 report
+    KINDLE_LIPC_PLAYERMGR=$(capture lipc-probe com.lab126.playermgr 2>/dev/null | head -20)
+    [ -z "$KINDLE_LIPC_PLAYERMGR" ] && KINDLE_LIPC_PLAYERMGR="not found"
+    KINDLE_LIPC_AUDIOMGRD=$(capture lipc-probe com.lab126.audiomgrd 2>/dev/null | head -20)
+    [ -z "$KINDLE_LIPC_AUDIOMGRD" ] && KINDLE_LIPC_AUDIOMGRD="not found"
+    # Full ALSA config (v0.1.5.24 showed dmix0 on hw:0,0)
+    KINDLE_ASOUND_CONF_FULL=$(cat /etc/asound.conf 2>/dev/null || echo "not found")
+    KINDLE_DEV_SND_FULL=$(ls -la /dev/snd/ 2>/dev/null || echo "empty")
+    # All LIPC services for discovery
+    KINDLE_LIPC_ALL_SERVICES=$(capture lipc-probe -l 2>/dev/null | head -40)
+    [ -z "$KINDLE_LIPC_ALL_SERVICES" ] && KINDLE_LIPC_ALL_SERVICES="n/a"
+
     KINDLE_SECTION="  kindle_lipc_available: yes
   kindle_bt_service: ${KINDLE_BT_SERVICE}
   kindle_bt_prop: ${KINDLE_BT_PROP:-n/a}
@@ -293,7 +315,16 @@ $(printf '%b' "$KINDLE_AUDIO_BINS")  kindle_snd_modules: ${KINDLE_SND_MODULES}
   kindle_dbus_bluez: ${KINDLE_DBUS_BLUEZ}
   kindle_bt_sockets: ${KINDLE_BT_SOCKETS}
   kindle_lipc_tts_props: ${KINDLE_LIPC_TTS_PROPS}
-  kindle_lipc_audio_player: ${KINDLE_LIPC_AUDIO_PLAYER}"
+  kindle_lipc_audio_player: ${KINDLE_LIPC_AUDIO_PLAYER}
+  kindle_audiomgrd_pid: ${KINDLE_AUDIOMGRD_PID}
+  kindle_audiomgrd_cmdline: ${KINDLE_AUDIOMGRD_CMDLINE}
+  kindle_audiomgrd_fds: ${KINDLE_AUDIOMGRD_FDS}
+  kindle_audiomgrd_maps: ${KINDLE_AUDIOMGRD_MAPS}
+  kindle_lipc_playermgr: ${KINDLE_LIPC_PLAYERMGR}
+  kindle_lipc_audiomgrd: ${KINDLE_LIPC_AUDIOMGRD}
+  kindle_asound_conf_full: ${KINDLE_ASOUND_CONF_FULL}
+  kindle_dev_snd_full: ${KINDLE_DEV_SND_FULL}
+  kindle_lipc_all_services: ${KINDLE_LIPC_ALL_SERVICES}"
     [ -n "$KINDLE_LIPC_SERVICES" ] && KINDLE_SECTION="${KINDLE_SECTION}
   kindle_lipc_services: ${KINDLE_LIPC_SERVICES}"
     [ -n "$KINDLE_BT_PROPS" ] && KINDLE_SECTION="${KINDLE_SECTION}

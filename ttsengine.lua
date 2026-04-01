@@ -1694,11 +1694,36 @@ function TTSEngine:findAudioPlayer()
         end
     end
 
+    -- On Kindle, parse /etc/asound.conf for named PCM devices.
+    -- v0.1.5.24 diagnostics revealed dmix0 on hw:0,0 at 44100 Hz.
+    local kindle_asound_pcms = {}
+    if is_kindle then
+        local ac = io.open("/etc/asound.conf", "r")
+        if ac then
+            local content = ac:read("*a") or ""
+            ac:close()
+            -- Match pcm.<name> { ... } top-level definitions
+            for name in content:gmatch("pcm%.(%w+)%s*{") do
+                if name ~= "default" and name ~= "null" then
+                    table.insert(kindle_asound_pcms, name)
+                end
+            end
+            if #kindle_asound_pcms > 0 then
+                logger.warn("TTSEngine: Kindle asound.conf PCMs:",
+                            table.concat(kindle_asound_pcms, ", "))
+            end
+        end
+    end
+
     -- Build player candidate list, ordered by preference.
     local players = {}
     -- Kindle-discovered device with explicit -D (highest priority)
     if is_kindle and kindle_audio_device then
         table.insert(players, {cmd = "aplay", args = "-q -D " .. kindle_audio_device})
+    end
+    -- Kindle asound.conf named PCMs (e.g. dmix0 found in v0.1.5.24)
+    for _, pcm_name in ipairs(kindle_asound_pcms) do
+        table.insert(players, {cmd = "aplay", args = "-q -D " .. pcm_name})
     end
     -- Kindle with PulseAudio: try paplay before generic aplay
     if is_kindle and self._kindle_use_pulseaudio then

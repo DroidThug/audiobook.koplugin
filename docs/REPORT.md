@@ -187,8 +187,38 @@ starts immediately.
    - LIPC service probing: `com.lab126.kaf.TTSService` and
      `com.lab126.audioPlayer` property listings
 
+5. **v0.1.5.24 report analysis and targeted follow-up diagnostics**:
+
+   The v0.1.5.24 report from Kindle Basic 2022 revealed:
+   - `/etc/asound.conf` defines `pcm.dmix0` on `hw:0,0` at 44100 Hz -- ALSA is
+     configured but no card is registered at runtime
+   - `/dev/snd/` has only `seq` and `timer` (no `pcmC0D0p`) -- ALSA kernel
+     base loaded, but PCM device not instantiated
+   - `audiomgrd` daemon (PID 23435) is running -- Amazon's audio manager,
+     separate from `btfd`, likely controls ALSA card lifecycle
+   - LIPC services `com.lab126.playermgr` and `com.lab126.audiomgrd` exist --
+     `com.lab126.audio` does NOT exist on this device
+   - BT headphones connected ("Bonne Heaphone 1") via btfd, BTstate=2
+   - `aplay` exists at `/usr/bin/aplay` -- Amazon ships it, but no soundcard
+
+   Hypothesized audio path:
+   ```
+   App -> LIPC to audiomgrd -> audiomgrd loads ALSA hw:0,0 -> dmix0 -> btfd A2DP -> BT
+   ```
+
+   New diagnostics added in v0.1.5.26:
+   - `audiomgrd` PID, command line, open file descriptors, memory maps
+   - `lipc-probe com.lab126.playermgr` -- may accept file paths to play audio
+   - `lipc-probe com.lab126.audiomgrd` -- may control ALSA card initialization
+   - Full `/etc/asound.conf` dump (v0.1.5.24 only showed first 10 lines)
+   - Complete `/dev/snd/` listing
+   - All LIPC services listing (not filtered by keyword)
+
+   Also added `aplay -D dmix0` (and other asound.conf-defined PCMs) as player
+   candidates, since `dmix0` is the named PCM in the Kindle's ALSA config.
+
 ### Status
 
-The diagnostics will reveal what audio subsystem Amazon exposes on the Kindle
-Basic 2022 when BT headphones are connected, enabling the correct audio
-backend to be implemented in a follow-up version.
+Waiting for v0.1.5.26 report to reveal `audiomgrd` internals and `playermgr`
+LIPC properties. If `playermgr` accepts file paths, we can route Piper WAV
+output through Amazon's native audio stack without needing direct ALSA access.

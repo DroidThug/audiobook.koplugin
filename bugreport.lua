@@ -395,6 +395,28 @@ local function collectAudioInfo(plugin)
         -- LIPC: what happens when Amazon plays audio internally?
         info.kindle_lipc_tts_props = shellCapture("lipc-probe com.lab126.kaf.TTSService 2>/dev/null | head -15", 3) or "not found"
         info.kindle_lipc_audio_player = shellCapture("lipc-probe com.lab126.audioPlayer 2>/dev/null | head -15", 3) or "not found"
+
+        -- audiomgrd: Amazon's audio manager daemon -- likely controls ALSA
+        -- card lifecycle and routes audio to btfd for BT output.
+        local amgr_pid = shellCapture("pidof audiomgrd 2>/dev/null", 2)
+        info.kindle_audiomgrd_pid = amgr_pid or "not running"
+        if amgr_pid and amgr_pid:match("%d") then
+            local pid = amgr_pid:match("(%d+)")
+            info.kindle_audiomgrd_cmdline = shellCapture("cat /proc/" .. pid .. "/cmdline 2>/dev/null | tr '\\0' ' '", 2) or "n/a"
+            info.kindle_audiomgrd_fds = shellCapture("ls -la /proc/" .. pid .. "/fd/ 2>/dev/null | head -30", 3) or "n/a"
+            info.kindle_audiomgrd_maps = shellCapture("cat /proc/" .. pid .. "/maps 2>/dev/null | grep -iE 'audio|alsa|snd|pcm|mixer|pipe|socket|hw' | head -20", 3) or "n/a"
+        end
+        -- LIPC services discovered in v0.1.5.24: playermgr and audiomgrd
+        info.kindle_lipc_playermgr = shellCapture("lipc-probe com.lab126.playermgr 2>/dev/null | head -20", 3) or "not found"
+        info.kindle_lipc_audiomgrd = shellCapture("lipc-probe com.lab126.audiomgrd 2>/dev/null | head -20", 3) or "not found"
+        -- Full ALSA config: v0.1.5.24 showed dmix0 on hw:0,0 -- we need
+        -- the complete config to see all defined PCMs and their routing.
+        info.kindle_asound_conf_full = shellCapture("cat /etc/asound.conf 2>/dev/null", 5) or "not found"
+        -- Dynamic ALSA card: check if /dev/snd/ changes after poking
+        -- audiomgrd.  List all of /dev/snd/ before and after.
+        info.kindle_dev_snd_full = shellCapture("ls -la /dev/snd/ 2>/dev/null", 3) or "empty"
+        -- All LIPC services (not just bt-related) for discovery
+        info.kindle_lipc_all_services = shellCapture("lipc-probe -l 2>/dev/null | head -40", 3) or "n/a"
     end
 
     -- /tmp writable (needed for WAV files)

@@ -30,22 +30,15 @@
 
 </h4>
 
-Text-to-speech for [KOReader](https://github.com/koreader/koreader) with
-synchronized word highlighting, automatic page turns, and Bluetooth audio
-support. Works offline on Kobo, Kindle, Android, and Linux.
+Text-to-speech for [KOReader](https://github.com/koreader/koreader) with synchronized word highlighting, automatic page turns, and Bluetooth audio support. Works offline on Kobo, Kindle, Android, and Linux.
 
 ## Quick start
 
 ### 1. Download and copy the plugin
 
-Download the **`.zip` file** from the
-[latest release](https://github.com/stradichenko/audiobook.koplugin/releases/latest)
-(look for `audiobook-koplugin-v*.zip` under **Assets**). Do **not** download
-"Source code (zip)" -- that only contains the Lua sources without the bundled
-TTS engines.
+Download the **`.zip` file** from the [latest release](https://github.com/stradichenko/audiobook.koplugin/releases/latest) (look for `audiobook-koplugin-v*.zip` under **Assets**). Do **not** download "Source code (zip)" -- that only contains the Lua sources without the bundled TTS engines.
 
-Unzip it and copy the `audiobook.koplugin` folder into KOReader's plugins
-directory:
+Unzip it and copy the `audiobook.koplugin` folder into KOReader's plugins directory:
 
 | Platform | Path |
 |----------|------|
@@ -59,64 +52,46 @@ Restart KOReader after copying.
 
 ### 2. Install a TTS engine (if not using the pre-built release)
 
-The pre-built release from step 1 **already includes espeak-ng and Piper** --
-no extra install needed on Kobo or Kindle. Skip to step 3.
+The pre-built release from step 1 **already includes espeak-ng and Piper** -- no extra install needed on Kobo or Kindle. Skip to step 3.
 
 If you cloned the repository instead:
 
-**Kobo** -- install espeak-ng via SSH or the terminal emulator
-(Menu > More tools > Terminal emulator):
+**Kobo** -- install espeak-ng via SSH or the terminal emulator (Menu > More tools > Terminal emulator):
 
 ```bash
 opkg update && opkg install espeak-ng
 ```
 
-If `opkg` is unavailable, grab the `.ipk` from
-[nickel-packages](https://github.com/nickel-packages/packages) and run
-`opkg install /mnt/onboard/espeak-ng*.ipk`.
+If `opkg` is unavailable, grab the `.ipk` from [nickel-packages](https://github.com/nickel-packages/packages) and run `opkg install /mnt/onboard/espeak-ng*.ipk`.
 
 **Linux** -- `sudo apt install espeak-ng`
 
-**Android (Boox, etc.)** -- the pre-built release includes `tts_helper.dex`,
-which bridges to the device's built-in TTS engine (Google, Samsung, etc.). Just
-unzip and copy the folder like any other platform. No extra steps needed.
+**Android (Boox, etc.)** -- the pre-built release includes `tts_helper.dex`, which bridges to the device's built-in TTS engine (Google, Samsung, etc.). Just unzip and copy the folder like any other platform. No extra steps needed.
 
-If you cloned the repo instead of downloading a release, build the `.dex`
-manually (requires Android SDK):
+If you cloned the repo instead of downloading a release, build the `.dex` manually (requires Android SDK):
 
 ```bash
 cd audiobook.koplugin/android/
 ./build-dex.sh
 ```
 
-The bundled espeak-ng and Piper binaries are for Linux-based e-readers and will
-not run on Android. See [Android support](#android-support) for details.
+The bundled espeak-ng and Piper binaries are for Linux-based e-readers and will not run on Android. See [Android support](#android-support) for details.
 
 ### 3. Start reading
 
-- **Long-press a word** to open the dictionary popup, then tap
-  **Read aloud from here**.
-- Or **select a paragraph**, then tap **Read aloud from here** in the
-  selection menu.
+- **Long-press a word** to open the dictionary popup, then tap **Read aloud from here**.
+- Or **select a paragraph**, then tap **Read aloud from here** in the selection menu.
 - Or go to **Tools > Audiobook Read-Along > Start reading from current page**.
 
 ## Optional: Piper neural TTS
 
-Piper sounds much more natural than espeak-ng. It runs fully offline on Kobo's
-ARM processor (~40 MB for engine + voice model). The
-[pre-built release](https://github.com/stradichenko/audiobook.koplugin/releases/latest)
-already includes Piper and a default voice (`en_US-danny-low`). For faster
-load times on Kobo, `low` quality voices like this one are recommended (see
-[Choosing a voice](#choosing-a-voice)).
-To build a bundle yourself, see [Building from source](#building-from-source).
+Piper sounds much more natural than espeak-ng. It runs fully offline on Kobo's ARM processor (~40 MB for engine + voice model). The [pre-built release](https://github.com/stradichenko/audiobook.koplugin/releases/latest) already includes Piper and a default voice (`en_US-danny-low`). For faster load times on Kobo, `low` quality voices like this one are recommended (see [Choosing a voice](#choosing-a-voice)). To build a bundle yourself, see [Building from source](#building-from-source).
 
-Switch between espeak-ng and Piper any time from
-**Tools > Audiobook Read-Along > Voice settings**.
+Switch between espeak-ng and Piper any time from **Tools > Audiobook Read-Along > Voice settings**.
 
 ### Choosing a voice
 
-Listen to samples and pick a voice:
-[rhasspy.github.io/piper-samples](https://rhasspy.github.io/piper-samples/)
+Listen to samples and pick a voice: [rhasspy.github.io/piper-samples](https://rhasspy.github.io/piper-samples/)
 
 Voices come in four quality levels:
 
@@ -126,14 +101,11 @@ Voices come in four quality levels:
 | medium | 22 kHz | ~60 MB | Better quality, but slower to load on Kobo |
 | high | 22 kHz | ~100 MB | Best quality, more RAM/CPU |
 
-> On Kobo (512 MB RAM), `low` voices are recommended. `medium` works but the
-> model takes noticeably longer to load. Not every voice is available at every
-> quality level -- check HuggingFace for what's offered.
+> On Kobo (512 MB RAM), `low` voices are recommended. `medium` works but the model takes noticeably longer to load. Not every voice is available at every quality level -- check HuggingFace for what's offered.
 
 ### Downloading additional voices
 
-Every voice needs two files: a `.onnx` model and a `.onnx.json` config. Place
-both in `audiobook.koplugin/piper/`.
+Every voice needs two files: a `.onnx` model and a `.onnx.json` config. Place both in `audiobook.koplugin/piper/`.
 
 Voices are hosted on HuggingFace. The URL pattern is:
 
@@ -156,13 +128,11 @@ curl -LO https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/ryan/
 curl -LO https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/ryan/low/en_US-ryan-low.onnx.json
 ```
 
-Browse all available voices:
-[huggingface.co/rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices/tree/main)
+Browse all available voices: [huggingface.co/rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices/tree/main)
 
 ## Bluetooth audio (Kobo)
 
-The plugin outputs audio through a Bluetooth A2DP connection when a BT
-device is paired. The connection is managed through the plugin menu:
+The plugin outputs audio through a Bluetooth A2DP connection when a BT device is paired. The connection is managed through the plugin menu:
 
 **Tools > Audiobook Read-Along > Bluetooth settings**
 
@@ -173,15 +143,11 @@ Two Bluetooth stacks are supported, auto-detected at runtime:
 | **MTK** (mtkbtmwrpc) | Clara 2E, Sage, Libra Colour | GStreamer persistent pipeline |
 | **BlueZ** (bluetoothd) | Libra 2 / Io | aplay via ALSA |
 
-On MTK devices the BT audio pipeline uses an exclusive abstract socket. If
-audio stops working after a crash, restart KOReader -- the plugin kills
-orphan processes on startup.
+On MTK devices the BT audio pipeline uses an exclusive abstract socket. If audio stops working after a crash, restart KOReader -- the plugin kills orphan processes on startup.
 
-> On MTK Kobo devices, the mtkbtmwrpc daemon binds a single abstract socket.
-> Only one GStreamer pipeline can hold it at a time. The plugin keeps one
-> persistent pipeline alive across sentences to avoid reconnection gaps.
-> On BlueZ devices, the plugin starts `bluetoothd` and resets the HCI
-> adapter automatically when you power on Bluetooth.
+> On MTK Kobo devices, the mtkbtmwrpc daemon binds a single abstract socket. Only one GStreamer pipeline can hold it at a time. The plugin keeps one persistent pipeline alive across sentences to avoid reconnection gaps. On BlueZ devices, the plugin starts `bluetoothd` and resets the HCI adapter automatically when you power on Bluetooth.
+
+For the full platform audio and Bluetooth architecture (Kobo generations, Kindle, Android), see [docs/PLATFORM_AUDIO.md](docs/PLATFORM_AUDIO.md).
 
 ## Playback controls
 
@@ -199,19 +165,13 @@ Reading pauses automatically when you open a menu and resumes when you close it.
 All settings are under **Tools > Audiobook Read-Along**:
 
 - **Bluetooth settings** - pair, connect, disconnect alert interval
-- **Voice settings** - TTS engine, voice, speech rate, pitch, volume,
-  sentence/paragraph pauses (espeak-ng), sentence/paragraph gaps (Piper),
-  word gap, clause pause
-- **Highlight style** - background (default), invert (best for e-ink),
-  underline, box
+- **Voice settings** - TTS engine, voice, speech rate, pitch, volume, sentence/paragraph pauses (espeak-ng), sentence/paragraph gaps (Piper), word gap, clause pause
+- **Highlight style** - background (default), invert (best for e-ink), underline, box
 - **Auto-advance pages** - turn pages automatically
 - **Highlight words / sentences** - toggle each independently
-- **Quick start with espeak** - play first sentence with espeak-ng while Piper
-  loads (avoids the ~3s cold start silence)
-- **Keep playing when lid is closed** - prevents device suspend so audio
-  continues with the case closed
-- **BT headset media buttons** - use play/pause/next/prev on a Bluetooth
-  headset or speaker to control TTS playback
+- **Quick start with espeak** - play first sentence with espeak-ng while Piper loads (avoids the ~3s cold start silence)
+- **Keep playing when lid is closed** - prevents device suspend so audio continues with the case closed
+- **BT headset media buttons** - use play/pause/next/prev on a Bluetooth headset or speaker to control TTS playback
 
 ## Architecture
 
@@ -236,34 +196,13 @@ audiobook.koplugin/
 
 ### Design notes
 
-**Persistent Piper server.** On Kobo's single-core ARM, loading the ONNX model
-takes ~4.5 seconds. A persistent server process keeps the model in memory and
-accepts sentences over a FIFO. Combined with 3-sentence batching this brings the
-realtime factor from 0.085x (old 2-server config) to 0.329x. See
-[dev/benchmark/RESULTS.md](dev/benchmark/RESULTS.md) for the full analysis.
+**Persistent Piper server.** On Kobo's single-core ARM, loading the ONNX model takes ~4.5 seconds. A persistent server process keeps the model in memory and accepts sentences over a FIFO. Combined with 3-sentence batching this brings the realtime factor from 0.085x (old 2-server config) to 0.329x. See [dev/benchmark/RESULTS.md](dev/benchmark/RESULTS.md) for the full analysis.
 
-**Binary-search highlight alignment.** CRe (crengine) snaps text selections to
-word boundaries, and proportional fonts make character-to-pixel estimates
-unreliable. The highlight manager uses the proportional estimate as an initial
-guess, then binary-searches the x coordinate by querying CRe until the selected
-text matches the target sentence. Converges in 2-4 queries.
+**Binary-search highlight alignment.** CRe (crengine) snaps text selections to word boundaries, and proportional fonts make character-to-pixel estimates unreliable. The highlight manager uses the proportional estimate as an initial guess, then binary-searches the x coordinate by querying CRe until the selected text matches the target sentence. Converges in 2-4 queries.
 
-**Exclusive BT socket (MTK only).** Kobo's MediaTek BT firmware exposes a
-single abstract socket (`@kobo:mtkbtmwrpc`). The plugin keeps one GStreamer
-pipeline alive for the entire reading session and feeds audio through a FIFO.
-Orphan pipelines from crashes are killed on startup via PID files and `pkill`.
-On BlueZ devices (Libra 2, etc.) audio goes through standard ALSA and this
-socket management is not needed.
+**Exclusive BT socket (MTK only).** Kobo's MediaTek BT firmware exposes a single abstract socket (`@kobo:mtkbtmwrpc`). The plugin keeps one GStreamer pipeline alive for the entire reading session and feeds audio through a FIFO. Orphan pipelines from crashes are killed on startup via PID files and `pkill`. On BlueZ devices (Libra 2, etc.) audio goes through standard ALSA and this socket management is not needed.
 
-**Long-sentence splitting.** Piper's attention mechanism scales quadratically
-with input length. On Kobo's 512 MB of RAM the server OOMs on sentences above
-~1000 characters and throughput drops from ~7 ch/s at 300 chars to ~3 ch/s at
-1400 chars. The text parser automatically splits any sentence longer than 300
-characters at natural clause boundaries (`;` `:` `, and/but/or...` ` - `) then
-merges fragments shorter than 80 characters with a neighbour (below that, ~90%
-of synthesis time is wasted on per-request overhead) and re-splits anything still
-over 300 at word boundaries. See
-[dev/benchmark/RESULTS_LONG.md](dev/benchmark/RESULTS_LONG.md) for the full data.
+**Long-sentence splitting.** Piper's attention mechanism scales quadratically with input length. On Kobo's 512 MB of RAM the server OOMs on sentences above ~1000 characters and throughput drops from ~7 ch/s at 300 chars to ~3 ch/s at 1400 chars. The text parser automatically splits any sentence longer than 300 characters at natural clause boundaries (`;` `:` `, and/but/or...` ` - `) then merges fragments shorter than 80 characters with a neighbour (below that, ~90% of synthesis time is wasted on per-request overhead) and re-splits anything still over 300 at word boundaries. See [dev/benchmark/RESULTS_LONG.md](dev/benchmark/RESULTS_LONG.md) for the full data.
 
 ## Troubleshooting
 
@@ -280,28 +219,20 @@ over 300 at word boundaries. See
 
 ### Filing a bug report
 
-When reporting a problem, please attach **both** files described below. The bug
-report captures your device environment (hardware, audio, settings) while the
-crash log captures KOReader's runtime behavior (errors, warnings, timing). Together
-they give the full picture needed to diagnose an issue.
+When reporting a problem, please attach **both** files described below. The bug report captures your device environment (hardware, audio, settings) while the crash log captures KOReader's runtime behavior (errors, warnings, timing). Together they give the full picture needed to diagnose an issue.
 
 1. Reproduce the problem (use the plugin normally until the issue occurs).
 2. Generate the plugin bug report (see below).
 3. Locate the KOReader crash log (see below).
-4. Attach both files to your
-   [GitHub issue](https://github.com/stradichenko/audiobook.koplugin/issues).
+4. Attach both files to your [GitHub issue](https://github.com/stradichenko/audiobook.koplugin/issues).
 
-> **Tip:** Generate the report and grab the crash log **before** restarting
-> KOReader. The crash log is truncated on every launch, so restarting may
-> discard the relevant entries.
+> **Tip:** Generate the report and grab the crash log **before** restarting KOReader. The crash log is truncated on every launch, so restarting may discard the relevant entries.
 
 ---
 
 #### 1. Plugin bug report
 
-The plugin's diagnostic report captures device info, TTS engine detection,
-audio configuration, Bluetooth status, and plugin settings. There are two ways
-to generate it:
+The plugin's diagnostic report captures device info, TTS engine detection, audio configuration, Bluetooth status, and plugin settings. There are two ways to generate it:
 
 **Option A: From the plugin menu**
 
@@ -311,9 +242,7 @@ This saves a `.txt` file to your device's root storage (see locations below).
 
 **Option B: Standalone script (when the plugin menu is not visible)**
 
-If the plugin doesn't appear in the KOReader menu at all, you can run the
-report generator directly via SSH or KOReader's built-in terminal emulator
-(Menu > More tools > Terminal emulator):
+If the plugin doesn't appear in the KOReader menu at all, you can run the report generator directly via SSH or KOReader's built-in terminal emulator (Menu > More tools > Terminal emulator):
 
 ```bash
 sh /mnt/onboard/.adds/koreader/plugins/audiobook.koplugin/generate-report.sh   # Kobo
@@ -321,8 +250,7 @@ sh /mnt/us/koreader/plugins/audiobook.koplugin/generate-report.sh              #
 sh /sdcard/koreader/plugins/audiobook.koplugin/generate-report.sh              # Android
 ```
 
-The report is printed to the terminal and also saved to a file. If using the
-terminal emulator, you can scroll up to read it on screen.
+The report is printed to the terminal and also saved to a file. If using the terminal emulator, you can scroll up to read it on screen.
 
 **Report location:**
 
@@ -353,11 +281,7 @@ terminal emulator, you can scroll up to read it on screen.
 
 #### 2. KOReader crash log
 
-KOReader logs all warnings, errors, and debug output to a file called
-`crash.log` in its installation directory. This is **not** generated by the
-plugin -- it is KOReader's own runtime log and captures everything that happens
-during a session, including TTS process spawning, fallback events, and Lua
-errors.
+KOReader logs all warnings, errors, and debug output to a file called `crash.log` in its installation directory. This is **not** generated by the plugin -- it is KOReader's own runtime log and captures everything that happens during a session, including TTS process spawning, fallback events, and Lua errors.
 
 **Crash log location:**
 
@@ -369,12 +293,9 @@ errors.
 | Linux | Inside the KOReader installation directory |
 | Android | No `crash.log` file -- use `adb logcat` to capture KOReader output |
 
-Connect your device via USB and copy the file. On Kobo the `.adds` folder is
-hidden -- enable hidden files in your file manager to see it.
+Connect your device via USB and copy the file. On Kobo the `.adds` folder is hidden -- enable hidden files in your file manager to see it.
 
-> KOReader truncates `crash.log` to ~500 KB on every launch. If you restart
-> KOReader before copying the file, earlier entries may be lost. Copy it while
-> KOReader is still running or immediately after the issue occurs.
+> KOReader truncates `crash.log` to ~500 KB on every launch. If you restart KOReader before copying the file, earlier entries may be lost. Copy it while KOReader is still running or immediately after the issue occurs.
 
 ---
 
@@ -387,22 +308,15 @@ hidden -- enable hidden files in your file manager to see it.
 
 ## Device benchmark
 
-The plugin includes a built-in benchmark that measures TTS synthesis speed on
-your device. It runs a fixed set of test sentences through each available engine
-(espeak-ng, Piper) and saves a report you can share on GitHub to help document
-device performance.
+The plugin includes a built-in benchmark that measures TTS synthesis speed on your device. It runs a fixed set of test sentences through each available engine (espeak-ng, Piper) and saves a report you can share on GitHub to help document device performance.
 
 ### Running the benchmark
 
 **Tools > Audiobook Read-Along > Generate bug report > Run device benchmark**
 
-The benchmark synthesizes five sentences of varying length (short dialogue,
-narrative prose, technical text, academic text, and short fragments) with each
-engine and model it finds. espeak-ng tests finish in seconds; Piper tests may
-take several minutes on slow devices like Kobo.
+The benchmark synthesizes five sentences of varying length (short dialogue, narrative prose, technical text, academic text, and short fragments) with each engine and model it finds. espeak-ng tests finish in seconds; Piper tests may take several minutes on slow devices like Kobo.
 
-A progress message is shown between engine runs. The screen may appear
-unresponsive during individual synthesis calls -- this is expected.
+A progress message is shown between engine runs. The screen may appear unresponsive during individual synthesis calls -- this is expected.
 
 ### Output
 
@@ -419,8 +333,7 @@ The report contains:
 
 - Device info (platform, model, CPU cores, RAM, kernel)
 - Plugin version
-- Per-sentence synthesis time, audio duration, file size, and realtime factor
-  for each engine/model
+- Per-sentence synthesis time, audio duration, file size, and realtime factor for each engine/model
 - Aggregate totals and average realtime factor
 
 No book content, highlights, or personal data is included.
@@ -458,23 +371,15 @@ Generated: 2026-03-27T12:00:00Z
 === End of Benchmark ===
 ```
 
-A realtime factor below 1.0x means synthesis is faster than playback (good).
-Above 1.0x means the user will hear pauses between sentences while the engine
-catches up.
+A realtime factor below 1.0x means synthesis is faster than playback (good). Above 1.0x means the user will hear pauses between sentences while the engine catches up.
 
 ### Sharing your results
 
-Attach the report file to a
-[GitHub issue](https://github.com/stradichenko/audiobook.koplugin/issues) or
-include it in a bug report. Benchmark data from different devices helps the
-project tune batch sizes, choose default voices, and set realistic expectations
-for each platform.
+Attach the report file to a [GitHub issue](https://github.com/stradichenko/audiobook.koplugin/issues) or include it in a bug report. Benchmark data from different devices helps the project tune batch sizes, choose default voices, and set realistic expectations for each platform.
 
 ## Android support
 
-Android TTS is supported via a JNI bridge to the device's built-in
-`TextToSpeech` engine (Google, Samsung, etc.). No Termux, no extra APKs, no
-root required.
+Android TTS is supported via a JNI bridge to the device's built-in `TextToSpeech` engine (Google, Samsung, etc.). No Termux, no extra APKs, no root required.
 
 | Feature | Status |
 |---------|--------|
@@ -487,17 +392,13 @@ root required.
 
 ### Setup
 
-The pre-built release from
-[GitHub Releases](https://github.com/stradichenko/audiobook.koplugin/releases/latest)
-includes `android/tts_helper.dex`. Just unzip and copy:
+The pre-built release from [GitHub Releases](https://github.com/stradichenko/audiobook.koplugin/releases/latest) includes `android/tts_helper.dex`. Just unzip and copy:
 
 1. Download the release zip and extract it.
 2. Copy `audiobook.koplugin/` to `/sdcard/koreader/plugins/`.
-3. Restart KOReader. The plugin auto-detects Android and initializes the
-   JNI bridge to the device's TTS engine.
+3. Restart KOReader. The plugin auto-detects Android and initializes the JNI bridge to the device's TTS engine.
 
-If you cloned the repo instead of using a release, build the `.dex` first
-(requires Android SDK + Java):
+If you cloned the repo instead of using a release, build the `.dex` first (requires Android SDK + Java):
 
 ```bash
 cd audiobook.koplugin/android/
@@ -506,29 +407,21 @@ cd audiobook.koplugin/android/
 
 ### How it works
 
-The plugin loads a small `.dex` file (`tts_helper.dex`, ~4KB) at runtime via
-Android's `DexClassLoader`. This helper wraps `android.speech.tts.TextToSpeech`
-with a polling-friendly API (since LuaJIT cannot implement Java callback
-interfaces). Synthesis produces standard WAV files that feed into the same
-pipeline used by espeak-ng and Piper.
+The plugin loads a small `.dex` file (`tts_helper.dex`, ~4KB) at runtime via Android's `DexClassLoader`. This helper wraps `android.speech.tts.TextToSpeech` with a polling-friendly API (since LuaJIT cannot implement Java callback interfaces). Synthesis produces standard WAV files that feed into the same pipeline used by espeak-ng and Piper.
 
-Audio playback uses Android's `MediaPlayer` instead of `aplay` or GStreamer.
-Pause, resume, and stop all work through the MediaPlayer API.
+Audio playback uses Android's `MediaPlayer` instead of `aplay` or GStreamer. Pause, resume, and stop all work through the MediaPlayer API.
 
 For the full technical analysis, see [docs/ANDROID_TTS.md](docs/ANDROID_TTS.md).
 
 ### Limitations
 
 - Uses the device's default TTS voice (voice picker UI not yet implemented)
-- Word timing is estimated (Android TTS does not provide per-word callbacks
-  when synthesizing to file)
+- Word timing is estimated (Android TTS does not provide per-word callbacks when synthesizing to file)
 - First sentence may have a brief delay while the TTS engine initializes
 
 ## Building from source
 
-The `package-for-kobo.sh` script cross-compiles espeak-ng for ARM and bundles
-the plugin into a ready-to-deploy directory. It requires
-[Nix](https://nixos.org/download) for the cross-compilation toolchain.
+The `package-for-kobo.sh` script cross-compiles espeak-ng for ARM and bundles the plugin into a ready-to-deploy directory. It requires [Nix](https://nixos.org/download) for the cross-compilation toolchain.
 
 ```bash
 # Plugin + espeak-ng only
@@ -541,8 +434,7 @@ bash package-for-kobo.sh --with-piper
 bash package-for-kobo.sh --piper-voice en_US-ryan-low
 ```
 
-The output is placed in `kobo-tts-bundle/audiobook.koplugin/`. Copy it to your
-device:
+The output is placed in `kobo-tts-bundle/audiobook.koplugin/`. Copy it to your device:
 
 ```bash
 scp -P 2222 -r kobo-tts-bundle/audiobook.koplugin root@<kobo-ip>:/mnt/onboard/.adds/koreader/plugins/
@@ -550,21 +442,13 @@ scp -P 2222 -r kobo-tts-bundle/audiobook.koplugin root@<kobo-ip>:/mnt/onboard/.a
 
 ### Installing the Piper binary manually
 
-If you don't want to use the packaging script, you can assemble the Piper
-runtime yourself:
+If you don't want to use the packaging script, you can assemble the Piper runtime yourself:
 
-1. Download the **armv7l** binary from
-   [Piper releases (2023.11.14-2)](https://github.com/rhasspy/piper/releases/tag/2023.11.14-2).
-2. Extract `piper`, its `lib/` directory, and `espeak-ng-data/` into
-   `audiobook.koplugin/piper/`.
-3. Download a voice model (`.onnx` + `.onnx.json`) as described in
-   [Downloading additional voices](#downloading-additional-voices) and place
-   them in the same `piper/` directory.
+1. Download the **armv7l** binary from [Piper releases (2023.11.14-2)](https://github.com/rhasspy/piper/releases/tag/2023.11.14-2).
+2. Extract `piper`, its `lib/` directory, and `espeak-ng-data/` into `audiobook.koplugin/piper/`.
+3. Download a voice model (`.onnx` + `.onnx.json`) as described in [Downloading additional voices](#downloading-additional-voices) and place them in the same `piper/` directory.
 
-> **Note:** The [rhasspy/piper](https://github.com/rhasspy/piper) repository
-> was archived in October 2025. The binaries on the releases page still work.
-> The project continues as
-> [OHF-Voice/piper1-gpl](https://github.com/OHF-Voice/piper1-gpl).
+> **Note:** The [rhasspy/piper](https://github.com/rhasspy/piper) repository was archived in October 2025. The binaries on the releases page still work. The project continues as [OHF-Voice/piper1-gpl](https://github.com/OHF-Voice/piper1-gpl).
 
 ## To Do
 
