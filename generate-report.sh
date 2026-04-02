@@ -278,6 +278,12 @@ if [ "$PLATFORM" = "kindle" ] && command -v lipc-get-prop >/dev/null 2>&1; then
     [ -z "$KINDLE_LIPC_PLAYERMGR" ] && KINDLE_LIPC_PLAYERMGR="not found"
     KINDLE_LIPC_AUDIOMGRD=$(capture lipc-probe com.lab126.audiomgrd 2>/dev/null | head -20)
     [ -z "$KINDLE_LIPC_AUDIOMGRD" ] && KINDLE_LIPC_AUDIOMGRD="not found"
+    # v0.1.5.27: capture actual playermgr/audiomgrd state values
+    KINDLE_PLAYERMGR_INPLAYBACK=$(lipc-get-prop com.lab126.playermgr InPlayback 2>/dev/null || echo "n/a")
+    KINDLE_PLAYERMGR_TTS_STATE=$(lipc-get-prop com.lab126.playermgr TTS_State 2>/dev/null || echo "n/a")
+    KINDLE_AUDIOMGRD_OUTPUT_CONNECTED=$(lipc-get-prop com.lab126.audiomgrd audioOutputConnected 2>/dev/null || echo "n/a")
+    KINDLE_AUDIOMGRD_CURRENT_OUTPUT=$(lipc-get-prop com.lab126.audiomgrd audioCurrentOutput 2>/dev/null || echo "n/a")
+    KINDLE_AUDIOMGRD_VOLUME=$(lipc-get-prop com.lab126.audiomgrd speakerVolume 2>/dev/null || echo "n/a")
     # Full ALSA config (v0.1.5.24 showed dmix0 on hw:0,0)
     KINDLE_ASOUND_CONF_FULL=$(cat /etc/asound.conf 2>/dev/null || echo "not found")
     KINDLE_DEV_SND_FULL=$(ls -la /dev/snd/ 2>/dev/null || echo "empty")
@@ -322,6 +328,11 @@ $(printf '%b' "$KINDLE_AUDIO_BINS")  kindle_snd_modules: ${KINDLE_SND_MODULES}
   kindle_audiomgrd_maps: ${KINDLE_AUDIOMGRD_MAPS}
   kindle_lipc_playermgr: ${KINDLE_LIPC_PLAYERMGR}
   kindle_lipc_audiomgrd: ${KINDLE_LIPC_AUDIOMGRD}
+  kindle_playermgr_inplayback: ${KINDLE_PLAYERMGR_INPLAYBACK}
+  kindle_playermgr_tts_state: ${KINDLE_PLAYERMGR_TTS_STATE}
+  kindle_audiomgrd_output_connected: ${KINDLE_AUDIOMGRD_OUTPUT_CONNECTED}
+  kindle_audiomgrd_current_output: ${KINDLE_AUDIOMGRD_CURRENT_OUTPUT}
+  kindle_audiomgrd_volume: ${KINDLE_AUDIOMGRD_VOLUME}
   kindle_asound_conf_full: ${KINDLE_ASOUND_CONF_FULL}
   kindle_dev_snd_full: ${KINDLE_DEV_SND_FULL}
   kindle_lipc_all_services: ${KINDLE_LIPC_ALL_SERVICES}"

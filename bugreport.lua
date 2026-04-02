@@ -409,6 +409,12 @@ local function collectAudioInfo(plugin)
         -- LIPC services discovered in v0.1.5.24: playermgr and audiomgrd
         info.kindle_lipc_playermgr = shellCapture("lipc-probe com.lab126.playermgr 2>/dev/null | head -20", 3) or "not found"
         info.kindle_lipc_audiomgrd = shellCapture("lipc-probe com.lab126.audiomgrd 2>/dev/null | head -20", 3) or "not found"
+        -- v0.1.5.27: capture actual playermgr/audiomgrd state values
+        info.kindle_playermgr_inplayback = shellCapture("lipc-get-prop com.lab126.playermgr InPlayback 2>/dev/null", 2) or "n/a"
+        info.kindle_playermgr_tts_state = shellCapture("lipc-get-prop com.lab126.playermgr TTS_State 2>/dev/null", 2) or "n/a"
+        info.kindle_audiomgrd_output_connected = shellCapture("lipc-get-prop com.lab126.audiomgrd audioOutputConnected 2>/dev/null", 2) or "n/a"
+        info.kindle_audiomgrd_current_output = shellCapture("lipc-get-prop com.lab126.audiomgrd audioCurrentOutput 2>/dev/null", 2) or "n/a"
+        info.kindle_audiomgrd_volume = shellCapture("lipc-get-prop com.lab126.audiomgrd speakerVolume 2>/dev/null", 2) or "n/a"
         -- Full ALSA config: v0.1.5.24 showed dmix0 on hw:0,0 -- we need
         -- the complete config to see all defined PCMs and their routing.
         info.kindle_asound_conf_full = shellCapture("cat /etc/asound.conf 2>/dev/null", 5) or "not found"

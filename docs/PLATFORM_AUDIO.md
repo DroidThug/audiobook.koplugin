@@ -317,10 +317,47 @@ headphones:
 | Amazon TTS service | `lipc-probe com.lab126.kaf.TTSService` | Properties of Amazon's built-in TTS |
 | Amazon audio player | `lipc-probe com.lab126.audioPlayer` | Properties of Amazon's audio player service |
 
+### LIPC Playback via playermgr (v0.1.5.27)
+
+v0.1.5.26 diagnostics revealed the full Kindle audio architecture:
+
+- `audiomgrd` loads `audio.a2dp.default.so` (Android A2DP HAL) and `libmixerAPI.so.1.0`
+- `playermgr` is a GStreamer-based media player exposed via LIPC (confirmed by `gstLogLevel` property)
+- BT audio uses Android Bluedroid stack with `@/data/misc/bluedroid/.a2dp_ctrl` socket
+
+Audio pipeline:
+```
+playermgr (GStreamer) → audiomgrd (mixer) → audio.a2dp.default.so → .a2dp_data → BT headphones
+```
+
+Plugin implementation (`audio_player_type = "kindle-lipc"`):
+```
+lipc-set-prop com.lab126.playermgr Stop ''      -- stop previous
+lipc-set-prop com.lab126.playermgr Open '<path>' -- load WAV
+lipc-set-prop com.lab126.playermgr Play ''       -- start playback
+lipc-get-prop com.lab126.playermgr InPlayback    -- poll completion (0 = done)
+lipc-set-prop com.lab126.playermgr Pause ''      -- pause
+lipc-set-prop com.lab126.playermgr Play ''       -- resume
+lipc-set-prop com.lab126.playermgr Stop ''       -- stop
+```
+
+Key playermgr properties:
+| Property | Type | Use |
+|----------|------|-----|
+| `Open` | w Str | Load audio file |
+| `Play` | w Str | Start/resume playback |
+| `Stop` | w Str | Stop playback |
+| `Pause` | w Str | Pause playback |
+| `Close` | w Str | Release resources |
+| `InPlayback` | r Int | 0=stopped, non-zero=playing |
+| `TTS_State` | r Int | TTS-specific state |
+| `gstLogLevel` | rw Int | GStreamer log verbosity |
+
 ### Potential Future Solutions
 
 | Approach | Feasibility | Preserves Piper voice | Dependencies |
 |----------|-------------|----------------------|--------------|
+| **LIPC playermgr (implemented v0.1.5.27)** | **High -- in use** | **Yes** | **lipc-set-prop (built-in)** |
 | Amazon TTS via LIPC (`lipc-set-prop com.lab126.kaf.TTSService ttsSpeak "text"`) | High | No (Amazon's voice) | None (LIPC is built-in) |
 | Bundle full BlueZ stack (`bluetoothd` + BlueALSA) | Low | Yes | Conflicts with `btfd` for HCI ownership |
 | Inject into `btfd` A2DP socket | Unknown (needs diagnostic data) | Yes | Reverse-engineering required |
@@ -390,18 +427,19 @@ The `findAudioPlayer()` function in `ttsengine.lua` builds a priority list:
 
 ```
 1. [Android]     → JNI MediaPlayer                        (Android only)
-2. [GStreamer]    → gst-launch-1.0 + mtkbtmwrpcaudiosink  (MTK Kobo only)
-3. [BlueALSA]    → aplay -D bluealsa                      (BlueZ Kobo only)
-4. [Kindle -D]   → aplay -q -D {probed device}            (Kindle with discovered device)
-5. [Kindle PA]   → paplay                                 (Kindle with PulseAudio)
-6. [ALSA]        → aplay -q -D default                    (any device with soundcard)
-7. [ALSA]        → aplay -q -D hw:0,0                     (any device with soundcard)
-8. [ALSA]        → aplay -q                               (any device with soundcard)
-9. [PulseAudio]  → paplay                                 (generic fallback)
-10. [mpv]        → mpv --no-video --really-quiet           (generic fallback)
-11. [mplayer]    → mplayer -really-quiet                   (generic fallback)
-12. [sox]        → play -q                                 (generic fallback)
-13. [ALSA]       → aplay -q                               (last resort, no soundcard, non-Kindle)
+2. [Kindle LIPC] → lipc-set-prop com.lab126.playermgr     (Kindle only, v0.1.5.27+)
+3. [GStreamer]    → gst-launch-1.0 + mtkbtmwrpcaudiosink  (MTK Kobo only)
+4. [BlueALSA]    → aplay -D bluealsa                      (BlueZ Kobo only)
+5. [Kindle -D]   → aplay -q -D {probed device}            (Kindle ALSA fallback)
+6. [Kindle PA]   → paplay                                 (Kindle with PulseAudio)
+7. [ALSA]        → aplay -q -D default                    (any device with soundcard)
+8. [ALSA]        → aplay -q -D hw:0,0                     (any device with soundcard)
+9. [ALSA]        → aplay -q                               (any device with soundcard)
+10. [PulseAudio] → paplay                                 (generic fallback)
+11. [mpv]        → mpv --no-video --really-quiet           (generic fallback)
+12. [mplayer]    → mplayer -really-quiet                   (generic fallback)
+13. [sox]        → play -q                                 (generic fallback)
+14. [ALSA]       → aplay -q                               (last resort, no soundcard, non-Kindle)
 ```
 
 ---
@@ -442,9 +480,12 @@ The `findAudioPlayer()` function in `ttsengine.lua` builds a priority list:
 - Kernel sound modules (`lsmod | grep snd`)
 - ALSA config (`/etc/asound.conf`)
 - `btfd` PID, command line, open fds, unix sockets, memory maps
+- `audiomgrd` PID, command line, fds, memory maps (audio/a2dp/mixer libs)
+- `playermgr` LIPC properties (Open/Play/Stop/InPlayback/gstLogLevel)
+- `audiomgrd` LIPC properties (audioOutputConnected/audioCurrentOutput/speakerVolume)
 - HCI devices (`/dev/hci*`, `/sys/class/bluetooth/`, `hciconfig -a`)
 - D-Bus daemon presence and BlueZ registration
-- System-wide BT/audio unix sockets
+- System-wide BT/audio unix sockets (including Bluedroid `.a2dp_ctrl`)
 - LIPC `com.lab126.kaf.TTSService` properties
 - LIPC `com.lab126.audioPlayer` properties
 

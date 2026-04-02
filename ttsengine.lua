@@ -1244,6 +1244,110 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         return true
     end
 
+    -- === KINDLE LIPC PLAYBACK PATH ===
+    -- Use Amazon's playermgr LIPC service (GStreamer-based) to play WAV
+    -- files through the Kindle audio stack → audiomgrd → BT headphones.
+    if self.audio_player_type == "kindle-lipc" then
+        self._concat_durations = nil
+        self._expected_play_duration_ms = self._current_audio_duration_ms
+        self.play_generation = (self.play_generation or 0) + 1
+        local my_gen = self.play_generation
+        self.playback_latency_ms = 300  -- LIPC + GStreamer startup
+
+        logger.warn("TTSEngine: Kindle LIPC play:", self.current_audio_file)
+
+        -- Stop any previous playback first
+        os.execute("lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null")
+
+        -- Open the WAV file, then start playback.
+        -- playermgr uses GStreamer internally, which handles WAV decoding.
+        local file_path = self.current_audio_file
+        local open_ret = os.execute(string.format(
+            "lipc-set-prop com.lab126.playermgr Open '%s' 2>/dev/null", file_path))
+        if open_ret ~= 0 and open_ret ~= true then
+            logger.warn("TTSEngine: Kindle LIPC Open failed (ret=", open_ret,
+                "), trying Play with path directly")
+            -- Some playermgr versions may accept path in Play directly
+            os.execute(string.format(
+                "lipc-set-prop com.lab126.playermgr Play '%s' 2>/dev/null", file_path))
+        else
+            os.execute("lipc-set-prop com.lab126.playermgr Play '' 2>/dev/null")
+        end
+
+        self._audio_launched_at = UIManager:getTime()
+        logger.warn("TTSEngine: Kindle LIPC playback started, expected duration:",
+            self._expected_play_duration_ms, "ms")
+
+        -- Start timing loop for word highlighting
+        self:startTimingLoop()
+
+        -- Poll InPlayback property for completion detection.
+        -- Also use a safety timeout based on WAV duration.
+        local engine = self
+        local poll_count = 0
+        local dur_ms = self._expected_play_duration_ms or 5000
+        -- Max polls: at least 300 (30s) or 3x expected duration at 100ms interval
+        local max_polls = math.max(300, math.floor(dur_ms * 3 / 100))
+        -- Allow a brief startup period before checking InPlayback
+        local startup_polls = 5  -- 500ms for LIPC + GStreamer to open file
+
+        local function pollLipcDone()
+            if (engine.play_generation or 0) ~= my_gen then return end
+            if not engine.is_speaking then return end
+            if engine.is_paused then
+                UIManager:scheduleIn(0.3, pollLipcDone)
+                return
+            end
+            poll_count = poll_count + 1
+
+            -- Check InPlayback: 0 means not playing (completed or failed)
+            if poll_count > startup_polls then
+                local h = io.popen("lipc-get-prop com.lab126.playermgr InPlayback 2>/dev/null")
+                if h then
+                    local val = h:read("*a") or ""
+                    h:close()
+                    val = val:match("(%d+)")
+                    if val and tonumber(val) == 0 then
+                        -- Verify enough time has passed (not an instant failure)
+                        local elapsed_ms = 0
+                        if engine._audio_launched_at then
+                            elapsed_ms = time.to_ms(UIManager:getTime() - engine._audio_launched_at)
+                                - (engine._total_pause_ms or 0)
+                        end
+                        if elapsed_ms > 500 then
+                            logger.warn("TTSEngine: Kindle LIPC playback complete, elapsed=",
+                                elapsed_ms, "ms")
+                            engine:onPlaybackComplete()
+                            return
+                        elseif elapsed_ms < 200 and poll_count > 10 then
+                            -- Instant failure: playermgr couldn't play the file
+                            logger.err("TTSEngine: Kindle LIPC playback failed instantly")
+                            engine.is_speaking = false
+                            engine.play_generation = (engine.play_generation or 0) + 1
+                            engine:cleanup()
+                            UIManager:show(InfoMessage:new{
+                                text = _("Kindle audio playback failed.\n\nThe playermgr service could not play the audio file. Please generate a bug report and share it on GitHub."),
+                                timeout = 8,
+                            })
+                            return
+                        end
+                    end
+                end
+            end
+
+            if poll_count >= max_polls then
+                logger.warn("TTSEngine: Kindle LIPC playback timed out after",
+                    poll_count * 0.1, "s -- forcing completion")
+                os.execute("lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null")
+                engine:onPlaybackComplete()
+            else
+                UIManager:scheduleIn(0.1, pollLipcDone)
+            end
+        end
+        UIManager:scheduleIn(0.1, pollLipcDone)
+        return true
+    end
+
     -- === PERSISTENT BT PIPELINE PATH ===
     -- For Bluetooth: use a single persistent gst-launch that never stops.
     -- A feeder script writes silence between sentences to keep BT A2DP alive,
@@ -1536,7 +1640,8 @@ end
 
 --[[--
 Find available audio player.
-Sets self.audio_player_type to "gst-bt", "aplay", or "generic".
+Sets self.audio_player_type to "kindle-lipc", "gst-bt", "bluealsa", "aplay",
+"android", or "generic".
 @return string|nil Player command
 --]]
 function TTSEngine:findAudioPlayer()
@@ -1545,6 +1650,25 @@ function TTSEngine:findAudioPlayer()
         self.audio_player_type = "android"
         logger.dbg("TTSEngine: Using Android MediaPlayer for audio")
         return "android"
+    end
+
+    -- 0b) Kindle LIPC: use Amazon's playermgr service via lipc-set-prop.
+    -- playermgr uses GStreamer internally and routes audio through
+    -- audiomgrd → audio.a2dp.default.so → BT headphones.
+    -- This is the native way to play audio files on Kindle devices
+    -- (which have no ALSA soundcard, no BlueZ, no PulseAudio).
+    if Device:isKindle() and self:commandExists("lipc-set-prop")
+        and self:commandExists("lipc-get-prop") then
+        -- Verify playermgr service exists by probing a read property
+        local ok = os.execute("lipc-get-prop com.lab126.playermgr InPlayback >/dev/null 2>&1")
+        if ok == 0 or ok == true then
+            self.audio_player_type = "kindle-lipc"
+            self._no_real_audio_output = false  -- LIPC routes through BT
+            logger.warn("TTSEngine: Found Kindle LIPC playermgr service")
+            return "kindle-lipc"
+        else
+            logger.warn("TTSEngine: lipc-set-prop exists but playermgr not responding")
+        end
     end
 
     -- 1) GStreamer with Kobo Bluetooth A2DP sink (primary on Kobo Libra Colour etc.)
@@ -2352,6 +2476,9 @@ function TTSEngine:pause()
         -- Android: pause via MediaPlayer API
         if self.audio_player_type == "android" and self._android_tts then
             self._android_tts:pausePlayback()
+        -- Kindle LIPC: pause via playermgr
+        elseif self.audio_player_type == "kindle-lipc" then
+            os.execute("lipc-set-prop com.lab126.playermgr Pause '' 2>/dev/null")
         -- Freeze the audio pipeline/process (SIGSTOP) so it can resume in place
         elseif self._persistent_pipeline then
             if self._pipeline_gst_pid then
@@ -2383,6 +2510,9 @@ function TTSEngine:resume()
         -- Android: resume via MediaPlayer API
         if self.audio_player_type == "android" and self._android_tts then
             self._android_tts:resumePlayback()
+        -- Kindle LIPC: resume via playermgr
+        elseif self.audio_player_type == "kindle-lipc" then
+            os.execute("lipc-set-prop com.lab126.playermgr Play '' 2>/dev/null")
         -- Unfreeze the audio pipeline/process (SIGCONT)
         elseif self._persistent_pipeline then
             if self._pipeline_gst_pid then
@@ -2428,6 +2558,11 @@ function TTSEngine:stop()
     -- Stop Android MediaPlayer if active
     if self.audio_player_type == "android" and self._android_tts then
         self._android_tts:stopPlayback()
+    end
+
+    -- Stop Kindle LIPC playermgr if active
+    if self.audio_player_type == "kindle-lipc" then
+        os.execute("lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null")
     end
 
     -- Stop persistent pipeline or legacy keepalive
@@ -2495,6 +2630,10 @@ function TTSEngine:forceKillAll()
     if self._android_tts then
         self._android_tts:shutdown()
         self._android_tts = nil
+    end
+    -- Stop Kindle LIPC playermgr
+    if self.audio_player_type == "kindle-lipc" then
+        os.execute("lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null")
     end
     -- Stop persistent pipeline or legacy keepalive
     if self._persistent_pipeline then
