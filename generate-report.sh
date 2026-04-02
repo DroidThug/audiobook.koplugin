@@ -291,6 +291,34 @@ if [ "$PLATFORM" = "kindle" ] && command -v lipc-get-prop >/dev/null 2>&1; then
     KINDLE_LIPC_ALL_SERVICES=$(capture lipc-probe -l 2>/dev/null | head -40)
     [ -z "$KINDLE_LIPC_ALL_SERVICES" ] && KINDLE_LIPC_ALL_SERVICES="n/a"
 
+    # v0.1.5.28: LIPC playback smoke test -- generate tiny silence WAV and try Open+Play
+    KINDLE_LIPC_TEST=$(
+        dd if=/dev/zero bs=1 count=4410 2>/dev/null | {
+            printf 'RIFF'
+            printf '\x6e\x11\x00\x00'
+            printf 'WAVE'
+            printf 'fmt '
+            printf '\x10\x00\x00\x00'
+            printf '\x01\x00'
+            printf '\x01\x00'
+            printf '\x22\x56\x00\x00'
+            printf '\x44\xac\x00\x00'
+            printf '\x02\x00'
+            printf '\x10\x00'
+            printf 'data'
+            printf '\x4a\x11\x00\x00'
+            cat
+        } > /tmp/.lipc_test.wav 2>&1
+        echo "wav_size=$(wc -c < /tmp/.lipc_test.wav 2>/dev/null)"
+        echo "open=$(lipc-set-prop com.lab126.playermgr Open '/tmp/.lipc_test.wav' 2>&1)"
+        echo "play=$(lipc-set-prop com.lab126.playermgr Play '' 2>&1)"
+        sleep 0.2 2>/dev/null || usleep 200000 2>/dev/null
+        echo "inplayback=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+        echo "stop=$(lipc-set-prop com.lab126.playermgr Stop '' 2>&1)"
+        rm -f /tmp/.lipc_test.wav
+    )
+    [ -z "$KINDLE_LIPC_TEST" ] && KINDLE_LIPC_TEST="failed"
+
     KINDLE_SECTION="  kindle_lipc_available: yes
   kindle_bt_service: ${KINDLE_BT_SERVICE}
   kindle_bt_prop: ${KINDLE_BT_PROP:-n/a}
@@ -335,7 +363,8 @@ $(printf '%b' "$KINDLE_AUDIO_BINS")  kindle_snd_modules: ${KINDLE_SND_MODULES}
   kindle_audiomgrd_volume: ${KINDLE_AUDIOMGRD_VOLUME}
   kindle_asound_conf_full: ${KINDLE_ASOUND_CONF_FULL}
   kindle_dev_snd_full: ${KINDLE_DEV_SND_FULL}
-  kindle_lipc_all_services: ${KINDLE_LIPC_ALL_SERVICES}"
+  kindle_lipc_all_services: ${KINDLE_LIPC_ALL_SERVICES}
+  kindle_lipc_test: ${KINDLE_LIPC_TEST}"
     [ -n "$KINDLE_LIPC_SERVICES" ] && KINDLE_SECTION="${KINDLE_SECTION}
   kindle_lipc_services: ${KINDLE_LIPC_SERVICES}"
     [ -n "$KINDLE_BT_PROPS" ] && KINDLE_SECTION="${KINDLE_SECTION}

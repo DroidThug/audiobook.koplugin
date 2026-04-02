@@ -140,6 +140,9 @@ local function collectPluginInfo(plugin)
     info.tts_backend_cmd = engine.backend_cmd and sanitizePath(engine.backend_cmd) or "nil"
     info.tts_backend_error = engine.backend_error or "none"
     info.player_error = engine.player_error and "yes" or "no"
+    info.audio_player_type = engine.audio_player_type or "not set"
+    info.audio_player_cached = engine._cached_player or "not set"
+    info.no_real_audio_output = engine._no_real_audio_output and "yes" or "no"
 
     -- Bundled binaries presence (check both original and .bin-renamed variants)
     local plugin_dir = engine.plugin_dir or _utils_dir:sub(1, -2)
@@ -423,6 +426,34 @@ local function collectAudioInfo(plugin)
         info.kindle_dev_snd_full = shellCapture("ls -la /dev/snd/ 2>/dev/null", 3) or "empty"
         -- All LIPC services (not just bt-related) for discovery
         info.kindle_lipc_all_services = shellCapture("lipc-probe -l 2>/dev/null | head -40", 3) or "n/a"
+        -- v0.1.5.28: LIPC playback smoke test.
+        -- Generate a tiny 100ms silence WAV in /tmp and try Open+Play.
+        -- Capture all output so we can see exactly what playermgr says.
+        info.kindle_lipc_test = shellCapture([[
+dd if=/dev/zero bs=1 count=4410 2>/dev/null | {
+  printf 'RIFF'
+  printf '\x6e\x11\x00\x00'
+  printf 'WAVE'
+  printf 'fmt '
+  printf '\x10\x00\x00\x00'
+  printf '\x01\x00'
+  printf '\x01\x00'
+  printf '\x22\x56\x00\x00'
+  printf '\x44\xac\x00\x00'
+  printf '\x02\x00'
+  printf '\x10\x00'
+  printf 'data'
+  printf '\x4a\x11\x00\x00'
+  cat
+} > /tmp/.lipc_test.wav 2>&1
+echo "wav_size=$(wc -c < /tmp/.lipc_test.wav 2>/dev/null)"
+echo "open=$(lipc-set-prop com.lab126.playermgr Open '/tmp/.lipc_test.wav' 2>&1)"
+echo "play=$(lipc-set-prop com.lab126.playermgr Play '' 2>&1)"
+sleep 0.2 2>/dev/null || usleep 200000 2>/dev/null
+echo "inplayback=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+echo "stop=$(lipc-set-prop com.lab126.playermgr Stop '' 2>&1)"
+rm -f /tmp/.lipc_test.wav
+]], 5) or "failed"
     end
 
     -- /tmp writable (needed for WAV files)

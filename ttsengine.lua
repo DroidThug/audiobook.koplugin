@@ -1254,29 +1254,58 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         local my_gen = self.play_generation
         self.playback_latency_ms = 300  -- LIPC + GStreamer startup
 
-        logger.warn("TTSEngine: Kindle LIPC play:", self.current_audio_file)
+        logger.warn("TTSEngine: Kindle LIPC play:", self.current_audio_file,
+            "dur=", self._expected_play_duration_ms, "ms")
 
         -- Stop any previous playback first
         os.execute("lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null")
 
         -- Open the WAV file, then start playback.
         -- playermgr uses GStreamer internally, which handles WAV decoding.
+        -- Use io.popen to capture stderr for diagnostics.
         local file_path = self.current_audio_file
-        local open_ret = os.execute(string.format(
-            "lipc-set-prop com.lab126.playermgr Open '%s' 2>/dev/null", file_path))
-        if open_ret ~= 0 and open_ret ~= true then
-            logger.warn("TTSEngine: Kindle LIPC Open failed (ret=", open_ret,
-                "), trying Play with path directly")
-            -- Some playermgr versions may accept path in Play directly
-            os.execute(string.format(
-                "lipc-set-prop com.lab126.playermgr Play '%s' 2>/dev/null", file_path))
-        else
-            os.execute("lipc-set-prop com.lab126.playermgr Play '' 2>/dev/null")
+
+        -- Try Open + Play first (standard LIPC player API)
+        local open_h = io.popen(string.format(
+            "lipc-set-prop com.lab126.playermgr Open '%s' 2>&1", file_path))
+        local open_out = ""
+        if open_h then
+            open_out = open_h:read("*a") or ""
+            open_h:close()
+        end
+        logger.warn("TTSEngine: Kindle LIPC Open result:", open_out)
+
+        -- Try Play (empty string = play what was opened)
+        local play_h = io.popen("lipc-set-prop com.lab126.playermgr Play '' 2>&1")
+        local play_out = ""
+        if play_h then
+            play_out = play_h:read("*a") or ""
+            play_h:close()
+        end
+        logger.warn("TTSEngine: Kindle LIPC Play result:", play_out)
+
+        -- Also try Play with path directly (some services accept path in Play)
+        if open_out:match("[Ee]rror") then
+            logger.warn("TTSEngine: Kindle LIPC Open may have failed, trying Play with path")
+            local alt_h = io.popen(string.format(
+                "lipc-set-prop com.lab126.playermgr Play '%s' 2>&1", file_path))
+            if alt_h then
+                local alt_out = alt_h:read("*a") or ""
+                alt_h:close()
+                logger.warn("TTSEngine: Kindle LIPC Play-with-path result:", alt_out)
+            end
         end
 
+        -- Check if playback actually started
+        local check_h = io.popen("lipc-get-prop com.lab126.playermgr InPlayback 2>&1")
+        local in_playback = ""
+        if check_h then
+            in_playback = check_h:read("*a") or ""
+            check_h:close()
+        end
+        logger.warn("TTSEngine: Kindle LIPC InPlayback after launch:", in_playback)
+
         self._audio_launched_at = UIManager:getTime()
-        logger.warn("TTSEngine: Kindle LIPC playback started, expected duration:",
-            self._expected_play_duration_ms, "ms")
 
         -- Start timing loop for word highlighting
         self:startTimingLoop()
@@ -1659,15 +1688,22 @@ function TTSEngine:findAudioPlayer()
     -- (which have no ALSA soundcard, no BlueZ, no PulseAudio).
     if Device:isKindle() and self:commandExists("lipc-set-prop")
         and self:commandExists("lipc-get-prop") then
-        -- Verify playermgr service exists by probing a read property
-        local ok = os.execute("lipc-get-prop com.lab126.playermgr InPlayback >/dev/null 2>&1")
-        if ok == 0 or ok == true then
-            self.audio_player_type = "kindle-lipc"
-            self._no_real_audio_output = false  -- LIPC routes through BT
-            logger.warn("TTSEngine: Found Kindle LIPC playermgr service")
-            return "kindle-lipc"
-        else
-            logger.warn("TTSEngine: lipc-set-prop exists but playermgr not responding")
+        -- Verify playermgr service exists by reading InPlayback property.
+        -- Use io.popen (not os.execute) because Lua 5.1 os.execute return
+        -- values are unreliable across builds (some return raw wait status).
+        local h = io.popen("lipc-get-prop com.lab126.playermgr InPlayback 2>&1")
+        if h then
+            local val = h:read("*a") or ""
+            h:close()
+            val = val:match("^%s*(%d+)")
+            if val then
+                self.audio_player_type = "kindle-lipc"
+                self._no_real_audio_output = false  -- LIPC routes through BT
+                logger.warn("TTSEngine: Found Kindle LIPC playermgr service, InPlayback=", val)
+                return "kindle-lipc"
+            else
+                logger.warn("TTSEngine: lipc-get-prop playermgr InPlayback returned:", val)
+            end
         end
     end
 
