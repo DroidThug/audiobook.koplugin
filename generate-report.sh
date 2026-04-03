@@ -291,11 +291,14 @@ if [ "$PLATFORM" = "kindle" ] && command -v lipc-get-prop >/dev/null 2>&1; then
     KINDLE_LIPC_ALL_SERVICES=$(capture lipc-probe -l 2>/dev/null | head -40)
     [ -z "$KINDLE_LIPC_ALL_SERVICES" ] && KINDLE_LIPC_ALL_SERVICES="n/a"
 
-    # v0.1.5.28: LIPC playback smoke test -- generate tiny silence WAV and try Open+Play
+    # v0.1.5.29: LIPC playback smoke test -- multi-strategy
     KINDLE_LIPC_TEST=$(
-        dd if=/dev/zero bs=1 count=4410 2>/dev/null | {
+        WAV=/tmp/.lipc_test.wav
+        # Generate valid 1-second silence WAV: 22050 samples * 2 bytes = 44100 bytes
+        dd if=/dev/zero bs=44100 count=1 2>/dev/null > /tmp/.lipc_raw
+        {
             printf 'RIFF'
-            printf '\x6e\x11\x00\x00'
+            printf '\x24\xac\x00\x00'
             printf 'WAVE'
             printf 'fmt '
             printf '\x10\x00\x00\x00'
@@ -306,16 +309,40 @@ if [ "$PLATFORM" = "kindle" ] && command -v lipc-get-prop >/dev/null 2>&1; then
             printf '\x02\x00'
             printf '\x10\x00'
             printf 'data'
-            printf '\x4a\x11\x00\x00'
-            cat
-        } > /tmp/.lipc_test.wav 2>&1
-        echo "wav_size=$(wc -c < /tmp/.lipc_test.wav 2>/dev/null)"
-        echo "open=$(lipc-set-prop com.lab126.playermgr Open '/tmp/.lipc_test.wav' 2>&1)"
-        echo "play=$(lipc-set-prop com.lab126.playermgr Play '' 2>&1)"
-        sleep 0.2 2>/dev/null || usleep 200000 2>/dev/null
-        echo "inplayback=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
-        echo "stop=$(lipc-set-prop com.lab126.playermgr Stop '' 2>&1)"
-        rm -f /tmp/.lipc_test.wav
+            printf '\x04\xac\x00\x00'
+            cat /tmp/.lipc_raw
+        } > "$WAV"
+        rm -f /tmp/.lipc_raw
+        echo "wav_size=$(wc -c < "$WAV" 2>/dev/null)"
+        echo "setFocus=$(lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>&1)"
+        echo "gstLog=$(lipc-set-prop com.lab126.playermgr gstLogLevel 2 2>&1)"
+        echo "--- strategy1: Open(URI)+Play ---"
+        lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+        echo "open_uri=$(lipc-set-prop com.lab126.playermgr Open "file://$WAV" 2>&1)"
+        echo "play1=$(lipc-set-prop com.lab126.playermgr Play '' 2>&1)"
+        sleep 0.3 2>/dev/null || usleep 300000 2>/dev/null
+        echo "inplayback1=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+        echo "--- strategy2: Open(path)+Play ---"
+        lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+        echo "open_path=$(lipc-set-prop com.lab126.playermgr Open "$WAV" 2>&1)"
+        echo "play2=$(lipc-set-prop com.lab126.playermgr Play '' 2>&1)"
+        sleep 0.3 2>/dev/null || usleep 300000 2>/dev/null
+        echo "inplayback2=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+        echo "--- strategy3: Play(URI) ---"
+        lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+        echo "play_uri=$(lipc-set-prop com.lab126.playermgr Play "file://$WAV" 2>&1)"
+        sleep 0.3 2>/dev/null || usleep 300000 2>/dev/null
+        echo "inplayback3=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+        echo "--- strategy4: Play(path) ---"
+        lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+        echo "play_path=$(lipc-set-prop com.lab126.playermgr Play "$WAV" 2>&1)"
+        sleep 0.3 2>/dev/null || usleep 300000 2>/dev/null
+        echo "inplayback4=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+        lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+        echo "--- audiomgrd state ---"
+        echo "audioOutput=$(lipc-get-prop com.lab126.audiomgrd audioCurrentOutput 2>&1)"
+        echo "outputConn=$(lipc-get-prop com.lab126.audiomgrd audioOutputConnected 2>&1)"
+        rm -f "$WAV"
     )
     [ -z "$KINDLE_LIPC_TEST" ] && KINDLE_LIPC_TEST="failed"
 

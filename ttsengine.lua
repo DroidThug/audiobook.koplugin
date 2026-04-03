@@ -1260,50 +1260,82 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         -- Stop any previous playback first
         os.execute("lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null")
 
-        -- Open the WAV file, then start playback.
+        -- Request audio focus from audiomgrd.  playermgr may refuse to
+        -- play unless its client has audio focus granted by the system
+        -- mixer.  The setFocus property takes a client name string.
+        os.execute("lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>/dev/null")
+
+        -- Enable GStreamer debug logging so errors appear in crash.log
+        -- (gstLogLevel: 0=none, 1=error, 2=warning, 3=info, 4=debug)
+        os.execute("lipc-set-prop com.lab126.playermgr gstLogLevel 2 2>/dev/null")
+
         -- playermgr uses GStreamer internally, which handles WAV decoding.
-        -- Use io.popen to capture stderr for diagnostics.
+        -- Use io.popen to capture output for diagnostics.
         local file_path = self.current_audio_file
+        local file_uri = "file://" .. file_path
 
-        -- Try Open + Play first (standard LIPC player API)
-        local open_h = io.popen(string.format(
-            "lipc-set-prop com.lab126.playermgr Open '%s' 2>&1", file_path))
-        local open_out = ""
-        if open_h then
-            open_out = open_h:read("*a") or ""
-            open_h:close()
-        end
-        logger.warn("TTSEngine: Kindle LIPC Open result:", open_out)
-
-        -- Try Play (empty string = play what was opened)
-        local play_h = io.popen("lipc-set-prop com.lab126.playermgr Play '' 2>&1")
-        local play_out = ""
-        if play_h then
-            play_out = play_h:read("*a") or ""
-            play_h:close()
-        end
-        logger.warn("TTSEngine: Kindle LIPC Play result:", play_out)
-
-        -- Also try Play with path directly (some services accept path in Play)
-        if open_out:match("[Ee]rror") then
-            logger.warn("TTSEngine: Kindle LIPC Open may have failed, trying Play with path")
-            local alt_h = io.popen(string.format(
-                "lipc-set-prop com.lab126.playermgr Play '%s' 2>&1", file_path))
-            if alt_h then
-                local alt_out = alt_h:read("*a") or ""
-                alt_h:close()
-                logger.warn("TTSEngine: Kindle LIPC Play-with-path result:", alt_out)
-            end
+        -- Strategy 1: Open with file:// URI + Play (GStreamer prefers URIs)
+        local function lipc_cmd(cmd)
+            local h = io.popen(cmd .. " 2>&1")
+            local out = ""
+            if h then out = h:read("*a") or ""; h:close() end
+            return out
         end
 
-        -- Check if playback actually started
-        local check_h = io.popen("lipc-get-prop com.lab126.playermgr InPlayback 2>&1")
-        local in_playback = ""
-        if check_h then
-            in_playback = check_h:read("*a") or ""
-            check_h:close()
+        logger.warn("TTSEngine: Kindle LIPC trying URI:", file_uri)
+        local open_out = lipc_cmd(string.format(
+            "lipc-set-prop com.lab126.playermgr Open '%s'", file_uri))
+        local play_out = lipc_cmd("lipc-set-prop com.lab126.playermgr Play ''")
+        logger.warn("TTSEngine: Kindle LIPC Open(URI):", open_out, "Play:", play_out)
+
+        -- Check if playback started
+        local in_play = lipc_cmd("lipc-get-prop com.lab126.playermgr InPlayback")
+        local started = in_play:match("^%s*(%d+)") == "1"
+        logger.warn("TTSEngine: Kindle LIPC InPlayback after URI:", in_play)
+
+        -- Strategy 2: Open with bare path + Play
+        if not started then
+            logger.warn("TTSEngine: Kindle LIPC trying bare path:", file_path)
+            os.execute("lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null")
+            open_out = lipc_cmd(string.format(
+                "lipc-set-prop com.lab126.playermgr Open '%s'", file_path))
+            play_out = lipc_cmd("lipc-set-prop com.lab126.playermgr Play ''")
+            logger.warn("TTSEngine: Kindle LIPC Open(path):", open_out, "Play:", play_out)
+
+            in_play = lipc_cmd("lipc-get-prop com.lab126.playermgr InPlayback")
+            started = in_play:match("^%s*(%d+)") == "1"
+            logger.warn("TTSEngine: Kindle LIPC InPlayback after path:", in_play)
         end
-        logger.warn("TTSEngine: Kindle LIPC InPlayback after launch:", in_playback)
+
+        -- Strategy 3: Play with URI directly (no Open)
+        if not started then
+            logger.warn("TTSEngine: Kindle LIPC trying Play(URI) directly")
+            os.execute("lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null")
+            play_out = lipc_cmd(string.format(
+                "lipc-set-prop com.lab126.playermgr Play '%s'", file_uri))
+            logger.warn("TTSEngine: Kindle LIPC Play(URI):", play_out)
+
+            in_play = lipc_cmd("lipc-get-prop com.lab126.playermgr InPlayback")
+            started = in_play:match("^%s*(%d+)") == "1"
+            logger.warn("TTSEngine: Kindle LIPC InPlayback after Play(URI):", in_play)
+        end
+
+        -- Strategy 4: Play with bare path directly (no Open)
+        if not started then
+            logger.warn("TTSEngine: Kindle LIPC trying Play(path) directly")
+            os.execute("lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null")
+            play_out = lipc_cmd(string.format(
+                "lipc-set-prop com.lab126.playermgr Play '%s'", file_path))
+            logger.warn("TTSEngine: Kindle LIPC Play(path):", play_out)
+
+            in_play = lipc_cmd("lipc-get-prop com.lab126.playermgr InPlayback")
+            started = in_play:match("^%s*(%d+)") == "1"
+            logger.warn("TTSEngine: Kindle LIPC InPlayback after Play(path):", in_play)
+        end
+
+        if not started then
+            logger.warn("TTSEngine: Kindle LIPC — none of 4 strategies got InPlayback=1")
+        end
 
         self._audio_launched_at = UIManager:getTime()
 
