@@ -1257,6 +1257,17 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         logger.warn("TTSEngine: Kindle LIPC play:", self.current_audio_file,
             "dur=", self._expected_play_duration_ms, "ms")
 
+        -- Verify the WAV file exists and log its size (helps debug smoke test)
+        local file_path = self.current_audio_file
+        local fh = io.open(file_path, "rb")
+        if fh then
+            local size = fh:seek("end")
+            fh:close()
+            logger.warn("TTSEngine: Kindle LIPC wav_size=", size, "bytes")
+        else
+            logger.err("TTSEngine: Kindle LIPC WAV file does not exist:", file_path)
+        end
+
         -- Stop any previous playback first
         os.execute("lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null")
 
@@ -1271,7 +1282,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
 
         -- playermgr uses GStreamer internally, which handles WAV decoding.
         -- Use io.popen to capture output for diagnostics.
-        local file_path = self.current_audio_file
         local file_uri = "file://" .. file_path
 
         -- Strategy 1: Open with file:// URI + Play (GStreamer prefers URIs)
@@ -1335,6 +1345,9 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
 
         if not started then
             logger.warn("TTSEngine: Kindle LIPC — none of 4 strategies got InPlayback=1")
+        else
+            -- At least one strategy worked -- reset consecutive failure counter
+            self._lipc_consec_fails = 0
         end
 
         self._audio_launched_at = UIManager:getTime()
@@ -1351,6 +1364,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         local max_polls = math.max(300, math.floor(dur_ms * 3 / 100))
         -- Allow a brief startup period before checking InPlayback
         local startup_polls = 5  -- 500ms for LIPC + GStreamer to open file
+        local ever_playing = false  -- track if InPlayback was ever 1
 
         local function pollLipcDone()
             if (engine.play_generation or 0) ~= my_gen then return end
@@ -1361,35 +1375,46 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             end
             poll_count = poll_count + 1
 
-            -- Check InPlayback: 0 means not playing (completed or failed)
+            -- Check InPlayback: 1 = playing, 0 = idle/completed/failed
             if poll_count > startup_polls then
                 local h = io.popen("lipc-get-prop com.lab126.playermgr InPlayback 2>/dev/null")
                 if h then
                     local val = h:read("*a") or ""
                     h:close()
                     val = val:match("(%d+)")
-                    if val and tonumber(val) == 0 then
-                        -- Verify enough time has passed (not an instant failure)
+                    if val and tonumber(val) == 1 then
+                        ever_playing = true
+                    elseif val and tonumber(val) == 0 then
                         local elapsed_ms = 0
                         if engine._audio_launched_at then
                             elapsed_ms = time.to_ms(UIManager:getTime() - engine._audio_launched_at)
                                 - (engine._total_pause_ms or 0)
                         end
-                        if elapsed_ms > 500 then
+                        if ever_playing then
+                            -- Was playing, now stopped → playback completed normally
                             logger.warn("TTSEngine: Kindle LIPC playback complete, elapsed=",
                                 elapsed_ms, "ms")
+                            engine._lipc_consec_fails = 0
                             engine:onPlaybackComplete()
                             return
-                        elseif elapsed_ms < 200 and poll_count > 10 then
-                            -- Instant failure: playermgr couldn't play the file
-                            logger.err("TTSEngine: Kindle LIPC playback failed instantly")
-                            engine.is_speaking = false
-                            engine.play_generation = (engine.play_generation or 0) + 1
-                            engine:cleanup()
-                            UIManager:show(InfoMessage:new{
-                                text = _("Kindle audio playback failed.\n\nThe playermgr service could not play the audio file. Please generate a bug report and share it on GitHub."),
-                                timeout = 8,
-                            })
+                        elseif elapsed_ms > 3000 then
+                            -- Never started playing after 3 seconds → failure
+                            engine._lipc_consec_fails = (engine._lipc_consec_fails or 0) + 1
+                            logger.err("TTSEngine: Kindle LIPC playback never started, elapsed=",
+                                elapsed_ms, "ms, consec_fails=", engine._lipc_consec_fails)
+                            if engine._lipc_consec_fails >= 2 then
+                                -- Stop after 2 consecutive failures
+                                engine.is_speaking = false
+                                engine.play_generation = (engine.play_generation or 0) + 1
+                                engine:cleanup()
+                                UIManager:show(InfoMessage:new{
+                                    text = _("Kindle audio playback failed.\n\nThe playermgr service accepted commands but audio never started. This is a known issue on some Kindle models.\n\nPlease generate a bug report (Audiobook > Report a bug) and share it on GitHub issue #11."),
+                                    timeout = 10,
+                                })
+                                return
+                            end
+                            -- First failure -- try advancing to next sentence
+                            engine:onPlaybackComplete()
                             return
                         end
                     end

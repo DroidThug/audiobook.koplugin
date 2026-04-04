@@ -39,8 +39,8 @@ local function shellCapture(cmd, timeout_s)
     local output = handle:read("*a") or ""
     handle:close()
     output = output:gsub("^%s+", ""):gsub("%s+$", "")
-    if #output > 500 then
-        output = output:sub(1, 500) .. "…(truncated)"
+    if #output > 1500 then
+        output = output:sub(1, 1500) .. "…(truncated)"
     end
     return output ~= "" and output or nil
 end
@@ -426,15 +426,12 @@ local function collectAudioInfo(plugin)
         info.kindle_dev_snd_full = shellCapture("ls -la /dev/snd/ 2>/dev/null", 3) or "empty"
         -- All LIPC services (not just bt-related) for discovery
         info.kindle_lipc_all_services = shellCapture("lipc-probe -l 2>/dev/null | head -40", 3) or "n/a"
-        -- v0.1.5.29: LIPC playback smoke test -- multi-strategy.
+        -- v0.1.5.30: LIPC playback smoke test -- multi-strategy.
         -- Generate a 1-second 22050Hz mono 16-bit WAV (silence) and try
-        -- 4 strategies: Open(URI)+Play, Open(path)+Play, Play(URI), Play(path).
-        -- Also request audio focus first and enable gstLogLevel.
-        info.kindle_lipc_test = shellCapture([[
-WAV=/tmp/.lipc_test.wav
-# Generate valid 1-second silence WAV: 22050 samples * 2 bytes = 44100 bytes
-dd if=/dev/zero bs=44100 count=1 2>/dev/null > /tmp/.lipc_raw
-{
+        -- 4 LIPC strategies + 2 aplay strategies.
+        -- NOTE: first line MUST be a real command (not a variable assignment)
+        -- because shellCapture prepends 'timeout N' which wraps only line 1.
+        info.kindle_lipc_test = shellCapture([[dd if=/dev/zero bs=44100 count=1 2>/dev/null | {
   printf 'RIFF'
   printf '\x24\xac\x00\x00'
   printf 'WAVE'
@@ -448,40 +445,48 @@ dd if=/dev/zero bs=44100 count=1 2>/dev/null > /tmp/.lipc_raw
   printf '\x10\x00'
   printf 'data'
   printf '\x04\xac\x00\x00'
-  cat /tmp/.lipc_raw
-} > "$WAV"
-rm -f /tmp/.lipc_raw
-echo "wav_size=$(wc -c < "$WAV" 2>/dev/null)"
+  cat
+} > /tmp/.lipc_test.wav
+echo "wav_size=$(wc -c < /tmp/.lipc_test.wav 2>/dev/null)"
 echo "setFocus=$(lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>&1)"
 echo "gstLog=$(lipc-set-prop com.lab126.playermgr gstLogLevel 2 2>&1)"
 echo "--- strategy1: Open(URI)+Play ---"
 lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
-echo "open_uri=$(lipc-set-prop com.lab126.playermgr Open "file://$WAV" 2>&1)"
+echo "open_uri=$(lipc-set-prop com.lab126.playermgr Open 'file:///tmp/.lipc_test.wav' 2>&1)"
 echo "play1=$(lipc-set-prop com.lab126.playermgr Play '' 2>&1)"
-sleep 0.3 2>/dev/null || usleep 300000 2>/dev/null
+sleep 1 2>/dev/null || usleep 1000000 2>/dev/null
 echo "inplayback1=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+echo "tts_state1=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
 echo "--- strategy2: Open(path)+Play ---"
 lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
-echo "open_path=$(lipc-set-prop com.lab126.playermgr Open "$WAV" 2>&1)"
+echo "open_path=$(lipc-set-prop com.lab126.playermgr Open '/tmp/.lipc_test.wav' 2>&1)"
 echo "play2=$(lipc-set-prop com.lab126.playermgr Play '' 2>&1)"
-sleep 0.3 2>/dev/null || usleep 300000 2>/dev/null
+sleep 1 2>/dev/null || usleep 1000000 2>/dev/null
 echo "inplayback2=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
 echo "--- strategy3: Play(URI) ---"
 lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
-echo "play_uri=$(lipc-set-prop com.lab126.playermgr Play "file://$WAV" 2>&1)"
-sleep 0.3 2>/dev/null || usleep 300000 2>/dev/null
+echo "play_uri=$(lipc-set-prop com.lab126.playermgr Play 'file:///tmp/.lipc_test.wav' 2>&1)"
+sleep 1 2>/dev/null || usleep 1000000 2>/dev/null
 echo "inplayback3=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
 echo "--- strategy4: Play(path) ---"
 lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
-echo "play_path=$(lipc-set-prop com.lab126.playermgr Play "$WAV" 2>&1)"
-sleep 0.3 2>/dev/null || usleep 300000 2>/dev/null
+echo "play_path=$(lipc-set-prop com.lab126.playermgr Play '/tmp/.lipc_test.wav' 2>&1)"
+sleep 1 2>/dev/null || usleep 1000000 2>/dev/null
 echo "inplayback4=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+echo "--- strategy5: aplay dmix0 ---"
 lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+echo "aplay_dmix0=$(aplay -D dmix0 /tmp/.lipc_test.wav 2>&1 | head -3)"
+echo "--- strategy6: aplay default ---"
+echo "aplay_default=$(aplay -D default /tmp/.lipc_test.wav 2>&1 | head -3)"
 echo "--- audiomgrd state ---"
 echo "audioOutput=$(lipc-get-prop com.lab126.audiomgrd audioCurrentOutput 2>&1)"
 echo "outputConn=$(lipc-get-prop com.lab126.audiomgrd audioOutputConnected 2>&1)"
-rm -f "$WAV"
-]], 8) or "failed"
+rm -f /tmp/.lipc_test.wav
+]], 20) or "failed"
+        -- audiomgrd error log (audiomgrd logs to /var/tmp/audiomgrd.err)
+        info.kindle_audiomgrd_err = shellCapture("tail -20 /var/tmp/audiomgrd.err", 3) or "n/a"
+        -- GStreamer plugins available on device
+        info.kindle_gst_plugins = shellCapture("ls /usr/lib/gstreamer-*/ 2>/dev/null | head -30", 3) or "n/a"
     end
 
     -- /tmp writable (needed for WAV files)
