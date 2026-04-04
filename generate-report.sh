@@ -353,6 +353,34 @@ if [ "$PLATFORM" = "kindle" ] && command -v lipc-get-prop >/dev/null 2>&1; then
     KINDLE_AUDIOMGRD_ERR=$(tail -20 /var/tmp/audiomgrd.err 2>/dev/null || echo "n/a")
     # GStreamer plugins available on device
     KINDLE_GST_PLUGINS=$(ls /usr/lib/gstreamer-*/ 2>/dev/null | head -30 || echo "n/a")
+    # v0.1.5.31: tts.orchestrator -- Amazon's native TTS service
+    KINDLE_TTS_ORCHESTRATOR=$(capture lipc-probe com.lab126.tts.orchestrator 2>/dev/null | head -30)
+    [ -z "$KINDLE_TTS_ORCHESTRATOR" ] && KINDLE_TTS_ORCHESTRATOR="not found"
+    KINDLE_AUDIOMGRD_IS_STARTED=$(lipc-get-prop com.lab126.audiomgrd isStarted 2>/dev/null || echo "n/a")
+    KINDLE_GST_TOOLS="gst_launch=$(which gst-launch-1.0 2>/dev/null || echo not_found) gst_inspect=$(which gst-inspect-1.0 2>/dev/null || echo not_found) amixer=$(which amixer 2>/dev/null || echo not_found)"
+    KINDLE_SHM=$(ls -la /dev/shm/ 2>/dev/null || echo "no /dev/shm")
+    KINDLE_A2DP_SOCKETS=$(cat /proc/net/unix 2>/dev/null | grep -i a2dp || echo "none")
+    KINDLE_GST_INSPECT_TTSSRC=$(gst-inspect-1.0 ttssrc 2>/dev/null | head -30 || echo "n/a")
+    KINDLE_GST_INSPECT_MIXERSINK=$(gst-inspect-1.0 mixersink 2>/dev/null | head -30 || echo "n/a")
+    # TTS orchestrator smoke test
+    KINDLE_TTS_TEST=$(
+        echo "--- tts.orchestrator probe ---"
+        echo "tts_orch_props=$(lipc-probe com.lab126.tts.orchestrator 2>&1 | head -30)"
+        echo "--- try native TTS speak ---"
+        echo "tts_speak=$(lipc-set-prop com.lab126.tts.orchestrator speak 'test' 2>&1)"
+        sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
+        echo "tts_state_after=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+        echo "inplayback_after=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+        echo "--- try audiomgrd direct ---"
+        echo "amgrd_started=$(lipc-get-prop com.lab126.audiomgrd isStarted 2>&1)"
+        echo "amgrd_focus=$(lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>&1)"
+        echo "--- ALSA after setFocus ---"
+        echo "aplay_l_after=$(aplay -l 2>&1 | head -5)"
+        echo "dev_snd_after=$(ls /dev/snd/ 2>/dev/null | grep pcm)"
+        echo "--- A2DP socket state ---"
+        echo "a2dp_socks=$(cat /proc/net/unix 2>/dev/null | grep a2dp)"
+    )
+    [ -z "$KINDLE_TTS_TEST" ] && KINDLE_TTS_TEST="failed"
 
     KINDLE_SECTION="  kindle_lipc_available: yes
   kindle_bt_service: ${KINDLE_BT_SERVICE}
@@ -401,7 +429,15 @@ $(printf '%b' "$KINDLE_AUDIO_BINS")  kindle_snd_modules: ${KINDLE_SND_MODULES}
   kindle_lipc_all_services: ${KINDLE_LIPC_ALL_SERVICES}
   kindle_lipc_test: ${KINDLE_LIPC_TEST}
   kindle_audiomgrd_err: ${KINDLE_AUDIOMGRD_ERR}
-  kindle_gst_plugins: ${KINDLE_GST_PLUGINS}"
+  kindle_gst_plugins: ${KINDLE_GST_PLUGINS}
+  kindle_tts_orchestrator: ${KINDLE_TTS_ORCHESTRATOR}
+  kindle_audiomgrd_is_started: ${KINDLE_AUDIOMGRD_IS_STARTED}
+  kindle_gst_tools: ${KINDLE_GST_TOOLS}
+  kindle_shm: ${KINDLE_SHM}
+  kindle_a2dp_sockets: ${KINDLE_A2DP_SOCKETS}
+  kindle_gst_inspect_ttssrc: ${KINDLE_GST_INSPECT_TTSSRC}
+  kindle_gst_inspect_mixersink: ${KINDLE_GST_INSPECT_MIXERSINK}
+  kindle_tts_test: ${KINDLE_TTS_TEST}"
     [ -n "$KINDLE_LIPC_SERVICES" ] && KINDLE_SECTION="${KINDLE_SECTION}
   kindle_lipc_services: ${KINDLE_LIPC_SERVICES}"
     [ -n "$KINDLE_BT_PROPS" ] && KINDLE_SECTION="${KINDLE_SECTION}

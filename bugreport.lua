@@ -487,6 +487,47 @@ rm -f /tmp/.lipc_test.wav
         info.kindle_audiomgrd_err = shellCapture("tail -20 /var/tmp/audiomgrd.err", 3) or "n/a"
         -- GStreamer plugins available on device
         info.kindle_gst_plugins = shellCapture("ls /usr/lib/gstreamer-*/ 2>/dev/null | head -30", 3) or "n/a"
+        -- v0.1.5.31: tts.orchestrator -- Amazon's native TTS service.
+        -- GStreamer on Kindle is stripped (no wavparse/audioconvert), so
+        -- playermgr cannot decode WAV files.  The native TTS path is:
+        --   tts.orchestrator → ttssrc (GStreamer) → mixersink → audiomgrd → A2DP → BT
+        -- If we can speak text through tts.orchestrator, audio will flow.
+        info.kindle_tts_orchestrator = shellCapture("lipc-probe com.lab126.tts.orchestrator 2>/dev/null | head -30", 3) or "not found"
+        -- audiomgrd isStarted property (is the audio subsystem initialized?)
+        info.kindle_audiomgrd_is_started = shellCapture("lipc-get-prop com.lab126.audiomgrd isStarted 2>/dev/null", 2) or "n/a"
+        -- GStreamer + audio tools on the device
+        info.kindle_gst_tools = shellCapture([[echo "gst_launch=$(which gst-launch-1.0 2>/dev/null || echo not_found)"
+echo "gst_inspect=$(which gst-inspect-1.0 2>/dev/null || echo not_found)"
+echo "amixer=$(which amixer 2>/dev/null || echo not_found)"
+echo "pactl=$(which pactl 2>/dev/null || echo not_found)"
+]], 3) or "n/a"
+        -- Shared memory segments (audiomgrd uses libaudioShmbuffer)
+        info.kindle_shm = shellCapture("ls -la /dev/shm/ 2>/dev/null || echo 'no /dev/shm'", 3) or "n/a"
+        -- Full A2DP socket state (both .a2dp_ctrl and .a2dp_data)
+        info.kindle_a2dp_sockets = shellCapture("cat /proc/net/unix 2>/dev/null | grep -i a2dp", 3) or "none"
+        -- GStreamer element inspection (what does ttssrc/mixersink accept?)
+        info.kindle_gst_inspect_ttssrc = shellCapture("gst-inspect-1.0 ttssrc 2>/dev/null | head -30", 3) or "n/a"
+        info.kindle_gst_inspect_mixersink = shellCapture("gst-inspect-1.0 mixersink 2>/dev/null | head -30", 3) or "n/a"
+        -- v0.1.5.31: TTS orchestrator smoke test.
+        -- Try to make the native TTS speak, which routes through the
+        -- working audio pipeline (ttssrc → mixersink → audiomgrd → BT).
+        -- Also test: can we write raw PCM to a pipe that audiomgrd reads?
+        info.kindle_tts_test = shellCapture([[echo "--- tts.orchestrator probe ---"
+echo "tts_orch_props=$(lipc-probe com.lab126.tts.orchestrator 2>&1 | head -30)"
+echo "--- try native TTS speak ---"
+echo "tts_speak=$(lipc-set-prop com.lab126.tts.orchestrator speak 'test' 2>&1)"
+sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
+echo "tts_state_after=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+echo "inplayback_after=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+echo "--- try audiomgrd direct ---"
+echo "amgrd_started=$(lipc-get-prop com.lab126.audiomgrd isStarted 2>&1)"
+echo "amgrd_focus=$(lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>&1)"
+echo "--- ALSA after setFocus ---"
+echo "aplay_l_after=$(aplay -l 2>&1 | head -5)"
+echo "dev_snd_after=$(ls /dev/snd/ 2>/dev/null | grep pcm)"
+echo "--- A2DP socket state ---"
+echo "a2dp_socks=$(cat /proc/net/unix 2>/dev/null | grep a2dp)"
+]], 15) or "failed"
     end
 
     -- /tmp writable (needed for WAV files)
