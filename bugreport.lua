@@ -528,6 +528,141 @@ echo "dev_snd_after=$(ls /dev/snd/ 2>/dev/null | grep pcm)"
 echo "--- A2DP socket state ---"
 echo "a2dp_socks=$(cat /proc/net/unix 2>/dev/null | grep a2dp)"
 ]], 15) or "failed"
+
+        -- v0.1.5.32: Deeper TTS + audio path exploration.
+        -- GStreamer is stripped (no wavparse), so we probe alternative
+        -- paths: native TTS events, PlayParameter + raw PCM, amixer,
+        -- KAF application framework, and tooling inventory.
+
+        -- tts.orchestrator: read hash properties and orchestratorStarted
+        info.kindle_tts_orch_started = shellCapture(
+            "lipc-get-prop com.lab126.tts.orchestrator orchestratorStarted 2>&1", 3) or "n/a"
+        info.kindle_tts_orch_hash_cmd = shellCapture(
+            "which lipc-hash-prop 2>/dev/null || echo not_found", 2) or "n/a"
+        info.kindle_tts_orch_langs = shellCapture(
+            "lipc-hash-prop -n com.lab126.tts.orchestrator supportedLanguages 2>&1 | head -20", 5) or "n/a"
+        info.kindle_tts_orch_voices = shellCapture(
+            "lipc-hash-prop -n com.lab126.tts.orchestrator voices 2>&1 | head -20", 5) or "n/a"
+        info.kindle_tts_orch_installed = shellCapture(
+            "lipc-hash-prop -n com.lab126.tts.orchestrator installedVoices 2>&1 | head -20", 5) or "n/a"
+
+        -- lipc-send-event: events are a separate mechanism from properties.
+        -- If tts.orchestrator accepts a "speak" event (vs property), this
+        -- will trigger native TTS → ttssrc → mixersink → audiomgrd → BT.
+        info.kindle_tts_event_test = shellCapture([[echo "--- lipc-send-event tts.orchestrator speak ---"
+echo "evt_speak=$(lipc-send-event com.lab126.tts.orchestrator speak 'hello' 2>&1)"
+sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
+echo "tts_state=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+echo "inplayback=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+echo "--- lipc-send-event kaf ttsSpeak ---"
+echo "evt_kaf=$(lipc-send-event com.lab126.kaf ttsSpeak 'hello' 2>&1)"
+sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
+echo "tts_state2=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+echo "inplayback2=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+echo "--- lipc-send-event playermgr ---"
+echo "evt_play=$(lipc-send-event com.lab126.playermgr ttsStart 'hello' 2>&1)"
+sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
+echo "tts_state3=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+echo "inplayback3=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+]], 20) or "failed"
+
+        -- PlayParameter + raw PCM: strip the 44-byte WAV header, set
+        -- GStreamer caps via PlayParameter, try Open/Play with raw audio.
+        -- If mixersink accepts S16LE @ 22050 without a parser, this works.
+        info.kindle_raw_pcm_test = shellCapture([[dd if=/dev/zero bs=44100 count=1 2>/dev/null | {
+  printf 'RIFF'
+  printf '\x24\xac\x00\x00'
+  printf 'WAVE'
+  printf 'fmt '
+  printf '\x10\x00\x00\x00'
+  printf '\x01\x00'
+  printf '\x01\x00'
+  printf '\x22\x56\x00\x00'
+  printf '\x44\xac\x00\x00'
+  printf '\x02\x00'
+  printf '\x10\x00'
+  printf 'data'
+  printf '\x04\xac\x00\x00'
+  cat
+} > /tmp/.pcm_test.wav
+dd if=/tmp/.pcm_test.wav of=/tmp/.pcm_test.raw bs=1 skip=44 2>/dev/null
+echo "raw_size=$(wc -c < /tmp/.pcm_test.raw 2>/dev/null)"
+lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>/dev/null
+echo "--- PlayParameter + raw PCM (path) ---"
+echo "param=$(lipc-set-prop com.lab126.playermgr PlayParameter 'audio/x-raw,format=S16LE,rate=22050,channels=1' 2>&1)"
+echo "open=$(lipc-set-prop com.lab126.playermgr Open '/tmp/.pcm_test.raw' 2>&1)"
+echo "play=$(lipc-set-prop com.lab126.playermgr Play '' 2>&1)"
+sleep 1 2>/dev/null || usleep 1000000 2>/dev/null
+echo "inplayback_raw=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+echo "--- PlayParameter + raw PCM (URI) ---"
+lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+echo "param2=$(lipc-set-prop com.lab126.playermgr PlayParameter 'audio/x-raw,format=S16LE,rate=22050,channels=1' 2>&1)"
+echo "open2=$(lipc-set-prop com.lab126.playermgr Open 'file:///tmp/.pcm_test.raw' 2>&1)"
+echo "play2=$(lipc-set-prop com.lab126.playermgr Play '' 2>&1)"
+sleep 1 2>/dev/null || usleep 1000000 2>/dev/null
+echo "inplayback_raw_uri=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+rm -f /tmp/.pcm_test.wav /tmp/.pcm_test.raw
+]], 20) or "failed"
+
+        -- amixer: check ALSA mixer controls (audiomgrd may expose some)
+        info.kindle_amixer = shellCapture("amixer 2>&1 | head -20", 3) or "n/a"
+        info.kindle_amixer_scontrols = shellCapture("amixer scontrols 2>&1 | head -10", 3) or "n/a"
+
+        -- GStreamer plugin directory: version, path, permissions.
+        -- If writable, we could bundle our own wavparse plugin.
+        info.kindle_gst_plugin_dir = shellCapture([[echo "--- GStreamer libs ---"
+ls -la /usr/lib/libgstreamer* 2>/dev/null | head -5 || echo "no libgstreamer"
+echo "--- plugin dir contents ---"
+ls -la /usr/lib/gstreamer-*/ 2>/dev/null | head -20 || echo "no plugin dir"
+echo "--- plugin dir writable? ---"
+for d in /usr/lib/gstreamer-*/; do
+  if [ -d "$d" ]; then
+    echo "dir=$d"
+    touch "${d}.__gst_test" 2>&1 && rm -f "${d}.__gst_test" && echo "writable=yes" || echo "writable=no"
+  fi
+done
+echo "--- registry ---"
+ls -la /usr/lib/gstreamer-*/registry.* 2>/dev/null || echo "no registry"
+]], 5) or "n/a"
+
+        -- com.lab126.kaf: Kindle Application Framework (may have TTS events)
+        info.kindle_kaf_probe = shellCapture(
+            "lipc-probe com.lab126.kaf 2>/dev/null | head -30", 3) or "not found"
+
+        -- Available tools for potential A2DP socket or audio injection
+        info.kindle_socket_tools = shellCapture([[echo "socat=$(which socat 2>/dev/null || echo not_found)"
+echo "nc=$(which nc 2>/dev/null || echo not_found)"
+echo "ncat=$(which ncat 2>/dev/null || echo not_found)"
+echo "python=$(which python 2>/dev/null || which python3 2>/dev/null || echo not_found)"
+echo "perl=$(which perl 2>/dev/null || echo not_found)"
+echo "busybox=$(which busybox 2>/dev/null || echo not_found)"
+echo "toybox=$(which toybox 2>/dev/null || echo not_found)"
+echo "strace=$(which strace 2>/dev/null || echo not_found)"
+]], 3) or "n/a"
+
+        -- LIPC events: what events can be sent/received?
+        info.kindle_audiomgrd_events = shellCapture(
+            "lipc-probe -e com.lab126.audiomgrd 2>/dev/null | head -15", 3) or "n/a"
+        info.kindle_playermgr_events = shellCapture(
+            "lipc-probe -e com.lab126.playermgr 2>/dev/null | head -15", 3) or "n/a"
+        info.kindle_tts_orch_events = shellCapture(
+            "lipc-probe -e com.lab126.tts.orchestrator 2>/dev/null | head -15", 3) or "n/a"
+
+        -- Mixer API: check if audiomgrd exposes Unix sockets for PCM data
+        info.kindle_audiomgrd_net = shellCapture([[echo "--- audiomgrd socket fds ---"
+AMGR_PID=$(pidof audiomgrd 2>/dev/null)
+if [ -n "$AMGR_PID" ]; then
+  ls -la /proc/$AMGR_PID/fd/ 2>/dev/null | grep socket | head -10
+  echo "--- socket inodes ---"
+  for sock in $(ls -la /proc/$AMGR_PID/fd/ 2>/dev/null | grep socket | sed 's/.*\[\(.*\)\]/\1/'); do
+    grep "$sock" /proc/net/unix 2>/dev/null
+    grep "$sock" /proc/net/tcp 2>/dev/null
+    grep "$sock" /proc/net/udp 2>/dev/null
+  done | head -20
+fi
+]], 5) or "n/a"
     end
 
     -- /tmp writable (needed for WAV files)
