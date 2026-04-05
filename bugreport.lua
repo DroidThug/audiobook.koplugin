@@ -530,9 +530,8 @@ echo "a2dp_socks=$(cat /proc/net/unix 2>/dev/null | grep a2dp)"
 ]], 15) or "failed"
 
         -- v0.1.5.32: Deeper TTS + audio path exploration.
-        -- GStreamer is stripped (no wavparse), so we probe alternative
-        -- paths: native TTS events, PlayParameter + raw PCM, amixer,
-        -- KAF application framework, and tooling inventory.
+        -- GStreamer 0.10 is stripped (no wavparse). tts.orchestrator is
+        -- running with voices.  We need to trigger native TTS.
 
         -- tts.orchestrator: read hash properties and orchestratorStarted
         info.kindle_tts_orch_started = shellCapture(
@@ -541,30 +540,81 @@ echo "a2dp_socks=$(cat /proc/net/unix 2>/dev/null | grep a2dp)"
             "which lipc-hash-prop 2>/dev/null || echo not_found", 2) or "n/a"
         info.kindle_tts_orch_langs = shellCapture(
             "lipc-hash-prop -n com.lab126.tts.orchestrator supportedLanguages 2>&1 | head -20", 5) or "n/a"
+        -- v0.1.5.33: get FULL voices list (was truncated at 20 lines)
         info.kindle_tts_orch_voices = shellCapture(
-            "lipc-hash-prop -n com.lab126.tts.orchestrator voices 2>&1 | head -20", 5) or "n/a"
+            "lipc-hash-prop -n com.lab126.tts.orchestrator voices 2>&1 | head -80", 8) or "n/a"
         info.kindle_tts_orch_installed = shellCapture(
             "lipc-hash-prop -n com.lab126.tts.orchestrator installedVoices 2>&1 | head -20", 5) or "n/a"
 
         -- lipc-send-event: events are a separate mechanism from properties.
-        -- If tts.orchestrator accepts a "speak" event (vs property), this
-        -- will trigger native TTS → ttssrc → mixersink → audiomgrd → BT.
-        info.kindle_tts_event_test = shellCapture([[echo "--- lipc-send-event tts.orchestrator speak ---"
-echo "evt_speak=$(lipc-send-event com.lab126.tts.orchestrator speak 'hello' 2>&1)"
+        -- v0.1.5.33 FIX: lipc-send-event needs -s flag for string params!
+        -- v0.1.5.32 omitted it, causing "(null) failed to send event".
+        -- Also try many event names to find what tts.orchestrator accepts.
+        info.kindle_tts_event_test = shellCapture([[echo "--- lipc-send-event (fixed: -s flag) ---"
+echo "evt1=$(lipc-send-event com.lab126.tts.orchestrator speak -s 'hello world' 2>&1)"
 sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
-echo "tts_state=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
-echo "inplayback=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
-echo "--- lipc-send-event kaf ttsSpeak ---"
-echo "evt_kaf=$(lipc-send-event com.lab126.kaf ttsSpeak 'hello' 2>&1)"
+echo "tts1=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+echo "play1=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+echo "--- ttsSpeak event ---"
+echo "evt2=$(lipc-send-event com.lab126.tts.orchestrator ttsSpeak -s 'hello' 2>&1)"
 sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
-echo "tts_state2=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
-echo "inplayback2=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
-echo "--- lipc-send-event playermgr ---"
-echo "evt_play=$(lipc-send-event com.lab126.playermgr ttsStart 'hello' 2>&1)"
+echo "tts2=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+echo "play2=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+echo "--- speakText event ---"
+echo "evt3=$(lipc-send-event com.lab126.tts.orchestrator speakText -s 'hello' 2>&1)"
 sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
-echo "tts_state3=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
-echo "inplayback3=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
-]], 20) or "failed"
+echo "tts3=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+echo "--- startSpeaking event ---"
+echo "evt4=$(lipc-send-event com.lab126.tts.orchestrator startSpeaking -s 'hello' 2>&1)"
+sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
+echo "tts4=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+echo "--- synthesize event ---"
+echo "evt5=$(lipc-send-event com.lab126.tts.orchestrator synthesize -s 'hello' 2>&1)"
+sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
+echo "tts5=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+echo "--- playermgr tts events ---"
+echo "evt6=$(lipc-send-event com.lab126.playermgr ttsStart -s 'hello' 2>&1)"
+sleep 1 2>/dev/null || usleep 1000000 2>/dev/null
+echo "tts6=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+echo "evt7=$(lipc-send-event com.lab126.playermgr speak -s 'hello' 2>&1)"
+sleep 1 2>/dev/null || usleep 1000000 2>/dev/null
+echo "tts7=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+]], 30) or "failed"
+
+        -- v0.1.5.33: try writing to checkVoice hash -- might trigger
+        -- a voice sample or validation that produces audio output.
+        info.kindle_tts_check_voice = shellCapture([[echo "--- checkVoice write test ---"
+echo "cv1=$(lipc-hash-prop -w com.lab126.tts.orchestrator checkVoice language_code en 2>&1)"
+sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
+echo "tts_cv1=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+echo "play_cv1=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+echo "--- checkVoice read ---"
+echo "cv_read=$(lipc-hash-prop -n com.lab126.tts.orchestrator checkVoice 2>&1 | head -10)"
+]], 10) or "failed"
+
+        -- v0.1.5.33: try TTS URI schemes via playermgr.
+        -- playermgr might accept special URIs for TTS mode.
+        info.kindle_tts_uri_test = shellCapture([[lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>/dev/null
+echo "--- tts:// URI ---"
+lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+echo "open_tts=$(lipc-set-prop com.lab126.playermgr Open 'tts://hello world' 2>&1)"
+echo "play_tts=$(lipc-set-prop com.lab126.playermgr Play '' 2>&1)"
+sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
+echo "state_tts=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+echo "play_tts_ip=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+echo "--- ttssrc:// URI ---"
+lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+echo "open_ttssrc=$(lipc-set-prop com.lab126.playermgr Open 'ttssrc://hello world' 2>&1)"
+echo "play_ttssrc=$(lipc-set-prop com.lab126.playermgr Play '' 2>&1)"
+sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
+echo "state_ttssrc=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+echo "--- Play with tts: ---"
+lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+echo "play_tts2=$(lipc-set-prop com.lab126.playermgr Play 'tts://hello' 2>&1)"
+sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
+echo "state_tts2=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+]], 15) or "failed"
 
         -- PlayParameter + raw PCM: strip the 44-byte WAV header, set
         -- GStreamer caps via PlayParameter, try Open/Play with raw audio.
@@ -611,20 +661,27 @@ rm -f /tmp/.pcm_test.wav /tmp/.pcm_test.raw
         info.kindle_amixer_scontrols = shellCapture("amixer scontrols 2>&1 | head -10", 3) or "n/a"
 
         -- GStreamer plugin directory: version, path, permissions.
-        -- If writable, we could bundle our own wavparse plugin.
+        -- v0.1.5.33: separate writable test from dir listing to avoid
+        -- truncation hiding the answer (v0.1.5.32 was cut off).
         info.kindle_gst_plugin_dir = shellCapture([[echo "--- GStreamer libs ---"
 ls -la /usr/lib/libgstreamer* 2>/dev/null | head -5 || echo "no libgstreamer"
-echo "--- plugin dir contents ---"
-ls -la /usr/lib/gstreamer-*/ 2>/dev/null | head -20 || echo "no plugin dir"
-echo "--- plugin dir writable? ---"
+echo "--- plugin dir ---"
 for d in /usr/lib/gstreamer-*/; do
   if [ -d "$d" ]; then
     echo "dir=$d"
-    touch "${d}.__gst_test" 2>&1 && rm -f "${d}.__gst_test" && echo "writable=yes" || echo "writable=no"
+    ls "$d" 2>/dev/null | head -15
   fi
 done
-echo "--- registry ---"
-ls -la /usr/lib/gstreamer-*/registry.* 2>/dev/null || echo "no registry"
+]], 5) or "n/a"
+        info.kindle_gst_dir_writable = shellCapture([[for d in /usr/lib/gstreamer-*/; do
+  if [ -d "$d" ]; then
+    echo "dir=$d"
+    touch "${d}.__gst_test" 2>&1 && rm -f "${d}.__gst_test" && echo "writable=yes" || echo "writable=no"
+    echo "registry=$(ls -la ${d}registry.* 2>/dev/null || echo none)"
+    echo "gst_ver_dir=$(basename $d)"
+  fi
+done
+echo "whoami=$(id 2>/dev/null || whoami 2>/dev/null)"
 ]], 5) or "n/a"
 
         -- com.lab126.kaf: Kindle Application Framework (may have TTS events)
@@ -642,13 +699,52 @@ echo "toybox=$(which toybox 2>/dev/null || echo not_found)"
 echo "strace=$(which strace 2>/dev/null || echo not_found)"
 ]], 3) or "n/a"
 
-        -- LIPC events: what events can be sent/received?
-        info.kindle_audiomgrd_events = shellCapture(
-            "lipc-probe -e com.lab126.audiomgrd 2>/dev/null | head -15", 3) or "n/a"
-        info.kindle_playermgr_events = shellCapture(
-            "lipc-probe -e com.lab126.playermgr 2>/dev/null | head -15", 3) or "n/a"
-        info.kindle_tts_orch_events = shellCapture(
-            "lipc-probe -e com.lab126.tts.orchestrator 2>/dev/null | head -15", 3) or "n/a"
+        -- v0.1.5.33: lipc-wait-event to discover events (lipc-probe -e
+        -- doesn't exist on this Kindle). Listen for 3s in background.
+        info.kindle_wait_events = shellCapture([[echo "--- discover tts.orchestrator events (3s) ---"
+timeout 3 lipc-wait-event -m com.lab126.tts.orchestrator 2>&1 &
+WPID=$!
+lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>/dev/null
+lipc-hash-prop -w com.lab126.tts.orchestrator checkVoice language_code en 2>/dev/null
+sleep 3 2>/dev/null || usleep 3000000 2>/dev/null
+wait $WPID 2>/dev/null
+echo "--- discover playermgr events (3s) ---"
+timeout 3 lipc-wait-event -m com.lab126.playermgr 2>&1 &
+WPID=$!
+lipc-set-prop com.lab126.playermgr Open 'file:///tmp/.lipc_test.wav' 2>/dev/null
+lipc-set-prop com.lab126.playermgr Play '' 2>/dev/null
+sleep 3 2>/dev/null || usleep 3000000 2>/dev/null
+wait $WPID 2>/dev/null
+echo "--- discover audiomgrd events (3s) ---"
+timeout 3 lipc-wait-event -m com.lab126.audiomgrd 2>&1 &
+WPID=$!
+lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>/dev/null
+sleep 3 2>/dev/null || usleep 3000000 2>/dev/null
+wait $WPID 2>/dev/null
+]], 15) or "n/a"
+
+        -- v0.1.5.33: voice config files on the device
+        info.kindle_tts_voice_configs = shellCapture([[echo "--- /usr/lib/tts/ ---"
+find /usr/lib/tts/ -name '*.json' 2>/dev/null | head -20 || echo "not found"
+echo "--- English voice config ---"
+for f in /usr/lib/tts/english/*.json /usr/lib/tts/en_*/*.json; do
+  if [ -f "$f" ]; then
+    echo "file=$f"
+    head -5 "$f" 2>/dev/null
+    echo "..."
+  fi
+done
+echo "--- voice dirs ---"
+ls -d /usr/lib/tts/*/ 2>/dev/null || echo "none"
+]], 8) or "n/a"
+
+        -- v0.1.5.33: try lipc-set-prop on Hash properties with key=value
+        -- tts.orchestrator Hash props are "rw" -- writing may trigger actions.
+        info.kindle_tts_hash_write = shellCapture([[echo "--- write supportedLanguages hash ---"
+echo "sl=$(lipc-hash-prop -w com.lab126.tts.orchestrator supportedLanguages language_code en 2>&1)"
+echo "--- read voices with -v flag ---"
+echo "voices_v=$(lipc-hash-prop -v com.lab126.tts.orchestrator voices 2>&1 | head -40)"
+]], 8) or "n/a"
 
         -- Mixer API: check if audiomgrd exposes Unix sockets for PCM data
         info.kindle_audiomgrd_net = shellCapture([[echo "--- audiomgrd socket fds ---"

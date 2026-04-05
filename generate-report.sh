@@ -386,28 +386,80 @@ if [ "$PLATFORM" = "kindle" ] && command -v lipc-get-prop >/dev/null 2>&1; then
     KINDLE_TTS_ORCH_STARTED=$(lipc-get-prop com.lab126.tts.orchestrator orchestratorStarted 2>&1 || echo "n/a")
     KINDLE_TTS_ORCH_HASH_CMD=$(which lipc-hash-prop 2>/dev/null || echo "not_found")
     KINDLE_TTS_ORCH_LANGS=$(lipc-hash-prop -n com.lab126.tts.orchestrator supportedLanguages 2>&1 | head -20 || echo "n/a")
-    KINDLE_TTS_ORCH_VOICES=$(lipc-hash-prop -n com.lab126.tts.orchestrator voices 2>&1 | head -20 || echo "n/a")
+    # v0.1.5.33: get FULL voices list (was truncated at 20 lines)
+    KINDLE_TTS_ORCH_VOICES=$(lipc-hash-prop -n com.lab126.tts.orchestrator voices 2>&1 | head -80 || echo "n/a")
     KINDLE_TTS_ORCH_INSTALLED=$(lipc-hash-prop -n com.lab126.tts.orchestrator installedVoices 2>&1 | head -20 || echo "n/a")
 
-    # lipc-send-event: try triggering native TTS via events
+    # v0.1.5.33 FIX: lipc-send-event needs -s flag for string params!
     KINDLE_TTS_EVENT_TEST=$(
-        echo "--- lipc-send-event tts.orchestrator speak ---"
-        echo "evt_speak=$(lipc-send-event com.lab126.tts.orchestrator speak 'hello' 2>&1)"
+        echo "--- lipc-send-event (fixed: -s flag) ---"
+        echo "evt1=$(lipc-send-event com.lab126.tts.orchestrator speak -s 'hello world' 2>&1)"
         sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
-        echo "tts_state=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
-        echo "inplayback=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
-        echo "--- lipc-send-event kaf ttsSpeak ---"
-        echo "evt_kaf=$(lipc-send-event com.lab126.kaf ttsSpeak 'hello' 2>&1)"
+        echo "tts1=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+        echo "play1=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+        echo "--- ttsSpeak event ---"
+        echo "evt2=$(lipc-send-event com.lab126.tts.orchestrator ttsSpeak -s 'hello' 2>&1)"
         sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
-        echo "tts_state2=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
-        echo "inplayback2=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
-        echo "--- lipc-send-event playermgr ---"
-        echo "evt_play=$(lipc-send-event com.lab126.playermgr ttsStart 'hello' 2>&1)"
+        echo "tts2=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+        echo "play2=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+        echo "--- speakText event ---"
+        echo "evt3=$(lipc-send-event com.lab126.tts.orchestrator speakText -s 'hello' 2>&1)"
         sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
-        echo "tts_state3=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
-        echo "inplayback3=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+        echo "tts3=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+        echo "--- startSpeaking event ---"
+        echo "evt4=$(lipc-send-event com.lab126.tts.orchestrator startSpeaking -s 'hello' 2>&1)"
+        sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
+        echo "tts4=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+        echo "--- synthesize event ---"
+        echo "evt5=$(lipc-send-event com.lab126.tts.orchestrator synthesize -s 'hello' 2>&1)"
+        sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
+        echo "tts5=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+        echo "--- playermgr tts events ---"
+        echo "evt6=$(lipc-send-event com.lab126.playermgr ttsStart -s 'hello' 2>&1)"
+        sleep 1 2>/dev/null || usleep 1000000 2>/dev/null
+        echo "tts6=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+        echo "evt7=$(lipc-send-event com.lab126.playermgr speak -s 'hello' 2>&1)"
+        sleep 1 2>/dev/null || usleep 1000000 2>/dev/null
+        echo "tts7=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
     )
     [ -z "$KINDLE_TTS_EVENT_TEST" ] && KINDLE_TTS_EVENT_TEST="failed"
+
+    # v0.1.5.33: checkVoice hash write test
+    KINDLE_TTS_CHECK_VOICE=$(
+        echo "--- checkVoice write test ---"
+        echo "cv1=$(lipc-hash-prop -w com.lab126.tts.orchestrator checkVoice language_code en 2>&1)"
+        sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
+        echo "tts_cv1=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+        echo "play_cv1=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+        echo "--- checkVoice read ---"
+        echo "cv_read=$(lipc-hash-prop -n com.lab126.tts.orchestrator checkVoice 2>&1 | head -10)"
+    )
+    [ -z "$KINDLE_TTS_CHECK_VOICE" ] && KINDLE_TTS_CHECK_VOICE="failed"
+
+    # v0.1.5.33: TTS URI schemes via playermgr
+    KINDLE_TTS_URI_TEST=$(
+        lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>/dev/null
+        echo "--- tts:// URI ---"
+        lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+        echo "open_tts=$(lipc-set-prop com.lab126.playermgr Open 'tts://hello world' 2>&1)"
+        echo "play_tts=$(lipc-set-prop com.lab126.playermgr Play '' 2>&1)"
+        sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
+        echo "state_tts=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+        echo "play_tts_ip=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+        echo "--- ttssrc:// URI ---"
+        lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+        echo "open_ttssrc=$(lipc-set-prop com.lab126.playermgr Open 'ttssrc://hello world' 2>&1)"
+        echo "play_ttssrc=$(lipc-set-prop com.lab126.playermgr Play '' 2>&1)"
+        sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
+        echo "state_ttssrc=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+        echo "--- Play with tts: ---"
+        lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+        echo "play_tts2=$(lipc-set-prop com.lab126.playermgr Play 'tts://hello' 2>&1)"
+        sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
+        echo "state_tts2=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+        lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+    )
+    [ -z "$KINDLE_TTS_URI_TEST" ] && KINDLE_TTS_URI_TEST="failed"
 
     # PlayParameter + raw PCM test
     KINDLE_RAW_PCM_TEST=$(
@@ -454,22 +506,31 @@ if [ "$PLATFORM" = "kindle" ] && command -v lipc-get-prop >/dev/null 2>&1; then
     KINDLE_AMIXER_SCONTROLS=$(amixer scontrols 2>&1 | head -10 || echo "n/a")
 
     # GStreamer plugin directory details
+    # v0.1.5.33: separate writable test to avoid truncation
     KINDLE_GST_PLUGIN_DIR=$(
         echo "--- GStreamer libs ---"
         ls -la /usr/lib/libgstreamer* 2>/dev/null | head -5 || echo "no libgstreamer"
-        echo "--- plugin dir contents ---"
-        ls -la /usr/lib/gstreamer-*/ 2>/dev/null | head -20 || echo "no plugin dir"
-        echo "--- plugin dir writable? ---"
+        echo "--- plugin dir ---"
+        for d in /usr/lib/gstreamer-*/; do
+            if [ -d "$d" ]; then
+                echo "dir=$d"
+                ls "$d" 2>/dev/null | head -15
+            fi
+        done
+    )
+    [ -z "$KINDLE_GST_PLUGIN_DIR" ] && KINDLE_GST_PLUGIN_DIR="n/a"
+    KINDLE_GST_DIR_WRITABLE=$(
         for d in /usr/lib/gstreamer-*/; do
             if [ -d "$d" ]; then
                 echo "dir=$d"
                 touch "${d}.__gst_test" 2>&1 && rm -f "${d}.__gst_test" && echo "writable=yes" || echo "writable=no"
+                echo "registry=$(ls -la ${d}registry.* 2>/dev/null || echo none)"
+                echo "gst_ver_dir=$(basename $d)"
             fi
         done
-        echo "--- registry ---"
-        ls -la /usr/lib/gstreamer-*/registry.* 2>/dev/null || echo "no registry"
+        echo "whoami=$(id 2>/dev/null || whoami 2>/dev/null)"
     )
-    [ -z "$KINDLE_GST_PLUGIN_DIR" ] && KINDLE_GST_PLUGIN_DIR="n/a"
+    [ -z "$KINDLE_GST_DIR_WRITABLE" ] && KINDLE_GST_DIR_WRITABLE="n/a"
 
     # com.lab126.kaf probe
     KINDLE_KAF_PROBE=$(capture lipc-probe com.lab126.kaf 2>/dev/null | head -30)
@@ -478,13 +539,57 @@ if [ "$PLATFORM" = "kindle" ] && command -v lipc-get-prop >/dev/null 2>&1; then
     # Socket / scripting tools
     KINDLE_SOCKET_TOOLS="socat=$(which socat 2>/dev/null || echo not_found) nc=$(which nc 2>/dev/null || echo not_found) python=$(which python 2>/dev/null || which python3 2>/dev/null || echo not_found) perl=$(which perl 2>/dev/null || echo not_found) busybox=$(which busybox 2>/dev/null || echo not_found) strace=$(which strace 2>/dev/null || echo not_found)"
 
-    # LIPC events
-    KINDLE_AUDIOMGRD_EVENTS=$(capture lipc-probe -e com.lab126.audiomgrd 2>/dev/null | head -15)
-    [ -z "$KINDLE_AUDIOMGRD_EVENTS" ] && KINDLE_AUDIOMGRD_EVENTS="n/a"
-    KINDLE_PLAYERMGR_EVENTS=$(capture lipc-probe -e com.lab126.playermgr 2>/dev/null | head -15)
-    [ -z "$KINDLE_PLAYERMGR_EVENTS" ] && KINDLE_PLAYERMGR_EVENTS="n/a"
-    KINDLE_TTS_ORCH_EVENTS=$(capture lipc-probe -e com.lab126.tts.orchestrator 2>/dev/null | head -15)
-    [ -z "$KINDLE_TTS_ORCH_EVENTS" ] && KINDLE_TTS_ORCH_EVENTS="n/a"
+    # LIPC events: lipc-probe -e doesn't exist; remove broken probes
+    # v0.1.5.33: use lipc-wait-event to discover events instead
+    KINDLE_WAIT_EVENTS=$(
+        echo "--- discover tts.orchestrator events (3s) ---"
+        timeout 3 lipc-wait-event -m com.lab126.tts.orchestrator 2>&1 &
+        WPID=$!
+        lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>/dev/null
+        lipc-hash-prop -w com.lab126.tts.orchestrator checkVoice language_code en 2>/dev/null
+        sleep 3 2>/dev/null || usleep 3000000 2>/dev/null
+        wait $WPID 2>/dev/null
+        echo "--- discover playermgr events (3s) ---"
+        timeout 3 lipc-wait-event -m com.lab126.playermgr 2>&1 &
+        WPID=$!
+        lipc-set-prop com.lab126.playermgr Open 'file:///tmp/.lipc_test.wav' 2>/dev/null
+        lipc-set-prop com.lab126.playermgr Play '' 2>/dev/null
+        sleep 3 2>/dev/null || usleep 3000000 2>/dev/null
+        wait $WPID 2>/dev/null
+        echo "--- discover audiomgrd events (3s) ---"
+        timeout 3 lipc-wait-event -m com.lab126.audiomgrd 2>&1 &
+        WPID=$!
+        lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>/dev/null
+        sleep 3 2>/dev/null || usleep 3000000 2>/dev/null
+        wait $WPID 2>/dev/null
+    )
+    [ -z "$KINDLE_WAIT_EVENTS" ] && KINDLE_WAIT_EVENTS="n/a"
+
+    # v0.1.5.33: voice config files on device
+    KINDLE_TTS_VOICE_CONFIGS=$(
+        echo "--- /usr/lib/tts/ ---"
+        find /usr/lib/tts/ -name '*.json' 2>/dev/null | head -20 || echo "not found"
+        echo "--- English voice config ---"
+        for f in /usr/lib/tts/english/*.json /usr/lib/tts/en_*/*.json; do
+            if [ -f "$f" ]; then
+                echo "file=$f"
+                head -5 "$f" 2>/dev/null
+                echo "..."
+            fi
+        done
+        echo "--- voice dirs ---"
+        ls -d /usr/lib/tts/*/ 2>/dev/null || echo "none"
+    )
+    [ -z "$KINDLE_TTS_VOICE_CONFIGS" ] && KINDLE_TTS_VOICE_CONFIGS="n/a"
+
+    # v0.1.5.33: write to Hash properties and read voices with -v flag
+    KINDLE_TTS_HASH_WRITE=$(
+        echo "--- write supportedLanguages hash ---"
+        echo "sl=$(lipc-hash-prop -w com.lab126.tts.orchestrator supportedLanguages language_code en 2>&1)"
+        echo "--- read voices with -v flag ---"
+        echo "voices_v=$(lipc-hash-prop -v com.lab126.tts.orchestrator voices 2>&1 | head -40)"
+    )
+    [ -z "$KINDLE_TTS_HASH_WRITE" ] && KINDLE_TTS_HASH_WRITE="n/a"
 
     # audiomgrd socket analysis
     KINDLE_AUDIOMGRD_NET="n/a"
@@ -564,15 +669,18 @@ $(printf '%b' "$KINDLE_AUDIO_BINS")  kindle_snd_modules: ${KINDLE_SND_MODULES}
   kindle_tts_orch_voices: ${KINDLE_TTS_ORCH_VOICES}
   kindle_tts_orch_installed: ${KINDLE_TTS_ORCH_INSTALLED}
   kindle_tts_event_test: ${KINDLE_TTS_EVENT_TEST}
+  kindle_tts_check_voice: ${KINDLE_TTS_CHECK_VOICE}
+  kindle_tts_uri_test: ${KINDLE_TTS_URI_TEST}
   kindle_raw_pcm_test: ${KINDLE_RAW_PCM_TEST}
   kindle_amixer: ${KINDLE_AMIXER}
   kindle_amixer_scontrols: ${KINDLE_AMIXER_SCONTROLS}
   kindle_gst_plugin_dir: ${KINDLE_GST_PLUGIN_DIR}
+  kindle_gst_dir_writable: ${KINDLE_GST_DIR_WRITABLE}
   kindle_kaf_probe: ${KINDLE_KAF_PROBE}
   kindle_socket_tools: ${KINDLE_SOCKET_TOOLS}
-  kindle_audiomgrd_events: ${KINDLE_AUDIOMGRD_EVENTS}
-  kindle_playermgr_events: ${KINDLE_PLAYERMGR_EVENTS}
-  kindle_tts_orch_events: ${KINDLE_TTS_ORCH_EVENTS}
+  kindle_wait_events: ${KINDLE_WAIT_EVENTS}
+  kindle_tts_voice_configs: ${KINDLE_TTS_VOICE_CONFIGS}
+  kindle_tts_hash_write: ${KINDLE_TTS_HASH_WRITE}
   kindle_audiomgrd_net: ${KINDLE_AUDIOMGRD_NET}"
     [ -n "$KINDLE_LIPC_SERVICES" ] && KINDLE_SECTION="${KINDLE_SECTION}
   kindle_lipc_services: ${KINDLE_LIPC_SERVICES}"
