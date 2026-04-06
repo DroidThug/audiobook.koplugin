@@ -609,6 +609,48 @@ echo "state_tts2=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
 lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
 ]], 15) or "failed"
 
+        -- v0.1.5.35: Test VoiceView-compatible native TTS via PlayParameter.
+        -- VoiceView capture showed: playermgr accepts SSML text via
+        -- PlayParameter JSON → ttssrc → Ivona SDK → mixersink → BT.
+        info.kindle_native_tts_test = shellCapture([[lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>/dev/null
+echo "--- Strategy A: PlayParameter only ---"
+lipc-set-prop com.lab126.playermgr PlayParameter '{"type":"TTS","data":{"paramName":"textsource","paramValue":"Testing native TTS."}}' 2>&1
+sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
+echo "tts_a=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+echo "ip_a=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+echo "--- Strategy B: Open+PlayParameter+Play ---"
+lipc-set-prop com.lab126.playermgr Open '{"type":"TTS"}' 2>&1
+lipc-set-prop com.lab126.playermgr PlayParameter '{"type":"TTS","data":{"paramName":"textsource","paramValue":"Testing native TTS."}}' 2>&1
+lipc-set-prop com.lab126.playermgr Play '' 2>&1
+sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
+echo "tts_b=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+echo "ip_b=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+echo "--- Strategy C: PlayParameter+Play ---"
+lipc-set-prop com.lab126.playermgr PlayParameter '{"type":"TTS","data":{"paramName":"textsource","paramValue":"Testing native TTS."}}' 2>&1
+lipc-set-prop com.lab126.playermgr Play '{"type":"TTS"}' 2>&1
+sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
+echo "tts_c=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+echo "ip_c=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+echo "--- Strategy D: Open+PlayParameter+Play(empty) ---"
+lipc-set-prop com.lab126.playermgr Open '' 2>&1
+lipc-set-prop com.lab126.playermgr PlayParameter '{"type":"TTS","data":{"paramName":"textsource","paramValue":"Testing native TTS."}}' 2>&1
+lipc-set-prop com.lab126.playermgr Play '' 2>&1
+sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
+echo "tts_d=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+echo "ip_d=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+echo "--- Strategy E: SSML with marks ---"
+lipc-set-prop com.lab126.playermgr PlayParameter '{"type":"TTS","data":{"paramName":"textsource","paramValue":"<mark name=\"1\"/>Testing <mark name=\"9\"/>native <mark name=\"16\"/>TTS."}}' 2>&1
+sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
+echo "tts_e=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+echo "ip_e=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+]], 30) or "failed"
+
         -- PlayParameter + raw PCM: strip the 44-byte WAV header, set
         -- GStreamer caps via PlayParameter, try Open/Play with raw audio.
         -- If mixersink accepts S16LE @ 22050 without a parser, this works.

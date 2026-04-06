@@ -455,6 +455,48 @@ if [ "$PLATFORM" = "kindle" ] && command -v lipc-get-prop >/dev/null 2>&1; then
     )
     [ -z "$KINDLE_TTS_URI_TEST" ] && KINDLE_TTS_URI_TEST="failed"
 
+    # v0.1.5.35: Test VoiceView-compatible native TTS via PlayParameter
+    KINDLE_NATIVE_TTS_TEST=$(
+        lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+        lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>/dev/null
+        echo "--- Strategy A: PlayParameter only ---"
+        lipc-set-prop com.lab126.playermgr PlayParameter '{"type":"TTS","data":{"paramName":"textsource","paramValue":"Testing native TTS."}}' 2>&1
+        sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
+        echo "tts_a=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+        echo "ip_a=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+        lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+        echo "--- Strategy B: Open+PlayParameter+Play ---"
+        lipc-set-prop com.lab126.playermgr Open '{"type":"TTS"}' 2>&1
+        lipc-set-prop com.lab126.playermgr PlayParameter '{"type":"TTS","data":{"paramName":"textsource","paramValue":"Testing native TTS."}}' 2>&1
+        lipc-set-prop com.lab126.playermgr Play '' 2>&1
+        sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
+        echo "tts_b=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+        echo "ip_b=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+        lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+        echo "--- Strategy C: PlayParameter+Play ---"
+        lipc-set-prop com.lab126.playermgr PlayParameter '{"type":"TTS","data":{"paramName":"textsource","paramValue":"Testing native TTS."}}' 2>&1
+        lipc-set-prop com.lab126.playermgr Play '{"type":"TTS"}' 2>&1
+        sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
+        echo "tts_c=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+        echo "ip_c=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+        lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+        echo "--- Strategy D: Open+PlayParameter+Play(empty) ---"
+        lipc-set-prop com.lab126.playermgr Open '' 2>&1
+        lipc-set-prop com.lab126.playermgr PlayParameter '{"type":"TTS","data":{"paramName":"textsource","paramValue":"Testing native TTS."}}' 2>&1
+        lipc-set-prop com.lab126.playermgr Play '' 2>&1
+        sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
+        echo "tts_d=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+        echo "ip_d=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+        lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+        echo "--- Strategy E: SSML with marks ---"
+        lipc-set-prop com.lab126.playermgr PlayParameter '{"type":"TTS","data":{"paramName":"textsource","paramValue":"<mark name=\"1\"/>Testing <mark name=\"9\"/>native <mark name=\"16\"/>TTS."}}' 2>&1
+        sleep 2 2>/dev/null || usleep 2000000 2>/dev/null
+        echo "tts_e=$(lipc-get-prop com.lab126.playermgr TTS_State 2>&1)"
+        echo "ip_e=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
+        lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+    )
+    [ -z "$KINDLE_NATIVE_TTS_TEST" ] && KINDLE_NATIVE_TTS_TEST="failed"
+
     # PlayParameter + raw PCM test
     KINDLE_RAW_PCM_TEST=$(
         dd if=/dev/zero bs=44100 count=1 2>/dev/null | {
@@ -714,6 +756,7 @@ $(printf '%b' "$KINDLE_AUDIO_BINS")  kindle_snd_modules: ${KINDLE_SND_MODULES}
   kindle_tts_event_test: ${KINDLE_TTS_EVENT_TEST}
   kindle_tts_check_voice: ${KINDLE_TTS_CHECK_VOICE}
   kindle_tts_uri_test: ${KINDLE_TTS_URI_TEST}
+  kindle_native_tts_test: ${KINDLE_NATIVE_TTS_TEST}
   kindle_raw_pcm_test: ${KINDLE_RAW_PCM_TEST}
   kindle_amixer: ${KINDLE_AMIXER}
   kindle_amixer_scontrols: ${KINDLE_AMIXER_SCONTROLS}

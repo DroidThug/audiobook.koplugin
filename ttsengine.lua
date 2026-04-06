@@ -41,6 +41,7 @@ local TTSEngine = {
         FESTIVAL = "festival",
         ANDROID = "android",
         PIPER = "piper",
+        KINDLE_NATIVE = "kindle-native",
     },
     
     -- Default settings
@@ -232,6 +233,21 @@ function TTSEngine:detectBackend()
         end
     end
 
+    -- Kindle native TTS: Amazon's Ivona SDK via tts.orchestrator/playermgr.
+    -- Last resort when no bundled or system TTS binaries are found.
+    -- The Kindle's built-in TTS handles both synthesis and audio output.
+    if Device:isKindle() and self:commandExists("lipc-get-prop") then
+        local h = io.popen("lipc-get-prop com.lab126.tts.orchestrator orchestratorStarted 2>/dev/null")
+        if h then
+            local val = h:read("*a") or ""; h:close()
+            if val:match("^%s*1") then
+                self.backend = self.BACKENDS.KINDLE_NATIVE
+                logger.warn("TTSEngine: Using Kindle native TTS (Ivona SDK via tts.orchestrator)")
+                return
+            end
+        end
+    end
+
     self.backend = nil
     if is_android then
         self.backend_error = _("No TTS engine available on this device.\n\nThe plugin needs the Android TTS helper (.dex) which is not yet included.\n\nAs a workaround, install espeak-ng via Termux:\n  pkg install espeak-ng\n\nThen add Termux to your PATH before launching KOReader.")
@@ -364,6 +380,23 @@ function TTSEngine:synthesize(text, callback)
     end
     
     self.timing_data = {}
+
+    -- Kindle native TTS: text goes directly to playermgr (no WAV synthesis).
+    -- The Kindle's Ivona SDK handles both synthesis and audio output.
+    if self.backend == self.BACKENDS.KINDLE_NATIVE then
+        self._native_tts_text = text
+        self:generateTimingEstimates(text)
+        local dur_ms = 0
+        if #self.timing_data > 0 then
+            dur_ms = self.timing_data[#self.timing_data].end_time
+        end
+        self._current_audio_duration_ms = dur_ms
+        self.current_audio_file = "/tmp/.kindle_native_tts"
+        logger.warn("TTSEngine: Kindle native TTS queued:", text:sub(1, 60),
+            "est_dur=", dur_ms, "ms")
+        if callback then callback(true, self.timing_data) end
+        return true
+    end
     
     logger.dbg("TTSEngine: Starting synthesis with backend:", self.backend)
     
@@ -377,6 +410,10 @@ Synthesize using command-line TTS.
 @return boolean Success
 --]]
 function TTSEngine:synthesizeCommand(text, callback)
+    -- Store text for kindle-native-tts playback (hybrid mode: espeak for
+    -- timing, native TTS for audio when tts.orchestrator is available)
+    self._native_tts_text = text
+
     -- Use Android cache dir when running on Android (no /tmp); otherwise /tmp
     local temp_dir = self._android_tts and self._android_tts:getTempDir() or "/tmp"
     self.file_counter = (self.file_counter or 0) + 1
@@ -1162,6 +1199,168 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         end
     end
     
+    -- === KINDLE NATIVE TTS PLAYBACK PATH ===
+    -- Send text directly to Amazon's Ivona SDK via playermgr PlayParameter.
+    -- Protocol discovered from VoiceView LIPC event capture:
+    -- text → PlayParameter(JSON) → ttssrc → Ivona → mixersink → audiomgrd → BT
+    if self.audio_player_type == "kindle-native-tts" then
+        local text = self._native_tts_text
+        if not text or text == "" then
+            logger.err("TTSEngine: Kindle native TTS -- no text to speak")
+            self:onPlaybackComplete()
+            return true
+        end
+
+        self._concat_durations = nil
+        -- Duration was already estimated during synthesis
+        local dur_ms = self._current_audio_duration_ms or 5000
+        self._expected_play_duration_ms = dur_ms
+        self.play_generation = (self.play_generation or 0) + 1
+        local my_gen = self.play_generation
+        self.playback_latency_ms = 500
+
+        logger.warn("TTSEngine: Kindle native TTS play:", text:sub(1, 60),
+            "est_dur=", dur_ms, "ms")
+
+        -- JSON-escape the text for the PlayParameter payload
+        local json_text = text:gsub('\\', '\\\\'):gsub('"', '\\"')
+                              :gsub('\n', '\\n'):gsub('\r', '\\r'):gsub('\t', '\\t')
+
+        -- Build VoiceView-compatible PlayParameter payload
+        local payload = '{"type":"TTS","data":{"paramName":"textsource","paramValue":"'
+            .. json_text .. '"}}'
+
+        -- Shell-safe single-quote escaping (only ' needs escaping in '...')
+        local function shellEsc(s) return "'" .. s:gsub("'", "'\\''") .. "'" end
+
+        local function lipc_cmd(cmd)
+            local h = io.popen(cmd .. " 2>&1")
+            local out = ""
+            if h then out = h:read("*a") or ""; h:close() end
+            return out
+        end
+
+        local function getTtsState()
+            return tonumber(lipc_cmd(
+                "lipc-get-prop com.lab126.playermgr TTS_State 2>/dev/null"
+                ):match("(%d+)")) or 0
+        end
+
+        -- Stop previous playback + request audio focus
+        os.execute("lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null")
+        os.execute("lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>/dev/null")
+
+        -- Strategy A: PlayParameter only (VoiceView's steady-state protocol)
+        logger.warn("TTSEngine: Kindle native TTS strategy A: PlayParameter")
+        lipc_cmd("lipc-set-prop com.lab126.playermgr PlayParameter " .. shellEsc(payload))
+        local tts_state = getTtsState()
+
+        -- Strategy B: Open TTS session + PlayParameter + Play
+        if tts_state == 0 then
+            logger.warn("TTSEngine: Kindle native TTS strategy B: Open+PlayParam+Play")
+            lipc_cmd("lipc-set-prop com.lab126.playermgr Open " ..
+                shellEsc('{"type":"TTS"}'))
+            lipc_cmd("lipc-set-prop com.lab126.playermgr PlayParameter " ..
+                shellEsc(payload))
+            lipc_cmd("lipc-set-prop com.lab126.playermgr Play ''")
+            tts_state = getTtsState()
+        end
+
+        -- Strategy C: PlayParameter + Play with TTS type
+        if tts_state == 0 then
+            logger.warn("TTSEngine: Kindle native TTS strategy C: PlayParam+Play")
+            lipc_cmd("lipc-set-prop com.lab126.playermgr PlayParameter " ..
+                shellEsc(payload))
+            lipc_cmd("lipc-set-prop com.lab126.playermgr Play " ..
+                shellEsc('{"type":"TTS"}'))
+            tts_state = getTtsState()
+        end
+
+        -- Strategy D: Open empty + PlayParameter + Play empty
+        if tts_state == 0 then
+            logger.warn("TTSEngine: Kindle native TTS strategy D: Open+PlayParam+Play(empty)")
+            lipc_cmd("lipc-set-prop com.lab126.playermgr Open ''")
+            lipc_cmd("lipc-set-prop com.lab126.playermgr PlayParameter " ..
+                shellEsc(payload))
+            lipc_cmd("lipc-set-prop com.lab126.playermgr Play ''")
+            tts_state = getTtsState()
+        end
+
+        logger.warn("TTSEngine: Kindle native TTS after strategies, TTS_State=", tts_state)
+
+        self._audio_launched_at = UIManager:getTime()
+        self:startTimingLoop()
+
+        -- Poll TTS_State for completion
+        local engine = self
+        local poll_count = 0
+        local max_polls = math.max(300, math.floor(dur_ms * 3 / 100))
+        local startup_polls = 15  -- 1.5s for native TTS to start
+        local ever_speaking = false
+
+        local function pollNativeTtsDone()
+            if (engine.play_generation or 0) ~= my_gen then return end
+            if not engine.is_speaking then return end
+            if engine.is_paused then
+                UIManager:scheduleIn(0.3, pollNativeTtsDone)
+                return
+            end
+            poll_count = poll_count + 1
+
+            if poll_count > startup_polls then
+                local sh = io.popen("lipc-get-prop com.lab126.playermgr TTS_State 2>/dev/null")
+                if sh then
+                    local val = sh:read("*a") or ""; sh:close()
+                    local state = tonumber(val:match("(%d+)")) or 0
+                    if state > 0 then
+                        ever_speaking = true
+                    elseif state == 0 and ever_speaking then
+                        -- Was speaking, now done
+                        logger.warn("TTSEngine: Kindle native TTS complete, polls=", poll_count)
+                        engine._lipc_consec_fails = 0
+                        engine:onPlaybackComplete()
+                        return
+                    elseif state == 0 and not ever_speaking then
+                        local elapsed_ms = 0
+                        if engine._audio_launched_at then
+                            elapsed_ms = time.to_ms(UIManager:getTime() - engine._audio_launched_at)
+                                - (engine._total_pause_ms or 0)
+                        end
+                        if elapsed_ms > 5000 then
+                            -- Never started after 5s
+                            engine._lipc_consec_fails = (engine._lipc_consec_fails or 0) + 1
+                            logger.err("TTSEngine: Kindle native TTS never started, elapsed=",
+                                elapsed_ms, "ms, fails=", engine._lipc_consec_fails)
+                            if engine._lipc_consec_fails >= 2 then
+                                engine.is_speaking = false
+                                engine.play_generation = (engine.play_generation or 0) + 1
+                                engine:cleanup()
+                                UIManager:show(InfoMessage:new{
+                                    text = _("Kindle native TTS failed.\n\nThe device has a TTS engine (Ivona SDK) but playback could not be triggered via any strategy.\n\nPlease generate a bug report and share it on GitHub issue #11."),
+                                    timeout = 10,
+                                })
+                                return
+                            end
+                            engine:onPlaybackComplete()
+                            return
+                        end
+                    end
+                end
+            end
+
+            if poll_count >= max_polls then
+                logger.warn("TTSEngine: Kindle native TTS timed out after",
+                    poll_count * 0.1, "s")
+                os.execute("lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null")
+                engine:onPlaybackComplete()
+            else
+                UIManager:scheduleIn(0.1, pollNativeTtsDone)
+            end
+        end
+        UIManager:scheduleIn(0.1, pollNativeTtsDone)
+        return true
+    end
+
     -- Calculate real audio duration from WAV file.
     -- If _unpadded_duration_ms is set, the WAV was padded with trailing
     -- silence by SyncController.  Use the original (speech-only) duration
@@ -1726,8 +1925,8 @@ end
 
 --[[--
 Find available audio player.
-Sets self.audio_player_type to "kindle-lipc", "gst-bt", "bluealsa", "aplay",
-"android", or "generic".
+Sets self.audio_player_type to "kindle-native-tts", "kindle-lipc", "gst-bt",
+"bluealsa", "aplay", "android", or "generic".
 @return string|nil Player command
 --]]
 function TTSEngine:findAudioPlayer()
@@ -1738,7 +1937,26 @@ function TTSEngine:findAudioPlayer()
         return "android"
     end
 
-    -- 0b) Kindle LIPC: use Amazon's playermgr service via lipc-set-prop.
+    -- 0b) Kindle native TTS: Amazon's Ivona SDK via tts.orchestrator/playermgr.
+    -- VoiceView uses this pipeline (confirmed via LIPC event capture):
+    -- text → PlayParameter(JSON) → ttssrc (GStreamer) → Ivona SDK →
+    -- mixersink → audiomgrd → A2DP → BT headphones.
+    -- Bypasses the stripped GStreamer (no wavparse) entirely.
+    if Device:isKindle() and self:commandExists("lipc-set-prop")
+        and self:commandExists("lipc-get-prop") then
+        local h = io.popen("lipc-get-prop com.lab126.tts.orchestrator orchestratorStarted 2>/dev/null")
+        if h then
+            local val = h:read("*a") or ""; h:close()
+            if val:match("^%s*1") then
+                self.audio_player_type = "kindle-native-tts"
+                self._no_real_audio_output = false
+                logger.warn("TTSEngine: Found Kindle native TTS (Ivona SDK, orchestratorStarted=1)")
+                return "kindle-native-tts"
+            end
+        end
+    end
+
+    -- 0c) Kindle LIPC: use Amazon's playermgr service via lipc-set-prop.
     -- playermgr uses GStreamer internally and routes audio through
     -- audiomgrd → audio.a2dp.default.so → BT headphones.
     -- This is the native way to play audio files on Kindle devices
