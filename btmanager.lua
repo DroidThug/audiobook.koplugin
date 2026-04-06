@@ -194,7 +194,7 @@ end
 -- @treturn string output (may be empty)
 -- @treturn bool   true if command succeeded (exit code 0)
 local function dbus(cmd)
-    local handle = io.popen(cmd .. " 2>/dev/null; echo \"__EXIT:$?\"")
+    local handle = io.popen(cmd .. " 2>&1; echo \"__EXIT:$?\"")
     if not handle then return "", false end
     local output = handle:read("*a")
     handle:close()
@@ -204,18 +204,25 @@ local function dbus(cmd)
 end
 
 --- Build a dbus-send command.
--- Includes a 5-second reply timeout to prevent blocking the Lua VM
+-- Includes a reply timeout to prevent blocking the Lua VM
 -- when bluetoothd is unresponsive or not running.
--- @string path    object path
--- @string method  full interface.method name
--- @string ...     additional arguments
+-- @string path     object path
+-- @string method   full interface.method name
+-- @string ...      additional arguments
+-- @int timeout_ms  reply timeout in ms (default 5000)
 -- @treturn string command
 local function dbus_cmd(path, method, ...)
     detectStack()  -- lazy init on first D-Bus operation
-    local args = table.concat({...}, " ")
+    local vargs = {...}
+    local timeout_ms = 5000
+    -- Last numeric argument is the timeout override
+    if #vargs > 0 and type(vargs[#vargs]) == "number" then
+        timeout_ms = table.remove(vargs)
+    end
+    local args = table.concat(vargs, " ")
     return string.format(
-        "dbus-send --system --print-reply --reply-timeout=5000 --dest=%s %s %s %s",
-        DBUS_DEST, path, method, args
+        "dbus-send --system --print-reply --reply-timeout=%d --dest=%s %s %s %s",
+        timeout_ms, DBUS_DEST, path, method, args
     )
 end
 
@@ -834,16 +841,55 @@ function BTManager:connect(address)
         return true
     end
 
-    local out, ok = dbus(dbus_cmd(path, DEVICE_IFACE .. ".Connect"))
+    -- Use a longer timeout (15s) for Connect -- BT negotiation can be slow,
+    -- especially for A2DP headphones that need profile negotiation.
+    local connect_cmd = dbus_cmd(path, DEVICE_IFACE .. ".Connect", 15000)
+
+    -- Attempt 1
+    local out, ok = dbus(connect_cmd)
     if not ok then
-        -- Treat AlreadyConnected as success
         if out:match("AlreadyConnected") then
             logger.warn("BTManager: D-Bus reports AlreadyConnected, treating as success")
             return true
         end
         local err = out:match("Error[^\n]*") or "Connection failed"
-        logger.warn("BTManager: connect failed:", err)
-        return false, err
+        logger.warn("BTManager: connect attempt 1 failed:", err)
+
+        -- Retry once after a short delay.  BT headphones sometimes need
+        -- a moment to become connectable after the adapter powers on.
+        logger.warn("BTManager: retrying connect in 3s...")
+        os.execute("sleep 3")
+
+        -- Re-check: headphones may have connected asynchronously
+        conn_out = get_property(path, DEVICE_IFACE, "Connected")
+        if conn_out:match("boolean true") then
+            logger.warn("BTManager: device connected during retry wait")
+            -- fall through to post-connect setup
+        else
+            out, ok = dbus(connect_cmd)
+            if not ok then
+                if out:match("AlreadyConnected") then
+                    logger.warn("BTManager: D-Bus reports AlreadyConnected on retry")
+                    -- fall through to post-connect
+                else
+                    err = out:match("Error[^\n]*") or "Connection failed"
+                    logger.warn("BTManager: connect attempt 2 failed:", err)
+                    -- Translate known BlueZ errors to actionable messages
+                    local user_err = err
+                    if err:match("NotReady") then
+                        user_err = "Adapter not ready -- try powering BT off and on"
+                    elseif err:match("InProgress") then
+                        user_err = "Another connection attempt is in progress"
+                    elseif err:match("ConnectFailed") or err:match("Page Timeout")
+                        or err:match("Connection refused") then
+                        user_err = "Device not reachable -- ensure headphones are on and in range"
+                    elseif err:match("NoSuchAdapter") then
+                        user_err = "No Bluetooth adapter found"
+                    end
+                    return false, user_err
+                end
+            end
+        end
     end
 
     if bt_stack == "mtk" then

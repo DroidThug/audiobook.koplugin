@@ -1336,7 +1336,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                                 engine.play_generation = (engine.play_generation or 0) + 1
                                 engine:cleanup()
                                 UIManager:show(InfoMessage:new{
-                                    text = _("Kindle native TTS failed.\n\nThe device has a TTS engine (Ivona SDK) but playback could not be triggered via any strategy.\n\nPlease generate a bug report and share it on GitHub issue #11."),
+                                    text = _("Kindle native TTS failed.\n\nThe device has a TTS engine (Ivona SDK) but playback could not be triggered via any strategy.\n\nPlease generate a bug report and share it on GitHub."),
                                     timeout = 10,
                                 })
                                 return
@@ -1606,8 +1606,14 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                                 engine.is_speaking = false
                                 engine.play_generation = (engine.play_generation or 0) + 1
                                 engine:cleanup()
+                                local msg
+                                if engine._no_real_audio_output then
+                                    msg = _("Kindle audio playback failed.\n\nThis Kindle model's GStreamer installation cannot decode audio files (no wavparse plugin). If your device has VoiceView (Settings > Accessibility), native TTS may work in a future update.\n\nPlease generate a bug report and share it on GitHub.")
+                                else
+                                    msg = _("Kindle audio playback failed.\n\nThe playermgr service accepted commands but audio never started.\n\nPlease generate a bug report (Audiobook > Report a bug) and share it on GitHub.")
+                                end
                                 UIManager:show(InfoMessage:new{
-                                    text = _("Kindle audio playback failed.\n\nThe playermgr service accepted commands but audio never started. This is a known issue on some Kindle models.\n\nPlease generate a bug report (Audiobook > Report a bug) and share it on GitHub issue #11."),
+                                    text = msg,
                                     timeout = 10,
                                 })
                                 return
@@ -1972,9 +1978,39 @@ function TTSEngine:findAudioPlayer()
             h:close()
             val = val:match("^%s*(%d+)")
             if val then
+                -- playermgr uses GStreamer to decode audio files.  On some
+                -- Kindle models the GStreamer installation is stripped to only
+                -- ttssrc+mixersink+audiblesrc -- no wavparse or audioconvert.
+                -- Without wavparse, playermgr cannot decode WAV files and
+                -- kindle-lipc will silently fail on every play attempt.
+                -- Detect this by checking whether wavparse exists in the
+                -- GStreamer plugin directory.
+                local has_wavparse = false
+                local gst_dirs = {"/usr/lib/gstreamer-1.0", "/usr/lib/gstreamer-0.10"}
+                for _, dir in ipairs(gst_dirs) do
+                    local lsh = io.popen("ls " .. dir .. "/libgstwav* 2>/dev/null")
+                    if lsh then
+                        local ls_out = lsh:read("*a") or ""
+                        lsh:close()
+                        if ls_out:match("libgstwav") then
+                            has_wavparse = true
+                            break
+                        end
+                    end
+                end
+
                 self.audio_player_type = "kindle-lipc"
-                self._no_real_audio_output = false  -- LIPC routes through BT
-                logger.warn("TTSEngine: Found Kindle LIPC playermgr service, InPlayback=", val)
+                if has_wavparse then
+                    self._no_real_audio_output = false  -- LIPC routes through BT
+                else
+                    -- playermgr exists but cannot decode WAV.  Select it anyway
+                    -- (it's still the best candidate) but flag that audio output
+                    -- is not real so rapid-fail detection kicks in immediately.
+                    self._no_real_audio_output = true
+                    logger.warn("TTSEngine: Kindle playermgr found but GStreamer lacks wavparse -- WAV playback will fail")
+                end
+                logger.warn("TTSEngine: Found Kindle LIPC playermgr service, InPlayback=", val,
+                    "wavparse=", has_wavparse)
                 return "kindle-lipc"
             else
                 logger.warn("TTSEngine: lipc-get-prop playermgr InPlayback returned:", val)
