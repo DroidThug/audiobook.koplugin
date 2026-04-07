@@ -1260,6 +1260,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                         local df2_line = df2:read("*a") or ""; df2:close()
                         local pct2 = tonumber(df2_line:match("(%d+)%%"))
                         if pct2 and pct2 >= 98 then
+                            self._var_full = true
                             UIManager:show(InfoMessage:new{
                                 text = _("/var is full (" .. pct2 .. "% used).\n\nThe Kindle's native TTS engine needs temporary space in /var to synthesize speech. With /var full, playback will silently fail.\n\nTry rebooting your Kindle to clear /var, then try again."),
                                 timeout = 15,
@@ -1267,6 +1268,29 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                         end
                     end
                 end
+            end
+        end
+
+        -- Skip native TTS entirely when /var is full and gst-play is available.
+        -- Ivona SDK cannot synthesize without temp space, so going through the
+        -- 10s strategy+timeout loop is pointless.  Fall back immediately.
+        if self._var_full then
+            if not self._kindle_gst_play_bin then
+                local plugin_dir = self.plugin_dir or "."
+                local gst_play_bin = plugin_dir .. "/kindle/gst-play"
+                local gf = io.open(gst_play_bin, "r")
+                if gf then
+                    gf:close()
+                    self._kindle_gst_play_bin = gst_play_bin
+                end
+            end
+            if self._kindle_gst_play_bin and self.current_audio_file then
+                logger.warn("TTSEngine: /var full, skipping native TTS, using kindle-gst-play")
+                self.audio_player_type = "kindle-gst-play"
+                self._no_real_audio_output = false
+                self.is_speaking = false
+                self:play()
+                return true
             end
         end
 
@@ -1449,6 +1473,27 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                         logger.err("TTSEngine: Kindle native TTS never started, elapsed=",
                             elapsed_ms, "ms, fails=", engine._lipc_consec_fails)
                         if engine._lipc_consec_fails >= 2 then
+                            -- Try falling back to kindle-gst-play if the binary is present.
+                            -- This bypasses the native TTS pipeline entirely and plays
+                            -- the espeak-synthesized WAV via GStreamer mixersink directly.
+                            if not engine._kindle_gst_play_bin then
+                                local plugin_dir = engine.plugin_dir or "."
+                                local gst_play_bin = plugin_dir .. "/kindle/gst-play"
+                                local gf = io.open(gst_play_bin, "r")
+                                if gf then
+                                    gf:close()
+                                    engine._kindle_gst_play_bin = gst_play_bin
+                                end
+                            end
+                            if engine._kindle_gst_play_bin and engine.current_audio_file then
+                                logger.warn("TTSEngine: native TTS failed twice, falling back to kindle-gst-play")
+                                engine.audio_player_type = "kindle-gst-play"
+                                engine._no_real_audio_output = false
+                                -- Replay the current audio file via gst-play
+                                engine.is_speaking = false
+                                engine:play()
+                                return
+                            end
                             engine.is_speaking = false
                             engine.play_generation = (engine.play_generation or 0) + 1
                             engine:cleanup()

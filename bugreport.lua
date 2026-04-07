@@ -29,10 +29,16 @@ end
 
 --- Run a shell command and return trimmed stdout (max 500 chars).
 local function shellCapture(cmd, timeout_s)
-    local full_cmd = cmd .. " 2>/dev/null"
+    local full_cmd
     if timeout_s then
-        -- timeout(1) may or may not exist; harmless if missing
-        full_cmd = "timeout " .. timeout_s .. " " .. full_cmd
+        -- BusyBox timeout expects "timeout SECS PROG [ARGS]" and cannot
+        -- run shell builtins (for, if, etc.) directly.  Wrap the entire
+        -- command in "sh -c '...'" so timeout gets a single executable.
+        -- Single quotes inside the command are escaped as '\''.
+        local escaped = cmd:gsub("'", "'\\''")
+        full_cmd = "timeout " .. timeout_s .. " sh -c '" .. escaped .. "' 2>/dev/null"
+    else
+        full_cmd = cmd .. " 2>/dev/null"
     end
     local handle = io.popen(full_cmd)
     if not handle then return nil end
@@ -967,7 +973,7 @@ local function collectResourceInfo()
     info.disk_tmp = shellCapture("df -h /tmp 2>/dev/null | tail -1", 2)
     info.disk_var = shellCapture("df -h /var 2>/dev/null | tail -1", 2)
     info.disk_var_usage = shellCapture(
-        "du -sh /var/* 2>/dev/null | sort -rh | head -15", 3) or "n/a"
+        "du -sk /var/* 2>/dev/null | sort -rn | head -15", 3) or "n/a"
     return info
 end
 
