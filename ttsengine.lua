@@ -1242,6 +1242,34 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         logger.warn("TTSEngine: Kindle native TTS play:", text:sub(1, 60),
             "est_dur=", dur_ms, "ms")
 
+        -- Check /var free space -- Ivona TTS needs temp space for synthesis.
+        -- A full /var causes playermgr to silently ignore PlayParameter.
+        if not self._var_space_checked then
+            self._var_space_checked = true
+            local df_h = io.popen("df /var 2>/dev/null | tail -1")
+            if df_h then
+                local df_line = df_h:read("*a") or ""; df_h:close()
+                local use_pct = tonumber(df_line:match("(%d+)%%"))
+                if use_pct and use_pct >= 95 then
+                    logger.warn("TTSEngine: /var is", use_pct, "% full -- TTS may fail")
+                    -- Try to free space: remove known safe temp files
+                    os.execute("rm -f /var/tmp/audiomgrd.err /var/tmp/*.tmp 2>/dev/null")
+                    -- Re-check
+                    local df2 = io.popen("df /var 2>/dev/null | tail -1")
+                    if df2 then
+                        local df2_line = df2:read("*a") or ""; df2:close()
+                        local pct2 = tonumber(df2_line:match("(%d+)%%"))
+                        if pct2 and pct2 >= 98 then
+                            UIManager:show(InfoMessage:new{
+                                text = _("/var is full (" .. pct2 .. "% used).\n\nThe Kindle's native TTS engine needs temporary space in /var to synthesize speech. With /var full, playback will silently fail.\n\nTry rebooting your Kindle to clear /var, then try again."),
+                                timeout = 15,
+                            })
+                        end
+                    end
+                end
+            end
+        end
+
         -- JSON-escape the text for the PlayParameter payload
         local json_text = text:gsub('\\', '\\\\'):gsub('"', '\\"')
                               :gsub('\n', '\\n'):gsub('\r', '\\r'):gsub('\t', '\\t')

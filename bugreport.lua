@@ -869,8 +869,10 @@ lipc-probe -l 2>/dev/null | grep -iE 'voice|tts|a11y|access|speak|screen.?read|p
                 lipc_lib.LipcClose(h_anon)
             end
             -- 3b) Named connection (might be what VoiceView does)
+            -- Use a different name than the engine's cached handle to avoid
+            -- LIPC error 17 (ALREADY_REGISTERED) when the engine is running.
             code[0] = 0
-            local h_named = lipc_lib.LipcOpenEx("com.lab126.koreader.tts", code)
+            local h_named = lipc_lib.LipcOpenEx("com.lab126.koreader.diag", code)
             log("named_open=" .. tostring(code[0]) .. " handle=" .. tostring(h_named ~= nil and h_named or "nil"))
             if h_named ~= nil and code[0] == 0 then
                 -- Set audio focus via named connection
@@ -963,6 +965,9 @@ local function collectResourceInfo()
     local info = {}
     info.meminfo = shellCapture("head -5 /proc/meminfo 2>/dev/null", 2)
     info.disk_tmp = shellCapture("df -h /tmp 2>/dev/null | tail -1", 2)
+    info.disk_var = shellCapture("df -h /var 2>/dev/null | tail -1", 2)
+    info.disk_var_usage = shellCapture(
+        "du -sh /var/* 2>/dev/null | sort -rh | head -15", 3) or "n/a"
     return info
 end
 
