@@ -13,3 +13,4 @@ espeak-ng/
 # Temp files
 *.wav
 *.tmp
+result

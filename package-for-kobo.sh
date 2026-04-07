@@ -71,6 +71,14 @@ if [ -f "$SCRIPT_DIR/android/tts_helper.dex" ]; then
     cp "$SCRIPT_DIR/android/tts_helper.dex" "$PLUGIN_DEST/android/"
 fi
 
+# Kindle GStreamer WAV player (pre-compiled ARM binary for Cat 2 Kindles)
+if [ -f "$SCRIPT_DIR/kindle/gst-play" ]; then
+    mkdir -p "$PLUGIN_DEST/kindle"
+    cp "$SCRIPT_DIR/kindle/gst-play" "$PLUGIN_DEST/kindle/"
+    chmod +x "$PLUGIN_DEST/kindle/gst-play"
+    echo "Bundled kindle/gst-play"
+fi
+
 # espeak-ng binary + library (inside plugin dir)
 cp "$ESPEAK_OUT/bin/espeak-ng" "$ESPEAK_DEST/bin/"
 # Find the actual versioned .so file (e.g. libespeak-ng.so.1.52.0.1) without hardcoding version

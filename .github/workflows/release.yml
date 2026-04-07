@@ -26,7 +26,7 @@ jobs:
             ~/.nix-defexpr
             /nix/store
             /nix/var
-          key: nix-store-${{ hashFiles('flake.lock', 'flake.nix', 'cross-build-*.nix') }}
+          key: nix-store-${{ hashFiles('cross-build-*.nix') }}
           restore-keys: nix-store-
 
       - name: Cache Piper downloads
@@ -79,6 +79,9 @@ jobs:
           echo "=== Android TTS helper ==="
           ls -la kobo-tts-bundle/audiobook.koplugin/android/
           echo ""
+          echo "=== Kindle GStreamer player ==="
+          ls -la kobo-tts-bundle/audiobook.koplugin/kindle/
+          echo ""
           echo "=== Total size ==="
           du -sh kobo-tts-bundle/audiobook.koplugin/
 
@@ -102,6 +105,7 @@ jobs:
             - Bundled espeak-ng (cross-compiled for Kobo armv7l)
             - Bundled Piper neural TTS + en_US-danny-low voice
             - Bundled BlueALSA (BT audio bridge for BlueZ Kobo devices)
+            - Bundled kindle-gst-play (GStreamer WAV player for Cat 2 Kindles)
             - Android TTS helper (pre-built tts_helper.dex)
 
             ### Install paths
