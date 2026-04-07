@@ -932,6 +932,29 @@ fi
     -- /tmp writable (needed for WAV files)
     info.tmp_writable = fileExists("/tmp") and os.execute("touch /tmp/.audiobook_test 2>/dev/null && rm /tmp/.audiobook_test 2>/dev/null") ~= nil
 
+    -- kindle-gst-play: bundled GStreamer WAV player for devices without wavparse.
+    -- Reports whether the binary exists, GStreamer loads, and which elements
+    -- are available (especially mixersink which is the only audio path).
+    if Device.isKindle and Device:isKindle() then
+        -- Try common plugin paths to find the binary
+        local gst_play_path = nil
+        for _, p in ipairs({
+            "/mnt/us/koreader/plugins/audiobook.koplugin",
+            "/opt/koreader/plugins/audiobook.koplugin",
+        }) do
+            local candidate = p .. "/kindle/gst-play"
+            if fileExists(candidate) then gst_play_path = candidate; break end
+        end
+        if gst_play_path then
+            info.kindle_gst_play_probe = shellCapture(
+                gst_play_path .. " --probe 2>&1", 5) or "binary_exists_but_probe_failed"
+            info.kindle_gst_play_version = shellCapture(
+                gst_play_path .. " --version 2>&1", 2) or "n/a"
+        else
+            info.kindle_gst_play_probe = "binary_not_found"
+        end
+    end
+
     return info
 end
 

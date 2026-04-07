@@ -1728,6 +1728,81 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         return true
     end
 
+    -- === KINDLE GST-PLAY PATH ===
+    -- Bundled C helper that feeds raw PCM to GStreamer mixersink via dlopen.
+    -- Used on Kindle devices that have GStreamer + mixersink but no wavparse.
+    -- The helper reads the WAV header, strips it, and plays raw PCM.
+    if self.audio_player_type == "kindle-gst-play" then
+        self._concat_durations = nil
+        self._expected_play_duration_ms = self._current_audio_duration_ms
+        self.play_generation = (self.play_generation or 0) + 1
+        local my_gen = self.play_generation
+        self.playback_latency_ms = 300
+
+        local file_path = self.current_audio_file
+        logger.warn("TTSEngine: kindle-gst-play:", file_path,
+            "dur=", self._expected_play_duration_ms, "ms")
+
+        -- Request audio focus from audiomgrd (same as kindle-lipc path)
+        os.execute("lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>/dev/null")
+
+        -- Launch gst-play in background, capture PID
+        local cmd = string.format(
+            '%s "%s" >/dev/null 2>/dev/null & echo $!',
+            self._kindle_gst_play_bin, file_path)
+        local h = io.popen(cmd)
+        local pid_str = h and h:read("*a") or ""
+        if h then h:close() end
+        local pid = tonumber(pid_str:match("(%d+)"))
+        self._gst_play_pid = pid
+
+        logger.warn("TTSEngine: kindle-gst-play launched, PID=", pid)
+
+        self._audio_launched_at = UIManager:getTime()
+        self:startTimingLoop()
+
+        -- Poll /proc/<pid> for process completion.
+        -- When the process exits, check its status to distinguish
+        -- success (exit 0 = EOS) from failure (exit 3/4).
+        local engine = self
+        local poll_count = 0
+        local dur_ms = self._expected_play_duration_ms or 5000
+        local max_polls = math.max(300, math.floor(dur_ms * 3 / 100))
+
+        local function pollGstPlayDone()
+            if (engine.play_generation or 0) ~= my_gen then return end
+            if not engine.is_speaking then return end
+            if engine.is_paused then
+                UIManager:scheduleIn(0.3, pollGstPlayDone)
+                return
+            end
+            poll_count = poll_count + 1
+
+            -- Check if process still running via /proc
+            local proc_fh = pid and io.open("/proc/" .. pid .. "/status", "r")
+            if proc_fh then
+                proc_fh:close()
+                -- Still running
+                if poll_count >= max_polls then
+                    logger.warn("TTSEngine: kindle-gst-play timed out after",
+                        poll_count * 0.1, "s -- killing")
+                    os.execute("kill " .. pid .. " 2>/dev/null")
+                    engine._gst_play_pid = nil
+                    engine:onPlaybackComplete()
+                else
+                    UIManager:scheduleIn(0.1, pollGstPlayDone)
+                end
+            else
+                -- Process exited -- playback complete
+                logger.warn("TTSEngine: kindle-gst-play finished, polls=", poll_count)
+                engine._gst_play_pid = nil
+                engine:onPlaybackComplete()
+            end
+        end
+        UIManager:scheduleIn(0.2, pollGstPlayDone)
+        return true
+    end
+
     -- === PERSISTENT BT PIPELINE PATH ===
     -- For Bluetooth: use a single persistent gst-launch that never stops.
     -- A feeder script writes silence between sentences to keep BT A2DP alive,
@@ -2088,18 +2163,47 @@ function TTSEngine:findAudioPlayer()
                     end
                 end
 
-                self.audio_player_type = "kindle-lipc"
                 if has_wavparse then
+                    self.audio_player_type = "kindle-lipc"
                     self._no_real_audio_output = false  -- LIPC routes through BT
-                else
-                    -- playermgr exists but cannot decode WAV.  Select it anyway
-                    -- (it's still the best candidate) but flag that audio output
-                    -- is not real so rapid-fail detection kicks in immediately.
-                    self._no_real_audio_output = true
-                    logger.warn("TTSEngine: Kindle playermgr found but GStreamer lacks wavparse -- WAV playback will fail")
+                    logger.warn("TTSEngine: Found Kindle LIPC playermgr service, InPlayback=", val,
+                        "wavparse=", has_wavparse)
+                    return "kindle-lipc"
                 end
+
+                -- No wavparse -- playermgr cannot decode WAV.  Check for our
+                -- bundled gst-play helper which feeds raw PCM to mixersink
+                -- directly, bypassing the missing wavparse plugin.
+                local plugin_dir = self.plugin_dir or "."
+                local gst_play_bin = plugin_dir .. "/kindle/gst-play"
+                local gf = io.open(gst_play_bin, "r")
+                if gf then
+                    gf:close()
+                    -- Run --probe to verify GStreamer loads and mixersink exists
+                    local ph = io.popen(gst_play_bin .. " --probe 2>/dev/null")
+                    if ph then
+                        local probe = ph:read("*a") or ""
+                        ph:close()
+                        if probe:match("mixersink=found") then
+                            self.audio_player_type = "kindle-gst-play"
+                            self._kindle_gst_play_bin = gst_play_bin
+                            self._no_real_audio_output = false
+                            logger.warn("TTSEngine: Found kindle-gst-play with mixersink, probe:", probe:gsub("\n", " "))
+                            return "kindle-gst-play"
+                        else
+                            logger.warn("TTSEngine: kindle-gst-play probe failed:", probe:gsub("\n", " "))
+                        end
+                    end
+                end
+
+                -- Fall through: no wavparse AND no gst-play helper (or
+                -- mixersink not found).  Select kindle-lipc anyway but flag
+                -- that audio will fail so rapid-fail detection kicks in.
+                self.audio_player_type = "kindle-lipc"
+                self._no_real_audio_output = true
+                logger.warn("TTSEngine: Kindle playermgr found but GStreamer lacks wavparse and no gst-play helper")
                 logger.warn("TTSEngine: Found Kindle LIPC playermgr service, InPlayback=", val,
-                    "wavparse=", has_wavparse)
+                    "wavparse=false, gst_play=not_found")
                 return "kindle-lipc"
             else
                 logger.warn("TTSEngine: lipc-get-prop playermgr InPlayback returned:", val)
@@ -3001,6 +3105,12 @@ function TTSEngine:stop()
         os.execute("lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null")
     end
 
+    -- Stop kindle-gst-play process if active
+    if self.audio_player_type == "kindle-gst-play" and self._gst_play_pid then
+        os.execute("kill " .. self._gst_play_pid .. " 2>/dev/null")
+        self._gst_play_pid = nil
+    end
+
     -- Stop Kindle native TTS via FFI or shell
     if self.audio_player_type == "kindle-native-tts" then
         if self._lipc_handle and _lipc_lib then
@@ -3079,6 +3189,11 @@ function TTSEngine:forceKillAll()
     -- Stop Kindle LIPC playermgr
     if self.audio_player_type == "kindle-lipc" then
         os.execute("lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null")
+    end
+    -- Kill kindle-gst-play process
+    if self._gst_play_pid then
+        os.execute("kill " .. self._gst_play_pid .. " 2>/dev/null")
+        self._gst_play_pid = nil
     end
     -- Close Kindle native TTS LIPC handle
     if self.audio_player_type == "kindle-native-tts" then

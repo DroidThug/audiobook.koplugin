@@ -42,6 +42,30 @@
           ];
         });
 
+      # Cross-compiled kindle-gst-play for Kindle (armv7l, dlopen, no headers)
+      mkKindleGstPlay = pkgs:
+        let
+          crossPkgs = pkgs.pkgsCross.armv7l-hf-multiplatform;
+        in
+        crossPkgs.stdenv.mkDerivation {
+          pname = "kindle-gst-play";
+          version = "0.1.0";
+          src = ./kindle;
+          buildInputs = [];
+          buildPhase = ''
+            $CC -O2 -Wall -Wextra -Wno-unused-parameter \
+                -o gst-play gst-play.c -ldl
+          '';
+          installPhase = ''
+            mkdir -p $out/bin
+            cp gst-play $out/bin/
+          '';
+          meta = with pkgs.lib; {
+            description = "Minimal GStreamer WAV player for Kindle via mixersink";
+            license = licenses.agpl3Only;
+          };
+        };
+
       # Plugin source files to bundle
       pluginFiles = [
         "main.lua"
@@ -68,6 +92,7 @@
           pkgs = import nixpkgs { inherit system; };
           espeakKobo = mkEspeakKobo pkgs;
           bluealsaKobo = mkBluealsaKobo pkgs;
+          kindleGstPlay = mkKindleGstPlay pkgs;
         in
         {
           # Cross-compiled espeak-ng binary + data for Kobo armv7l
@@ -75,6 +100,9 @@
 
           # Cross-compiled bluez-alsa for Kobo armv7l
           bluealsa-kobo = bluealsaKobo;
+
+          # Cross-compiled GStreamer WAV player for Kindle armv7l
+          kindle-gst-play = kindleGstPlay;
 
           # Full plugin bundle with espeak-ng (Lua + binaries + data)
           kobo-bundle =
