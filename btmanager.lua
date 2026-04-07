@@ -320,8 +320,28 @@ function BTManager:powerOn()
         else
             logger.warn("BTManager: bluetoothd already running")
         end
-        os.execute("hciconfig hci0 down 2>/dev/null && hciconfig hci0 up 2>/dev/null")
-        os.execute("sleep 1")
+        -- Reset the HCI adapter.  Use ";" instead of "&&" so that
+        -- "hci0 up" still runs even when "hci0 down" fails (which
+        -- happens on Kobo Libra 2 when the adapter hasn't been
+        -- initialised yet and hci0 doesn't exist).
+        os.execute("hciconfig hci0 down 2>/dev/null; hciconfig hci0 up 2>/dev/null")
+        -- Wait for the HCI device to appear (firmware loading on some
+        -- Kobo models takes a moment after hciconfig up).
+        local hci_ready = false
+        for attempt = 1, 6 do
+            os.execute("sleep 0.5")
+            local h = io.popen("hciconfig hci0 2>/dev/null")
+            local r = h and h:read("*a") or ""
+            if h then h:close() end
+            if r:match("hci0") then
+                hci_ready = true
+                logger.warn("BTManager: hci0 ready after", attempt * 0.5, "s")
+                break
+            end
+        end
+        if not hci_ready then
+            logger.warn("BTManager: hci0 not found after 3s")
+        end
     end
 
     local _, ok = set_property(ADAPTER_PATH, ADAPTER_IFACE, "Powered", "variant:boolean:true")

@@ -1186,9 +1186,9 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
     -- through aplay for every sentence wastes CPU and can crash the device.
     if self._no_real_audio_output then
         local bt_connected = false
-        if self.plugin and self.plugin.bt_manager then
-            local ok, devices = pcall(self.plugin.bt_manager.listAudioDevices,
-                                      self.plugin.bt_manager)
+        local btm = self.plugin and self.plugin.bt_manager
+        if btm then
+            local ok, devices = pcall(btm.listAudioDevices, btm)
             if ok and devices then
                 for _, dev in ipairs(devices) do
                     if dev.connected then
@@ -1198,8 +1198,21 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                 end
             end
         end
-        if not bt_connected then
-            logger.warn("TTSEngine: No soundcard and no BT connected — refusing to play")
+        if bt_connected then
+            -- BT device appeared after initial findAudioPlayer (e.g.
+            -- connected externally).  Re-probe the audio player so
+            -- bluealsa can be started and used.
+            logger.warn("TTSEngine: BT device connected, re-probing audio player")
+            self._cached_player = nil
+            self._no_real_audio_output = false
+            player = self:findAudioPlayer()
+            if not player then
+                logger.warn("TTSEngine: re-probe failed, no audio player found")
+                self.is_speaking = false
+                return false
+            end
+        else
+            logger.warn("TTSEngine: No soundcard and no BT connected - refusing to play")
             self.is_speaking = false
             local msg
             if Device:isKindle() then
@@ -2303,6 +2316,27 @@ function TTSEngine:findAudioPlayer()
     -- headphones via the "bluealsa" ALSA PCM device.
     local bt = self.plugin and self.plugin.bt_manager
     if self:commandExists("aplay") and bt then
+        -- If bluealsa is not running but bundled, and a BT audio device
+        -- is already connected (e.g. paired externally through Kobo
+        -- firmware settings), start bluealsa now so we can use it.
+        if not bt:isBluealsaRunning()
+            and bt:hasBluealsaBundled()
+            and bt:getStackType() == "bluez" then
+            local has_bt_device = false
+            local ok_list, devs = pcall(bt.listAudioDevices, bt)
+            if ok_list and devs then
+                for _, d in ipairs(devs) do
+                    if d.connected then has_bt_device = true; break end
+                end
+            end
+            if has_bt_device then
+                logger.warn("TTSEngine: BT device connected but bluealsa not running, starting it")
+                bt:startBluealsa()
+            else
+                logger.warn("TTSEngine: BlueALSA bundled but daemon not running (no BT device)")
+            end
+        end
+
         if bt:isBluealsaRunning() then
             local plugin_dir = bt:getBluealsaPluginDir()
             local ba_dev = bt:getBluealsaDevice()
@@ -2324,8 +2358,6 @@ function TTSEngine:findAudioPlayer()
             self._bluealsa_env = env
             logger.warn("TTSEngine: Found BlueALSA audio bridge, device:", ba_dev)
             return env .. "aplay -q -D " .. ba_dev
-        elseif bt:hasBluealsaBundled() and bt:getStackType() == "bluez" then
-            logger.warn("TTSEngine: BlueALSA bundled but daemon not running")
         end
     end
 
