@@ -54,6 +54,7 @@
           buildInputs = [];
           buildPhase = ''
             $CC -O2 -Wall -Wextra -Wno-unused-parameter \
+                -Wl,--dynamic-linker=/lib/ld-linux-armhf.so.3 \
                 -o gst-play gst-play.c -ldl
           '';
           installPhase = ''

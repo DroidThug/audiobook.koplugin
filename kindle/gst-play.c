@@ -136,6 +136,19 @@ static int load_gstreamer(void)
 /* ---- Probe mode ---- */
 static int do_probe(void)
 {
+    /* Report system glibc version (helps diagnose GLIBC_2.34 load failures) */
+    const char *(*gnu_get_libc_version_fn)(void) = NULL;
+    void *libc_handle = dlopen("libc.so.6", RTLD_LAZY);
+    if (libc_handle) {
+        gnu_get_libc_version_fn = dlsym(libc_handle, "gnu_get_libc_version");
+        if (gnu_get_libc_version_fn)
+            printf("glibc=%s\n", gnu_get_libc_version_fn());
+        else
+            printf("glibc=unknown\n");
+    } else {
+        printf("glibc=not_found\n");
+    }
+
     if (load_gstreamer() != 0) {
         printf("gstreamer=not_found\n");
         return 3;
