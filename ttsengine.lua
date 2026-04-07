@@ -21,6 +21,22 @@ pcall(function() ffi.cdef[[ int open(const char *pathname, int flags); ]] end)
 pcall(function() ffi.cdef[[ int close(int fd); ]] end)
 pcall(function() ffi.cdef[[ int fcntl(int fd, int cmd, ...); ]] end)
 pcall(function() ffi.cdef[[ long write(int fd, const void *buf, unsigned long count); ]] end)
+
+-- LIPC FFI: direct binding to Kindle's liblipc.so for native TTS playback.
+-- CLI tools (lipc-set-prop) use anonymous, transient LIPC connections.
+-- VoiceView uses named, persistent connections via the C API.
+-- playermgr may only trigger TTS for named LIPC sources.
+pcall(function() ffi.cdef[[
+    typedef struct _LIPC LIPC;
+    LIPC *LipcOpenEx(const char *service_name, int *code);
+    LIPC *LipcOpenNoName(int *code);
+    int LipcClose(LIPC *lipc);
+    int LipcSetStringProperty(LIPC *lipc, const char *source, const char *prop, const char *value);
+    int LipcGetIntProperty(LIPC *lipc, const char *source, const char *prop, int *value);
+    int LipcGetStringProperty(LIPC *lipc, const char *source, const char *prop, char **value);
+    void LipcFreeString(char *str);
+]] end)
+local _lipc_lib  -- loaded lazily on first Kindle native TTS use
 local logger = require("logger")
 local time = require("ui/time")
 local _ = require("gettext")
@@ -1203,6 +1219,10 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
     -- Send text directly to Amazon's Ivona SDK via playermgr PlayParameter.
     -- Protocol discovered from VoiceView LIPC event capture:
     -- text → PlayParameter(JSON) → ttssrc → Ivona → mixersink → audiomgrd → BT
+    --
+    -- v0.1.5.37: Use liblipc.so FFI with a named LIPC source.  CLI tools
+    -- (lipc-set-prop) use anonymous transient connections; playermgr may
+    -- only trigger TTS for named sources (VoiceView uses the C API).
     if self.audio_player_type == "kindle-native-tts" then
         local text = self._native_tts_text
         if not text or text == "" then
@@ -1230,34 +1250,116 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         local payload = '{"type":"TTS","data":{"paramName":"textsource","paramValue":"'
             .. json_text .. '"}}'
 
-        -- Shell-safe single-quote escaping (only ' needs escaping in '...')
-        local function shellEsc(s) return "'" .. s:gsub("'", "'\\''") .. "'" end
+        -- --- LIPC FFI helpers (persistent named connection) ---
+        -- Lazy-load liblipc.so on first use
+        if _lipc_lib == nil then
+            _lipc_lib = false  -- mark as attempted
+            local ok, lib = pcall(ffi.load, "lipc")
+            if ok then _lipc_lib = lib; logger.warn("TTSEngine: loaded liblipc.so via FFI") end
+        end
 
-        local function lipc_cmd(cmd)
-            local h = io.popen(cmd .. " 2>&1")
-            local out = ""
-            if h then out = h:read("*a") or ""; h:close() end
-            return out
+        -- Get or create a persistent named LIPC handle
+        local lipc_h = self._lipc_handle
+        if not lipc_h and _lipc_lib then
+            local open_ok, open_err = pcall(function()
+                local code = ffi.new("int[1]")
+                local h = _lipc_lib.LipcOpenEx("com.lab126.koreader.tts", code)
+                if h ~= nil and code[0] == 0 then
+                    self._lipc_handle = h
+                    lipc_h = h
+                    logger.warn("TTSEngine: opened named LIPC connection (com.lab126.koreader.tts)")
+                else
+                    logger.warn("TTSEngine: LipcOpenEx failed, code=", code[0], ", trying anonymous")
+                    h = _lipc_lib.LipcOpenNoName(code)
+                    if h ~= nil and code[0] == 0 then
+                        self._lipc_handle = h
+                        lipc_h = h
+                        logger.warn("TTSEngine: opened anonymous LIPC connection")
+                    else
+                        logger.warn("TTSEngine: LipcOpenNoName also failed, code=", code[0])
+                    end
+                end
+            end)
+            if not open_ok then
+                logger.warn("TTSEngine: LIPC FFI open crashed:", open_err, "-- disabling FFI")
+                _lipc_lib = false
+            end
+        end
+
+        local function ffiSetProp(service, prop, value)
+            if lipc_h and _lipc_lib then
+                local ok, rc = pcall(_lipc_lib.LipcSetStringProperty, lipc_h, service, prop, value)
+                if ok then return rc end
+                logger.warn("TTSEngine: LIPC FFI set crashed:", rc)
+                return nil
+            end
+            return nil  -- signal: use shell fallback
+        end
+
+        local function ffiGetInt(service, prop)
+            if lipc_h and _lipc_lib then
+                local ok, result = pcall(function()
+                    local val = ffi.new("int[1]")
+                    local rc = _lipc_lib.LipcGetIntProperty(lipc_h, service, prop, val)
+                    if rc == 0 then return val[0] end
+                    return nil
+                end)
+                if ok then return result end
+                logger.warn("TTSEngine: LIPC FFI get crashed:", result)
+            end
+            return nil  -- signal: use shell fallback
         end
 
         local function getTtsState()
-            return tonumber(lipc_cmd(
-                "lipc-get-prop com.lab126.playermgr TTS_State 2>/dev/null"
-                ):match("(%d+)")) or 0
+            local st = ffiGetInt("com.lab126.playermgr", "TTS_State")
+            if st ~= nil then return st end
+            -- Shell fallback
+            local h = io.popen("lipc-get-prop com.lab126.playermgr TTS_State 2>/dev/null")
+            if h then
+                local val = h:read("*a") or ""; h:close()
+                return tonumber(val:match("(%d+)")) or 0
+            end
+            return 0
         end
 
         -- Stop previous playback + request audio focus
-        os.execute("lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null")
-        os.execute("lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>/dev/null")
+        if ffiSetProp("com.lab126.playermgr", "Stop", "") == nil then
+            os.execute("lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null")
+        end
+        if ffiSetProp("com.lab126.audiomgrd", "setFocus", "tts") == nil then
+            os.execute("lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>/dev/null")
+        end
 
         -- Strategy A: PlayParameter only (VoiceView's steady-state protocol)
-        logger.warn("TTSEngine: Kindle native TTS strategy A: PlayParameter")
-        lipc_cmd("lipc-set-prop com.lab126.playermgr PlayParameter " .. shellEsc(payload))
+        local using_ffi = lipc_h ~= nil
+        logger.warn("TTSEngine: Kindle native TTS strategy A: PlayParameter",
+            using_ffi and "(FFI)" or "(shell)")
+
+        if using_ffi then
+            ffiSetProp("com.lab126.playermgr", "PlayParameter", payload)
+        else
+            -- Shell-safe single-quote escaping (only ' needs escaping in '...')
+            local function shellEsc(s) return "'" .. s:gsub("'", "'\\''") .. "'" end
+            local function lipc_cmd(cmd)
+                local h = io.popen(cmd .. " 2>&1")
+                local out = ""
+                if h then out = h:read("*a") or ""; h:close() end
+                return out
+            end
+            lipc_cmd("lipc-set-prop com.lab126.playermgr PlayParameter " .. shellEsc(payload))
+        end
         local tts_state = getTtsState()
 
-        -- Strategy B: Open TTS session + PlayParameter + Play
-        if tts_state == 0 then
-            logger.warn("TTSEngine: Kindle native TTS strategy B: Open+PlayParam+Play")
+        -- Strategy B: Open TTS session + PlayParameter + Play (shell fallback only)
+        if tts_state == 0 and not using_ffi then
+            local function shellEsc(s) return "'" .. s:gsub("'", "'\\''") .. "'" end
+            local function lipc_cmd(cmd)
+                local h = io.popen(cmd .. " 2>&1")
+                local out = ""
+                if h then out = h:read("*a") or ""; h:close() end
+                return out
+            end
+            logger.warn("TTSEngine: Kindle native TTS strategy B: Open+PlayParam+Play (shell)")
             lipc_cmd("lipc-set-prop com.lab126.playermgr Open " ..
                 shellEsc('{"type":"TTS"}'))
             lipc_cmd("lipc-set-prop com.lab126.playermgr PlayParameter " ..
@@ -1266,27 +1368,17 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             tts_state = getTtsState()
         end
 
-        -- Strategy C: PlayParameter + Play with TTS type
-        if tts_state == 0 then
-            logger.warn("TTSEngine: Kindle native TTS strategy C: PlayParam+Play")
-            lipc_cmd("lipc-set-prop com.lab126.playermgr PlayParameter " ..
-                shellEsc(payload))
-            lipc_cmd("lipc-set-prop com.lab126.playermgr Play " ..
-                shellEsc('{"type":"TTS"}'))
+        -- Strategy C (FFI): Open + PlayParameter + Play via FFI
+        if tts_state == 0 and using_ffi then
+            logger.warn("TTSEngine: Kindle native TTS strategy C: Open+PlayParam+Play (FFI)")
+            ffiSetProp("com.lab126.playermgr", "Open", '{"type":"TTS"}')
+            ffiSetProp("com.lab126.playermgr", "PlayParameter", payload)
+            ffiSetProp("com.lab126.playermgr", "Play", "")
             tts_state = getTtsState()
         end
 
-        -- Strategy D: Open empty + PlayParameter + Play empty
-        if tts_state == 0 then
-            logger.warn("TTSEngine: Kindle native TTS strategy D: Open+PlayParam+Play(empty)")
-            lipc_cmd("lipc-set-prop com.lab126.playermgr Open ''")
-            lipc_cmd("lipc-set-prop com.lab126.playermgr PlayParameter " ..
-                shellEsc(payload))
-            lipc_cmd("lipc-set-prop com.lab126.playermgr Play ''")
-            tts_state = getTtsState()
-        end
-
-        logger.warn("TTSEngine: Kindle native TTS after strategies, TTS_State=", tts_state)
+        logger.warn("TTSEngine: Kindle native TTS after strategies, TTS_State=", tts_state,
+            using_ffi and "(FFI)" or "(shell)")
 
         self._audio_launched_at = UIManager:getTime()
         self:startTimingLoop()
@@ -1308,42 +1400,38 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             poll_count = poll_count + 1
 
             if poll_count > startup_polls then
-                local sh = io.popen("lipc-get-prop com.lab126.playermgr TTS_State 2>/dev/null")
-                if sh then
-                    local val = sh:read("*a") or ""; sh:close()
-                    local state = tonumber(val:match("(%d+)")) or 0
-                    if state > 0 then
-                        ever_speaking = true
-                    elseif state == 0 and ever_speaking then
-                        -- Was speaking, now done
-                        logger.warn("TTSEngine: Kindle native TTS complete, polls=", poll_count)
-                        engine._lipc_consec_fails = 0
-                        engine:onPlaybackComplete()
-                        return
-                    elseif state == 0 and not ever_speaking then
-                        local elapsed_ms = 0
-                        if engine._audio_launched_at then
-                            elapsed_ms = time.to_ms(UIManager:getTime() - engine._audio_launched_at)
-                                - (engine._total_pause_ms or 0)
-                        end
-                        if elapsed_ms > 5000 then
-                            -- Never started after 5s
-                            engine._lipc_consec_fails = (engine._lipc_consec_fails or 0) + 1
-                            logger.err("TTSEngine: Kindle native TTS never started, elapsed=",
-                                elapsed_ms, "ms, fails=", engine._lipc_consec_fails)
-                            if engine._lipc_consec_fails >= 2 then
-                                engine.is_speaking = false
-                                engine.play_generation = (engine.play_generation or 0) + 1
-                                engine:cleanup()
-                                UIManager:show(InfoMessage:new{
-                                    text = _("Kindle native TTS failed.\n\nThe device has a TTS engine (Ivona SDK) but playback could not be triggered via any strategy.\n\nPlease generate a bug report and share it on GitHub."),
-                                    timeout = 10,
-                                })
-                                return
-                            end
-                            engine:onPlaybackComplete()
+                local state = getTtsState()
+                if state > 0 then
+                    ever_speaking = true
+                elseif state == 0 and ever_speaking then
+                    -- Was speaking, now done
+                    logger.warn("TTSEngine: Kindle native TTS complete, polls=", poll_count)
+                    engine._lipc_consec_fails = 0
+                    engine:onPlaybackComplete()
+                    return
+                elseif state == 0 and not ever_speaking then
+                    local elapsed_ms = 0
+                    if engine._audio_launched_at then
+                        elapsed_ms = time.to_ms(UIManager:getTime() - engine._audio_launched_at)
+                            - (engine._total_pause_ms or 0)
+                    end
+                    if elapsed_ms > 5000 then
+                        -- Never started after 5s
+                        engine._lipc_consec_fails = (engine._lipc_consec_fails or 0) + 1
+                        logger.err("TTSEngine: Kindle native TTS never started, elapsed=",
+                            elapsed_ms, "ms, fails=", engine._lipc_consec_fails)
+                        if engine._lipc_consec_fails >= 2 then
+                            engine.is_speaking = false
+                            engine.play_generation = (engine.play_generation or 0) + 1
+                            engine:cleanup()
+                            UIManager:show(InfoMessage:new{
+                                text = _("Kindle native TTS failed.\n\nThe device has a TTS engine (Ivona SDK) but playback could not be triggered via any strategy (FFI and shell).\n\nPlease generate a bug report and share it on GitHub."),
+                                timeout = 10,
+                            })
                             return
                         end
+                        engine:onPlaybackComplete()
+                        return
                     end
                 end
             end
@@ -1351,6 +1439,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             if poll_count >= max_polls then
                 logger.warn("TTSEngine: Kindle native TTS timed out after",
                     poll_count * 0.1, "s")
+                ffiSetProp("com.lab126.playermgr", "Stop", "")
                 os.execute("lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null")
                 engine:onPlaybackComplete()
             else
@@ -2912,6 +3001,15 @@ function TTSEngine:stop()
         os.execute("lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null")
     end
 
+    -- Stop Kindle native TTS via FFI or shell
+    if self.audio_player_type == "kindle-native-tts" then
+        if self._lipc_handle and _lipc_lib then
+            pcall(_lipc_lib.LipcSetStringProperty, self._lipc_handle,
+                "com.lab126.playermgr", "Stop", "")
+        end
+        os.execute("lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null")
+    end
+
     -- Stop persistent pipeline or legacy keepalive
     if self._persistent_pipeline then
         self:_stopPersistentPipeline("engine_stop")
@@ -2981,6 +3079,14 @@ function TTSEngine:forceKillAll()
     -- Stop Kindle LIPC playermgr
     if self.audio_player_type == "kindle-lipc" then
         os.execute("lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null")
+    end
+    -- Close Kindle native TTS LIPC handle
+    if self.audio_player_type == "kindle-native-tts" then
+        os.execute("lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null")
+        if self._lipc_handle and _lipc_lib then
+            pcall(_lipc_lib.LipcClose, self._lipc_handle)
+            self._lipc_handle = nil
+        end
     end
     -- Stop persistent pipeline or legacy keepalive
     if self._persistent_pipeline then

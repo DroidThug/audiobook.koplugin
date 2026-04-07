@@ -813,6 +813,89 @@ echo "--- full service list (voice/tts/a11y) ---"
 lipc-probe -l 2>/dev/null | grep -iE 'voice|tts|a11y|access|speak|screen.?read|pillow' | head -20
 ]], 10) or "n/a"
 
+        -- v0.1.5.37: liblipc.so FFI diagnostic -- test if a named LIPC
+        -- connection can trigger PlayParameter (the CLI tools use anonymous
+        -- connections which playermgr may ignore).
+        info.kindle_lipc_ffi_test = (function()
+            local ok, result = pcall(function()
+            local lines = {}
+            local function log(s) lines[#lines + 1] = s end
+            -- 1) Check liblipc.so exists
+            local lib_path = nil
+            for _, p in ipairs({"/usr/lib/liblipc.so", "/usr/lib/liblipc.so.0"}) do
+                local f = io.open(p, "r")
+                if f then f:close(); lib_path = p; break end
+            end
+            log("liblipc_path=" .. (lib_path or "not found"))
+            if not lib_path then return table.concat(lines, "\n") end
+            -- 2) Dump key exported symbols
+            local nm = shellCapture("nm -D " .. lib_path .. " 2>/dev/null | grep -i 'Lipc\\|lipc' | head -30", 5)
+            log("symbols=" .. (nm or "nm failed"))
+            -- 3) Try FFI load + named connection + PlayParameter
+            local ffi_ok, ffi = pcall(require, "ffi")
+            if not ffi_ok then log("ffi=not available"); return table.concat(lines, "\n") end
+            -- Declare LIPC functions (wrapped in pcall to tolerate duplicate cdef)
+            pcall(function() ffi.cdef[[
+                typedef struct _LIPC LIPC;
+                LIPC *LipcOpenEx(const char *service_name, int *code);
+                LIPC *LipcOpenNoName(int *code);
+                int LipcClose(LIPC *lipc);
+                int LipcSetStringProperty(LIPC *lipc, const char *source, const char *prop, const char *value);
+                int LipcGetIntProperty(LIPC *lipc, const char *source, const char *prop, int *value);
+                int LipcGetStringProperty(LIPC *lipc, const char *source, const char *prop, char **value);
+                void LipcFreeString(char *str);
+            ]] end)
+            local load_ok, lipc_lib = pcall(ffi.load, "lipc")
+            if not load_ok then log("ffi_load=failed: " .. tostring(lipc_lib)); return table.concat(lines, "\n") end
+            log("ffi_load=ok")
+            -- 3a) Anonymous connection (same as lipc-set-prop)
+            local code = ffi.new("int[1]")
+            local h_anon = lipc_lib.LipcOpenNoName(code)
+            log("anon_open=" .. tostring(code[0]) .. " handle=" .. tostring(h_anon ~= nil and h_anon or "nil"))
+            if h_anon ~= nil and code[0] == 0 then
+                local rc = lipc_lib.LipcSetStringProperty(h_anon,
+                    "com.lab126.playermgr", "PlayParameter",
+                    '{"type":"TTS","data":{"paramName":"textsource","paramValue":"FFI anonymous test."}}')
+                log("anon_set_pp=" .. tostring(rc))
+                -- Brief wait then check TTS_State
+                os.execute("sleep 2 2>/dev/null || usleep 2000000 2>/dev/null")
+                local st = ffi.new("int[1]")
+                lipc_lib.LipcGetIntProperty(h_anon, "com.lab126.playermgr", "TTS_State", st)
+                log("anon_tts_state=" .. tostring(st[0]))
+                local ip = ffi.new("int[1]")
+                lipc_lib.LipcGetIntProperty(h_anon, "com.lab126.playermgr", "InPlayback", ip)
+                log("anon_inplayback=" .. tostring(ip[0]))
+                lipc_lib.LipcSetStringProperty(h_anon, "com.lab126.playermgr", "Stop", "")
+                lipc_lib.LipcClose(h_anon)
+            end
+            -- 3b) Named connection (might be what VoiceView does)
+            code[0] = 0
+            local h_named = lipc_lib.LipcOpenEx("com.lab126.koreader.tts", code)
+            log("named_open=" .. tostring(code[0]) .. " handle=" .. tostring(h_named ~= nil and h_named or "nil"))
+            if h_named ~= nil and code[0] == 0 then
+                -- Set audio focus via named connection
+                lipc_lib.LipcSetStringProperty(h_named,
+                    "com.lab126.audiomgrd", "setFocus", "tts")
+                local rc = lipc_lib.LipcSetStringProperty(h_named,
+                    "com.lab126.playermgr", "PlayParameter",
+                    '{"type":"TTS","data":{"paramName":"textsource","paramValue":"FFI named test."}}')
+                log("named_set_pp=" .. tostring(rc))
+                os.execute("sleep 2 2>/dev/null || usleep 2000000 2>/dev/null")
+                local st = ffi.new("int[1]")
+                lipc_lib.LipcGetIntProperty(h_named, "com.lab126.playermgr", "TTS_State", st)
+                log("named_tts_state=" .. tostring(st[0]))
+                local ip = ffi.new("int[1]")
+                lipc_lib.LipcGetIntProperty(h_named, "com.lab126.playermgr", "InPlayback", ip)
+                log("named_inplayback=" .. tostring(ip[0]))
+                lipc_lib.LipcSetStringProperty(h_named, "com.lab126.playermgr", "Stop", "")
+                lipc_lib.LipcClose(h_named)
+            end
+            return table.concat(lines, "\n")
+            end)
+            if not ok then return "pcall_error: " .. tostring(result) end
+            return result
+        end)()
+
         -- v0.1.5.34: check if running as root (needed for GStreamer plugin dir)
         -- Only report yes/no, not the actual username (privacy).
         info.kindle_is_root = shellCapture("[ \"$(id -u 2>/dev/null)\" = '0' ] && echo yes || echo no", 2) or "n/a"
