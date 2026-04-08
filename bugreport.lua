@@ -293,6 +293,15 @@ local function collectAudioInfo(plugin)
         -- BlueALSA diagnostics
         info.bluealsa_bundled = plugin.bt_manager:hasBluealsaBundled() and "yes" or "no"
         info.bluealsa_running = plugin.bt_manager:isBluealsaRunning() and "yes" or "no"
+        -- Capture bluealsa startup log if it exists (written by startBluealsa)
+        local ba_log_h = io.open("/tmp/.bluealsa_start.log", "r")
+        if ba_log_h then
+            local ba_log = ba_log_h:read("*a") or ""
+            ba_log_h:close()
+            if #ba_log > 0 then
+                info.bluealsa_start_log = ba_log:sub(1, 1500)
+            end
+        end
     end
 
     -- GStreamer BT sink
@@ -959,7 +968,7 @@ fi
             local espeak_lib = gst_play_path:gsub("/kindle/gst%-play$", "/espeak-ng/lib")
             local ld_linux = espeak_lib .. "/ld-linux-armhf.so.3"
             if fileExists(ld_linux) then
-                gst_cmd = ld_linux .. " --library-path " .. espeak_lib .. " " .. gst_play_path
+                gst_cmd = ld_linux .. " --library-path " .. espeak_lib .. ":/usr/lib:/lib " .. gst_play_path
             end
             info.kindle_gst_play_probe = shellCapture(
                 gst_cmd .. " --probe 2>&1", 5) or "binary_exists_but_probe_failed"

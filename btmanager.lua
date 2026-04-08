@@ -432,10 +432,14 @@ end
 --- Check if the bluealsa daemon is running.
 -- @treturn bool
 function BTManager:isBluealsaRunning()
-    local h = io.popen("pidof bluealsa 2>/dev/null")
+    -- When bluealsa is launched through bundled ld-linux, the process
+    -- name in /proc/pid/comm is "ld-linux-armhf." (truncated), not
+    -- "bluealsa".  pidof only checks comm, so it misses the process.
+    -- Use ps + grep on the full command line instead.
+    local h = io.popen("ps w 2>/dev/null | grep 'bluealsa' | grep -v grep")
     local r = h and h:read("*a") or ""
     if h then h:close() end
-    return r:match("%d+") ~= nil
+    return r:match("bluealsa") ~= nil
 end
 
 --- Start the BlueALSA daemon for BT audio bridging.
@@ -520,15 +524,17 @@ function BTManager:startBluealsa()
     local use_bundled_linker = lf ~= nil
     if lf then lf:close() end
 
+    -- Log stderr to a temp file for diagnostics instead of discarding.
+    local ba_log = "/tmp/.bluealsa_start.log"
     local cmd
     if use_bundled_linker then
         cmd = string.format(
-            "LD_LIBRARY_PATH=%s %s %s --profile=a2dp-sink 2>/dev/null &",
-            ld_path, linker, bin)
+            "LD_LIBRARY_PATH=%s %s %s --profile=a2dp-source 2>%s &",
+            ld_path, linker, bin, ba_log)
     else
         cmd = string.format(
-            "LD_LIBRARY_PATH=%s %s --profile=a2dp-sink 2>/dev/null &",
-            ld_path, bin)
+            "LD_LIBRARY_PATH=%s %s --profile=a2dp-source 2>%s &",
+            ld_path, bin, ba_log)
     end
 
     logger.warn("BTManager: starting bluealsa:", cmd)

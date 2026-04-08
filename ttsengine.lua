@@ -1296,7 +1296,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                     gf:close()
                     if self.espeak_linker then
                         self._kindle_gst_play_bin = string.format(
-                            "%s --library-path %s %s",
+                            "%s --library-path %s:/usr/lib:/lib %s",
                             self.espeak_linker, self.espeak_lib_path, gst_play_bin)
                     else
                         self._kindle_gst_play_bin = gst_play_bin
@@ -1503,7 +1503,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                                     gf:close()
                                     if engine.espeak_linker then
                                         engine._kindle_gst_play_bin = string.format(
-                                            "%s --library-path %s %s",
+                                            "%s --library-path %s:/usr/lib:/lib %s",
                                             engine.espeak_linker, engine.espeak_lib_path, gst_play_bin)
                                     else
                                         engine._kindle_gst_play_bin = gst_play_bin
@@ -2277,11 +2277,12 @@ function TTSEngine:findAudioPlayer()
                 local gf = io.open(gst_play_bin, "r")
                 if gf then
                     gf:close()
-                    -- Wrap through bundled ld-linux to bypass old system glibc
+                    -- Wrap through bundled ld-linux to bypass old system glibc.
+                    -- Include /usr/lib:/lib so dlopen can find system libgstreamer.
                     local gst_play_cmd = gst_play_bin
                     if self.espeak_linker then
                         gst_play_cmd = string.format(
-                            "%s --library-path %s %s",
+                            "%s --library-path %s:/usr/lib:/lib %s",
                             self.espeak_linker, self.espeak_lib_path, gst_play_bin)
                     end
                     -- Run --probe to verify GStreamer loads and mixersink exists
