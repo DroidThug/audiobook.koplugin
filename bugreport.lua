@@ -954,10 +954,17 @@ fi
             if fileExists(candidate) then gst_play_path = candidate; break end
         end
         if gst_play_path then
+            -- Use the bundled ld-linux to bypass old system glibc
+            local gst_cmd = gst_play_path
+            local espeak_lib = gst_play_path:gsub("/kindle/gst%-play$", "/espeak-ng/lib")
+            local ld_linux = espeak_lib .. "/ld-linux-armhf.so.3"
+            if fileExists(ld_linux) then
+                gst_cmd = ld_linux .. " --library-path " .. espeak_lib .. " " .. gst_play_path
+            end
             info.kindle_gst_play_probe = shellCapture(
-                gst_play_path .. " --probe 2>&1", 5) or "binary_exists_but_probe_failed"
+                gst_cmd .. " --probe 2>&1", 5) or "binary_exists_but_probe_failed"
             info.kindle_gst_play_version = shellCapture(
-                gst_play_path .. " --version 2>&1", 2) or "n/a"
+                gst_cmd .. " --version 2>&1", 2) or "n/a"
         else
             info.kindle_gst_play_probe = "binary_not_found"
         end

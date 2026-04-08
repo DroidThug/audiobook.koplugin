@@ -1294,7 +1294,13 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                 local gf = io.open(gst_play_bin, "r")
                 if gf then
                     gf:close()
-                    self._kindle_gst_play_bin = gst_play_bin
+                    if self.espeak_linker then
+                        self._kindle_gst_play_bin = string.format(
+                            "%s --library-path %s %s",
+                            self.espeak_linker, self.espeak_lib_path, gst_play_bin)
+                    else
+                        self._kindle_gst_play_bin = gst_play_bin
+                    end
                 end
             end
             if self._kindle_gst_play_bin and self.current_audio_file then
@@ -1495,7 +1501,13 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                                 local gf = io.open(gst_play_bin, "r")
                                 if gf then
                                     gf:close()
-                                    engine._kindle_gst_play_bin = gst_play_bin
+                                    if engine.espeak_linker then
+                                        engine._kindle_gst_play_bin = string.format(
+                                            "%s --library-path %s %s",
+                                            engine.espeak_linker, engine.espeak_lib_path, gst_play_bin)
+                                    else
+                                        engine._kindle_gst_play_bin = gst_play_bin
+                                    end
                                 end
                             end
                             if engine._kindle_gst_play_bin and engine.current_audio_file then
@@ -2265,14 +2277,21 @@ function TTSEngine:findAudioPlayer()
                 local gf = io.open(gst_play_bin, "r")
                 if gf then
                     gf:close()
+                    -- Wrap through bundled ld-linux to bypass old system glibc
+                    local gst_play_cmd = gst_play_bin
+                    if self.espeak_linker then
+                        gst_play_cmd = string.format(
+                            "%s --library-path %s %s",
+                            self.espeak_linker, self.espeak_lib_path, gst_play_bin)
+                    end
                     -- Run --probe to verify GStreamer loads and mixersink exists
-                    local ph = io.popen(gst_play_bin .. " --probe 2>/dev/null")
+                    local ph = io.popen(gst_play_cmd .. " --probe 2>/dev/null")
                     if ph then
                         local probe = ph:read("*a") or ""
                         ph:close()
                         if probe:match("mixersink=found") then
                             self.audio_player_type = "kindle-gst-play"
-                            self._kindle_gst_play_bin = gst_play_bin
+                            self._kindle_gst_play_bin = gst_play_cmd
                             self._no_real_audio_output = false
                             logger.warn("TTSEngine: Found kindle-gst-play with mixersink, probe:", probe:gsub("\n", " "))
                             return "kindle-gst-play"
