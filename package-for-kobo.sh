@@ -212,6 +212,34 @@ done
 echo "BlueALSA bundle contents:"
 du -sh "$BLUEALSA_DEST"
 
+# ── wav-play (minimal ALSA WAV player) ────────────────────────────────
+# PocketBook (and potentially other devices) have an ALSA soundcard and
+# libasound but ship no aplay binary.  Bundle our own tiny player.
+echo ""
+echo "=== Building wav-play for armv7l via Nix cross-compilation ==="
+WAV_PLAY_OUT=$(nix-build "$SCRIPT_DIR/cross-build-wav-play.nix" --no-out-link)
+echo "wav-play Nix store path: $WAV_PLAY_OUT"
+mkdir -p "$PLUGIN_DEST/wav-play"
+cp "$WAV_PLAY_OUT/bin/wav-play" "$PLUGIN_DEST/wav-play/"
+chmod +x "$PLUGIN_DEST/wav-play/wav-play"
+
+# Bundle libasound from the cross toolchain so wav-play works even if
+# the device's libasound version is too old or missing.
+# wav-play only needs libasound.so.2 beyond glibc (already bundled).
+# Find it via readelf RPATH from the binary's Nix closure.
+WAV_PLAY_RPATH=$(nix-shell -p binutils --run "readelf -d $WAV_PLAY_OUT/bin/wav-play" 2>/dev/null \
+    | grep -oP 'RUNPATH.*\[(.+)\]' | grep -oP '\[(.+)\]' | tr -d '[]')
+mkdir -p "$PLUGIN_DEST/wav-play/lib"
+for rdir in $(echo "$WAV_PLAY_RPATH" | tr ':' '\n'); do
+    if [ -f "$rdir/libasound.so.2" ]; then
+        cp -L "$rdir/libasound.so.2" "$PLUGIN_DEST/wav-play/lib/"
+        echo "  + libasound.so.2 (from $rdir)"
+        break
+    fi
+done
+echo "wav-play bundle:"
+du -sh "$PLUGIN_DEST/wav-play"
+
 # ── Piper TTS (optional) ──────────────────────────────────────────────
 if [ "$WITH_PIPER" = true ]; then
     echo ""
@@ -299,7 +327,7 @@ du -sh "$PLUGIN_DEST"
 # on first run (see ttsengine.lua detectBackend).
 echo ""
 echo "=== Renaming ELF binaries to .bin (Windows extraction workaround) ==="
-for elf in "$ESPEAK_DEST/bin/espeak-ng" "$PIPER_DEST/piper" "$PIPER_DEST/piper_phonemize" "$PIPER_DEST/espeak-ng" "$BLUEALSA_DEST/bin/bluealsa"; do
+for elf in "$ESPEAK_DEST/bin/espeak-ng" "$PIPER_DEST/piper" "$PIPER_DEST/piper_phonemize" "$PIPER_DEST/espeak-ng" "$BLUEALSA_DEST/bin/bluealsa" "$PLUGIN_DEST/wav-play/wav-play"; do
     if [ -f "$elf" ]; then
         mv "$elf" "${elf}.bin"
         echo "  $(basename "$elf") -> $(basename "$elf").bin"

@@ -156,6 +156,8 @@ local function collectPluginInfo(plugin)
     local piper_path = plugin_dir .. "/piper/piper"
     info.has_bundled_espeak = fileExists(espeak_path) or fileExists(espeak_path .. ".bin")
     info.has_bundled_piper = fileExists(piper_path) or fileExists(piper_path .. ".bin")
+    local wav_play_path = plugin_dir .. "/wav-play/wav-play"
+    info.has_bundled_wav_play = fileExists(wav_play_path) or fileExists(wav_play_path .. ".bin")
     -- Show what's on disk in the binary directories
     info.espeak_bin_ls = shellCapture("ls -la '" .. plugin_dir .. "/espeak-ng/bin/' 2>/dev/null", 3)
     info.piper_bin_ls = shellCapture("ls -la '" .. plugin_dir .. "/piper/' 2>/dev/null | head -10", 3)

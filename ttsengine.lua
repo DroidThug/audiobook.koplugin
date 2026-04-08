@@ -195,6 +195,14 @@ function TTSEngine:detectBackend()
             logger.warn("TTSEngine: bundled Piper not found at", bundled_piper_bin)
         end
 
+        -- Check for bundled wav-play (ALSA player for devices without aplay)
+        local wav_play_bin = plugin_dir .. "/wav-play/wav-play"
+        if ensureBinary(wav_play_bin) then
+            self._wav_play_bin = wav_play_bin
+            self._wav_play_lib = plugin_dir .. "/wav-play/lib"
+            logger.dbg("TTSEngine: Found bundled wav-play at", wav_play_bin)
+        end
+
         -- Pick default backend: espeak-ng first (lighter), then Piper
         if found_espeak then
             self.backend = self.BACKENDS.ESPEAK
@@ -1161,6 +1169,8 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             msg = _("No audio output available.\n\nKindle has no built-in speaker. Audio needs Bluetooth headphones connected via Kindle Settings.\n\nPlease generate a bug report (Audiobook > Report a bug) and share it on the GitHub issue -- it will help identify the correct audio path for this Kindle model.")
         elseif Device:isKobo() then
             msg = _("No audio output available.\n\nKobo has no built-in speaker.\n\nPlease pair Bluetooth headphones:\nSettings → Bluetooth → Pair\n\nThen try again.")
+        elseif Device.isPocketBook and Device:isPocketBook() then
+            msg = _("No audio output available.\n\nPlease generate a bug report (Audiobook > Report a bug) and share it on the GitHub issue -- it will help identify the correct audio path for this PocketBook model.")
         else
             msg = _("No audio output available.\n\nNo supported audio player found (aplay, paplay, mpv, mplayer).\n\nIf using Bluetooth, make sure headphones are paired and connected.")
         end
@@ -2545,6 +2555,25 @@ function TTSEngine:findAudioPlayer()
             end
             return player.cmd
         end
+    end
+
+    -- Bundled wav-play: minimal ALSA player for devices that have a
+    -- soundcard + libasound but ship no aplay (e.g. PocketBook).
+    -- Uses the bundled ld-linux wrapper.  System libasound gets priority
+    -- (it knows the device's ALSA config/plugins); our bundled copy is
+    -- a fallback in case the system version is missing or incompatible.
+    if has_soundcard and self._wav_play_bin then
+        local wav_play_cmd = self._wav_play_bin
+        if self.espeak_linker and self._wav_play_lib then
+            wav_play_cmd = string.format(
+                "%s --library-path /usr/lib:/lib:%s:%s %s",
+                self.espeak_linker, self._wav_play_lib,
+                self.espeak_lib_path, self._wav_play_bin)
+        end
+        self.audio_player_type = "aplay"
+        self._wav_play_cmd = wav_play_cmd
+        logger.warn("TTSEngine: Using bundled wav-play for ALSA playback")
+        return wav_play_cmd .. " -q"
     end
 
     logger.warn("TTSEngine: No audio player found. has_soundcard=", has_soundcard,

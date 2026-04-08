@@ -82,6 +82,10 @@ jobs:
           echo "=== Kindle GStreamer player ==="
           ls -la kobo-tts-bundle/audiobook.koplugin/kindle/
           echo ""
+          echo "=== wav-play (ALSA player) ==="
+          ls -la kobo-tts-bundle/audiobook.koplugin/wav-play/
+          ls -la kobo-tts-bundle/audiobook.koplugin/wav-play/lib/ 2>/dev/null || true
+          echo ""
           echo "=== Total size ==="
           du -sh kobo-tts-bundle/audiobook.koplugin/
 
@@ -106,6 +110,7 @@ jobs:
             - Bundled Piper neural TTS + en_US-danny-low voice
             - Bundled BlueALSA (BT audio bridge for BlueZ Kobo devices)
             - Bundled kindle-gst-play (GStreamer WAV player for Cat 2 Kindles)
+            - Bundled wav-play (ALSA player for PocketBook and other devices without aplay)
             - Android TTS helper (pre-built tts_helper.dex)
 
             ### Install paths
