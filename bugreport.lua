@@ -230,6 +230,11 @@ local function collectAudioInfo(plugin)
         info.alsa_pcm_devices = shellCapture("aplay -L 2>/dev/null | head -20", 3) or "none"
     end
 
+    -- ALSA mixer controls (helps diagnose muted/zero-volume on PocketBook)
+    info.alsa_mixer = shellCapture("amixer contents 2>/dev/null | head -40", 3)
+        or shellCapture("cat /proc/asound/card0/codec* 2>/dev/null | head -20", 3)
+        or "not available"
+
     -- Bluetooth
     info.bt_available = Utils.commandExists("bluetoothctl") or
                         Utils.commandExists("hcitool") or
@@ -979,6 +984,10 @@ fi
         else
             info.kindle_gst_play_probe = "binary_not_found"
         end
+
+        -- Last gst-play playback log (stderr captured during actual play)
+        info.kindle_gst_play_last_log = shellCapture(
+            "cat /tmp/.gst_play_last.log 2>/dev/null", 2) or "none"
     end
 
     return info
@@ -1077,6 +1086,8 @@ function BugReport.generateAndSave(plugin)
         save_dir = "/mnt/onboard"
     elseif Device.isKindle and Device:isKindle() then
         save_dir = "/mnt/us"
+    elseif Device.isPocketBook and Device:isPocketBook() then
+        save_dir = "/mnt/ext1"
     elseif Device:isAndroid() then
         save_dir = "/sdcard"
     else

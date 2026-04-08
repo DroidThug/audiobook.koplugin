@@ -14,3 +14,6 @@ espeak-ng/
 *.wav
 *.tmp
 result
+
+# Misc.
+.github/*.md

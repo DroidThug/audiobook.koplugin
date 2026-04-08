@@ -514,9 +514,11 @@ function BTManager:startBluealsa()
         end
     end
 
-    -- Build the LD_LIBRARY_PATH from bundled libs + espeak-ng libs (glibc)
+    -- Build the library search path from bundled libs + system libs.
+    -- Include /usr/lib:/lib so the linker can find system libasound.so.2
+    -- (needed by bluealsa but not always bundled in bluealsa/lib).
     local espeak_lib = ba_dir:gsub("bluealsa/$", "") .. "espeak-ng/lib"
-    local ld_path = ba_dir .. "lib:" .. espeak_lib
+    local ld_path = ba_dir .. "lib:" .. espeak_lib .. ":/usr/lib:/lib"
 
     -- Use the bundled dynamic linker (same as espeak-ng uses)
     local linker = espeak_lib .. "/ld-linux-armhf.so.3"
@@ -529,8 +531,8 @@ function BTManager:startBluealsa()
     local cmd
     if use_bundled_linker then
         cmd = string.format(
-            "LD_LIBRARY_PATH=%s %s %s --profile=a2dp-source 2>%s &",
-            ld_path, linker, bin, ba_log)
+            "%s --library-path %s %s --profile=a2dp-source 2>%s &",
+            linker, ld_path, bin, ba_log)
     else
         cmd = string.format(
             "LD_LIBRARY_PATH=%s %s --profile=a2dp-source 2>%s &",

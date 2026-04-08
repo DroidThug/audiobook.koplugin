@@ -3,6 +3,10 @@
  * Bundled with audiobook.koplugin for devices that have an ALSA soundcard
  * and libasound but no aplay binary (e.g. PocketBook).
  *
+ * On startup, tries to unmute and maximize all ALSA playback mixer controls.
+ * This is needed because PocketBook (and similar devices) may have the
+ * mixer muted or at zero volume by default.
+ *
  * Supports -q (quiet), -D <device> (ALSA PCM device name).
  * Uses only ALSA 0.9.x-era functions for maximum compatibility.
  *
@@ -14,6 +18,49 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/*
+ * Try to unmute and maximize all playback mixer controls on the given card.
+ * Ignores errors - best-effort only.  Devices that do not need this (or
+ * have no mixer) simply return early.
+ */
+static void setup_mixer(const char *card, int quiet)
+{
+    snd_mixer_t *mixer = NULL;
+    if (snd_mixer_open(&mixer, 0) < 0)
+        return;
+    if (snd_mixer_attach(mixer, card) < 0) {
+        snd_mixer_close(mixer);
+        return;
+    }
+    snd_mixer_selem_register(mixer, NULL, NULL);
+    snd_mixer_load(mixer);
+
+    snd_mixer_elem_t *elem;
+    for (elem = snd_mixer_first_elem(mixer); elem;
+         elem = snd_mixer_elem_next(elem)) {
+        if (!snd_mixer_selem_is_active(elem))
+            continue;
+        if (!snd_mixer_selem_has_playback_volume(elem) &&
+            !snd_mixer_selem_has_playback_switch(elem))
+            continue;
+
+        /* Unmute */
+        if (snd_mixer_selem_has_playback_switch(elem))
+            snd_mixer_selem_set_playback_switch_all(elem, 1);
+
+        /* Set volume to maximum */
+        if (snd_mixer_selem_has_playback_volume(elem)) {
+            long vmin, vmax;
+            snd_mixer_selem_get_playback_volume_range(elem, &vmin, &vmax);
+            snd_mixer_selem_set_playback_volume_all(elem, vmax);
+        }
+    }
+
+    snd_mixer_close(mixer);
+    if (!quiet)
+        fprintf(stderr, "wav-play: mixer initialized on %s\n", card);
+}
 
 /* Minimal WAV header (PCM format only) */
 struct wav_header {
@@ -104,6 +151,9 @@ int main(int argc, char **argv)
         fclose(f);
         return 1;
     }
+
+    /* Unmute and maximize mixer volume (best-effort, needed on PocketBook) */
+    setup_mixer(device, quiet);
 
     /* Open ALSA PCM device for playback */
     snd_pcm_t *pcm = NULL;

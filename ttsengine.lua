@@ -1854,10 +1854,13 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         -- Request audio focus from audiomgrd (same as kindle-lipc path)
         os.execute("lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>/dev/null")
 
-        -- Launch gst-play in background, capture PID
+        -- Launch gst-play in background, capture PID.
+        -- Capture stderr to a log file for diagnostics (was previously
+        -- discarded, making it impossible to debug silent failures).
+        local gst_log = "/tmp/.gst_play_last.log"
         local cmd = string.format(
-            '%s "%s" >/dev/null 2>/dev/null & echo $!',
-            self._kindle_gst_play_bin, file_path)
+            '%s "%s" >%s 2>&1 & echo $!',
+            self._kindle_gst_play_bin, file_path, gst_log)
         local h = io.popen(cmd)
         local pid_str = h and h:read("*a") or ""
         if h then h:close() end
@@ -1901,7 +1904,16 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                     UIManager:scheduleIn(0.1, pollGstPlayDone)
                 end
             else
-                -- Process exited -- playback complete
+                -- Process exited -- playback complete.
+                -- Read the stderr log for diagnostics (helps debug silent failures).
+                local log_fh = io.open("/tmp/.gst_play_last.log", "r")
+                if log_fh then
+                    local log_text = log_fh:read("*a") or ""
+                    log_fh:close()
+                    if log_text ~= "" then
+                        logger.warn("TTSEngine: kindle-gst-play stderr:", log_text:sub(1, 500))
+                    end
+                end
                 logger.warn("TTSEngine: kindle-gst-play finished, polls=", poll_count)
                 engine._gst_play_pid = nil
                 engine:onPlaybackComplete()

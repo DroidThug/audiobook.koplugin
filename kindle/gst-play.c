@@ -39,7 +39,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 
-#define VERSION "0.1.0"
+#define VERSION "0.2.0"
 
 /* ---- GStreamer constants (stable across 0.10 and 1.0) ---- */
 #define GST_STATE_NULL    1
@@ -94,21 +94,43 @@ static int gst_version_minor = 0;   /* 10 for 0.10, 0 for 1.0 */
 
 static int load_gstreamer(void)
 {
+    /*
+     * Try multiple library names and paths.  Bare names rely on the
+     * dynamic linker's search path (--library-path, LD_LIBRARY_PATH,
+     * ldconfig cache, /usr/lib).  Absolute paths bypass the search
+     * entirely, which helps when the bundled ld-linux's search path
+     * doesn't include /usr/lib or the ldconfig cache is incompatible.
+     *
+     * Indices 0-3: 0.10 names, 4+: 1.0 names.
+     */
     const char *names[] = {
-        "libgstreamer-0.10.so",   "libgstreamer-0.10.so.0",
-        "libgstreamer-1.0.so",    "libgstreamer-1.0.so.0",
+        "libgstreamer-0.10.so",
+        "libgstreamer-0.10.so.0",
+        "/usr/lib/libgstreamer-0.10.so",
+        "/usr/lib/libgstreamer-0.10.so.0",
+        "libgstreamer-1.0.so",
+        "libgstreamer-1.0.so.0",
+        "/usr/lib/libgstreamer-1.0.so",
+        "/usr/lib/libgstreamer-1.0.so.0",
         NULL
     };
     void *lib = NULL;
     for (int i = 0; names[i]; i++) {
         lib = dlopen(names[i], RTLD_LAZY);
         if (lib) {
-            gst_version_minor = (i < 2) ? 10 : 0;
+            gst_version_minor = (i < 4) ? 10 : 0;
+            fprintf(stderr, "gst-play: loaded %s (0.%d)\n",
+                    names[i], gst_version_minor);
             break;
         }
     }
     if (!lib) {
         fprintf(stderr, "gst-play: cannot load libgstreamer: %s\n", dlerror());
+        /* Print per-name diagnostics so the bug report shows WHY each failed */
+        for (int i = 0; names[i]; i++) {
+            dlopen(names[i], RTLD_LAZY);
+            fprintf(stderr, "  tried %s: %s\n", names[i], dlerror());
+        }
         return -1;
     }
 
@@ -359,6 +381,11 @@ int main(int argc, char *argv[])
                 argv[0]);
         return 1;
     }
+
+    /* Help GStreamer find plugins when running through the bundled ld-linux.
+       The 0 flag means "don't overwrite if already set". */
+    setenv("GST_PLUGIN_PATH",
+           "/usr/lib/gstreamer-0.10:/usr/lib/gstreamer-1.0", 0);
 
     if (strcmp(argv[1], "--version") == 0) {
         printf("kindle-gst-play %s\n", VERSION);
