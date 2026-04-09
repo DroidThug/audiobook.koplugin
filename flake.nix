@@ -55,6 +55,7 @@
           buildPhase = ''
             $CC -O2 -Wall -Wextra -Wno-unused-parameter \
                 -Wl,--dynamic-linker=/lib/ld-linux-armhf.so.3 \
+                -Wl,-E -Wl,--version-script=glibc_compat.map \
                 -o gst-play gst-play.c -ldl
           '';
           installPhase = ''

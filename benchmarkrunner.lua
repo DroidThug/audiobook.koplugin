@@ -430,6 +430,8 @@ function BenchmarkRunner.runAndSave(plugin, progress_cb)
         save_dir = "/mnt/onboard"
     elseif Device.isKindle and Device:isKindle() then
         save_dir = "/mnt/us"
+    elseif Device.isPocketBook and Device:isPocketBook() then
+        save_dir = "/mnt/ext1"
     elseif Device:isAndroid() then
         save_dir = "/sdcard"
     else

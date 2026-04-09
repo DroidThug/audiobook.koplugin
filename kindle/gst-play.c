@@ -39,7 +39,22 @@
 #include <dlfcn.h>
 #include <errno.h>
 
-#define VERSION "0.2.0"
+/*
+ * glibc 2.42 removed the h_errno@GLIBC_PRIVATE symbol that older system
+ * libraries (e.g. Kindle's libresolv.so.2 built against glibc 2.20) still
+ * reference.  Because gst-play runs through our bundled ld-linux (glibc 2.42),
+ * the dynamic linker sees Kindle's old libresolv requesting h_errno@GLIBC_PRIVATE
+ * and fails with "undefined symbol".
+ *
+ * Fix: define a compatibility symbol inside this binary and export it with
+ * the GLIBC_PRIVATE version tag via a linker version-script.  The .symver
+ * directive makes the linker emit h_errno_compat as h_errno@GLIBC_PRIVATE
+ * in the dynamic symbol table, satisfying the old library at runtime.
+ */
+int h_errno_compat = 0;
+__asm__(".symver h_errno_compat, h_errno@GLIBC_PRIVATE");
+
+#define VERSION "0.3.0"
 
 /* ---- GStreamer constants (stable across 0.10 and 1.0) ---- */
 #define GST_STATE_NULL    1

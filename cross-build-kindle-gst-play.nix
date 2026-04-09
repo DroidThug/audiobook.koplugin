@@ -21,6 +21,7 @@ crossPkgs.stdenv.mkDerivation {
 
   buildPhase = ''
     $CC -O2 -Wall -Wextra -Wno-unused-parameter \
+        -Wl,-E -Wl,--version-script=glibc_compat.map \
         -o gst-play gst-play.c -ldl
   '';
 

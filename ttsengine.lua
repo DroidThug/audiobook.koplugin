@@ -2585,7 +2585,9 @@ function TTSEngine:findAudioPlayer()
         self.audio_player_type = "aplay"
         self._wav_play_cmd = wav_play_cmd
         logger.warn("TTSEngine: Using bundled wav-play for ALSA playback")
-        return wav_play_cmd .. " -q"
+        -- Do NOT pass -q: we need stderr output for diagnostics.
+        -- Errors are captured via the process-watcher stderr log below.
+        return wav_play_cmd
     end
 
     logger.warn("TTSEngine: No audio player found. has_soundcard=", has_soundcard,
@@ -3134,6 +3136,19 @@ function TTSEngine:_startProcessWatcher(bt_retry_allowed, skip_on_fail)
                     engine._rapid_fail_count = 0
                 end
                 logger.warn("TTSEngine: Process watcher → normal completion, elapsed=", elapsed_ms, "ms")
+
+                -- Capture wav-play / gst-play stderr for diagnostics
+                if engine._gst_status_file then
+                    local sf = io.open(engine._gst_status_file, "r")
+                    if sf then
+                        local stderr_out = sf:read("*a") or ""
+                        sf:close()
+                        if stderr_out ~= "" then
+                            logger.warn("TTSEngine: player stderr:", stderr_out:sub(1, 500))
+                        end
+                    end
+                end
+
                 engine:onPlaybackComplete()
             end
         end

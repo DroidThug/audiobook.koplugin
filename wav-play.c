@@ -155,15 +155,39 @@ int main(int argc, char **argv)
     /* Unmute and maximize mixer volume (best-effort, needed on PocketBook) */
     setup_mixer(device, quiet);
 
-    /* Open ALSA PCM device for playback */
+    /*
+     * On PocketBook, the ALSA "default" device may route to a Loopback card
+     * instead of the real audiocodec (hw:0).  Try the requested device first,
+     * then fall back to plughw:0 and hw:0.
+     */
+    const char *try_devices[] = { device, "plughw:0", "hw:0", NULL };
     snd_pcm_t *pcm = NULL;
-    int err = snd_pcm_open(&pcm, device, SND_PCM_STREAM_PLAYBACK, 0);
+    int err = -1;
+    const char *opened_device = device;
+    for (int i = 0; try_devices[i]; i++) {
+        if (i > 0 && strcmp(try_devices[i], device) == 0)
+            continue;   /* skip duplicate */
+        err = snd_pcm_open(&pcm, try_devices[i], SND_PCM_STREAM_PLAYBACK, 0);
+        if (err >= 0) {
+            opened_device = try_devices[i];
+            if (i > 0 && !quiet)
+                fprintf(stderr, "wav-play: '%s' failed, using fallback '%s'\n",
+                        device, opened_device);
+            break;
+        }
+        if (!quiet)
+            fprintf(stderr, "wav-play: cannot open '%s': %s (trying next)\n",
+                    try_devices[i], snd_strerror(err));
+    }
     if (err < 0) {
-        if (!quiet) fprintf(stderr, "wav-play: cannot open device '%s': %s\n",
-                            device, snd_strerror(err));
+        if (!quiet) fprintf(stderr, "wav-play: all devices failed\n");
         fclose(f);
         return 1;
     }
+
+    /* If we fell back to hw:0, ensure its mixer is also set up */
+    if (strcmp(opened_device, device) != 0)
+        setup_mixer("hw:0", quiet);
 
     /* Configure hardware params */
     snd_pcm_hw_params_t *params;

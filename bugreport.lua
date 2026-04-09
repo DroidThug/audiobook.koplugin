@@ -235,6 +235,17 @@ local function collectAudioInfo(plugin)
         or shellCapture("cat /proc/asound/card0/codec* 2>/dev/null | head -20", 3)
         or "not available"
 
+    -- ALSA default PCM mapping: where does "default" actually point?
+    -- On PocketBook, "default" may route to a Loopback card, not the real audiocodec.
+    info.alsa_default_pcm = shellCapture(
+        "aplay -D default --dump-hw-params /dev/null 2>&1 | head -5", 3)
+        or shellCapture("cat /usr/share/alsa/alsa.conf 2>/dev/null | grep -A2 'pcm.!default' | head -5", 3)
+        or "not available"
+
+    -- wav-play last stderr output (if available)
+    info.wav_play_last_log = shellCapture(
+        "cat /tmp/wav-play-last.log 2>/dev/null | tail -20", 3) or "none"
+
     -- Bluetooth
     info.bt_available = Utils.commandExists("bluetoothctl") or
                         Utils.commandExists("hcitool") or
