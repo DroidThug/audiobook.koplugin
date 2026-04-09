@@ -2578,12 +2578,51 @@ function TTSEngine:findAudioPlayer()
     if has_soundcard and self._wav_play_bin then
         local wav_play_cmd = self._wav_play_bin
         if self.espeak_linker and self._wav_play_lib then
-            -- ALSA_CONFIG_PATH: the bundled libasound has Nix store paths
-            -- compiled in; point it at the system config so named PCM
-            -- devices (e.g. PocketBook's tts_sm) resolve correctly.
+            -- The bundled libasound (Nix cross-compiled) has Nix store
+            -- paths compiled in for ALSA_PLUGIN_DIR and the default
+            -- config.  /usr/share/alsa/alsa.conf has @hooks which call
+            -- snd_dlopen(NULL); that fails because the Nix plugin dir
+            -- does not exist on the device.  Use /etc/asound.conf first:
+            -- it contains only PCM definitions (softvol, dmix, hw) with
+            -- no hooks, so config loading succeeds.
+            local alsa_env = ""
+            -- ALSA_CONFIG_PATH: prefer device-specific config (no hooks)
+            local alsa_conf_candidates = {
+                "/etc/asound.conf",
+                "/etc/alsa/alsa.conf",
+                "/usr/share/alsa/alsa.conf",
+            }
+            for _, path in ipairs(alsa_conf_candidates) do
+                local f = io.open(path, "r")
+                if f then
+                    f:close()
+                    alsa_env = "ALSA_CONFIG_PATH=" .. path
+                    logger.warn("TTSEngine: Using ALSA config:", path)
+                    break
+                end
+            end
+            -- ALSA_PLUGIN_DIR: override the Nix store plugin path
+            -- compiled into the bundled libasound.  Point to the
+            -- system's ALSA plugin directory (may not exist, but
+            -- prevents attempts to load from /nix/store/...).
+            local plugin_dir_candidates = {
+                "/usr/lib/alsa-lib",
+                "/usr/lib/arm-linux-gnueabihf/alsa-lib",
+                "/usr/lib/alsa",
+            }
+            for _, path in ipairs(plugin_dir_candidates) do
+                local d = io.open(path, "r")
+                if d then
+                    d:close()
+                    alsa_env = alsa_env .. " ALSA_PLUGIN_DIR=" .. path
+                    logger.warn("TTSEngine: Using ALSA plugin dir:", path)
+                    break
+                end
+            end
+            if alsa_env ~= "" then alsa_env = alsa_env .. " " end
             wav_play_cmd = string.format(
-                "ALSA_CONFIG_PATH=/usr/share/alsa/alsa.conf %s --library-path %s:%s:/usr/lib:/lib %s",
-                self.espeak_linker, self._wav_play_lib,
+                "%s%s --library-path %s:%s:/usr/lib:/lib %s",
+                alsa_env, self.espeak_linker, self._wav_play_lib,
                 self.espeak_lib_path, self._wav_play_bin)
         end
         self.audio_player_type = "aplay"

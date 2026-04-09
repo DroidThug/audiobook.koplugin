@@ -246,6 +246,31 @@ local function collectAudioInfo(plugin)
     info.wav_play_last_log = shellCapture(
         "cat /tmp/wav-play-last.log 2>/dev/null | tail -20", 3) or "none"
 
+    -- wav-play stderr captured by ttsengine.lua (more current than wav-play-last.log)
+    info.wav_play_gst_status = shellCapture(
+        "cat /tmp/.gst_status 2>/dev/null | tail -30", 3) or "none"
+
+    -- PocketBook-specific ALSA diagnostics
+    if Device.isPocketBook and Device:isPocketBook() then
+        -- /etc/asound.conf: the audio routing config (tts_sm, hp, etc.)
+        info.pb_asound_conf = shellCapture(
+            "cat /etc/asound.conf 2>/dev/null", 5) or "not found"
+        -- /proc/asound/pcm: all PCM subdevices
+        info.pb_proc_asound_pcm = shellCapture(
+            "cat /proc/asound/pcm 2>/dev/null", 2) or "not found"
+        -- ALSA top-level config file
+        info.pb_alsa_conf_path = "not found"
+        for _, p in ipairs({"/usr/share/alsa/alsa.conf", "/etc/alsa/alsa.conf"}) do
+            if fileExists(p) then
+                info.pb_alsa_conf_path = p
+                break
+            end
+        end
+        -- Device config (model, variant, BT name)
+        info.pb_device_cfg = shellCapture(
+            "cat /ebrmain/config/device.cfg 2>/dev/null", 3) or "not found"
+    end
+
     -- Bluetooth
     info.bt_available = Utils.commandExists("bluetoothctl") or
                         Utils.commandExists("hcitool") or

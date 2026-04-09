@@ -83,9 +83,18 @@ case "$PLATFORM" in
         [ -f /proc/usid ] && MODEL=$(capture cat /proc/usid)
         ;;
     pocketbook)
-        MODEL=$(cat /sys/firmware/devicetree/base/model 2>/dev/null \
-            || cat /proc/device-tree/model 2>/dev/null \
-            || echo "PocketBook $(uname -m)")
+        # Prefer /ebrmain/config/device.cfg (has real model: PB632, etc.)
+        if [ -f /ebrmain/config/device.cfg ]; then
+            _pb_desc=$(grep '^description=' /ebrmain/config/device.cfg 2>/dev/null | head -1 | cut -d= -f2-)
+            _pb_model=$(grep '^model=' /ebrmain/config/device.cfg 2>/dev/null | head -1 | cut -d= -f2-)
+            _pb_bt_name=$(grep '^bluetooth_device_name=' /ebrmain/config/device.cfg 2>/dev/null | head -1 | cut -d= -f2-)
+            MODEL="${_pb_desc:-${_pb_model:-unknown}}"
+            [ -n "$_pb_bt_name" ] && MODEL="$MODEL ($_pb_bt_name)"
+        else
+            MODEL=$(cat /sys/firmware/devicetree/base/model 2>/dev/null \
+                || cat /proc/device-tree/model 2>/dev/null \
+                || echo "PocketBook $(uname -m)")
+        fi
         ;;
     android)
         MODEL="$(capture getprop ro.product.brand) $(capture getprop ro.product.model)"
@@ -794,6 +803,122 @@ $(printf '%b' "$KINDLE_AUDIO_BINS")  kindle_snd_modules: ${KINDLE_SND_MODULES}
 $(printf '%b' "$KINDLE_BT_PROPS")"
 fi
 
+# PocketBook extras
+POCKETBOOK_SECTION=""
+if [ "$PLATFORM" = "pocketbook" ]; then
+    # Device config (model, variant, BT name)
+    PB_DEVICE_CFG="not found"
+    [ -f /ebrmain/config/device.cfg ] && PB_DEVICE_CFG=$(cat /ebrmain/config/device.cfg 2>/dev/null)
+
+    # ALSA configuration
+    PB_ASOUND_CONF="not found"
+    [ -f /etc/asound.conf ] && PB_ASOUND_CONF=$(cat /etc/asound.conf 2>/dev/null)
+
+    # ALSA top-level config file existence
+    PB_ALSA_CONF_PATH="not found"
+    for _ac in /usr/share/alsa/alsa.conf /etc/alsa/alsa.conf; do
+        if [ -f "$_ac" ]; then
+            PB_ALSA_CONF_PATH="$_ac"
+            break
+        fi
+    done
+
+    # /proc/asound/pcm - shows all PCM subdevices
+    PB_PROC_ASOUND_PCM=$(cat /proc/asound/pcm 2>/dev/null || echo "not found")
+
+    # Audio processes running
+    PB_AUDIO_PROCS=$(ps 2>/dev/null | grep -iE 'audio|alsa|mixer|player|sound|loopback|dmix' | grep -v grep | head -10 || echo "none")
+
+    # wav-play last stderr (captured by ttsengine.lua to /tmp/.gst_status)
+    PB_WAV_PLAY_LOG="none"
+    [ -f /tmp/.gst_status ] && PB_WAV_PLAY_LOG=$(cat /tmp/.gst_status 2>/dev/null | tail -30)
+
+    # Bundled wav-play and libasound presence check
+    PB_WAV_PLAY_BIN=$(ls -la "$PLUGIN_DIR/wav-play/wav-play" 2>/dev/null || echo "not found")
+    PB_WAV_PLAY_LIBASOUND=$(ls -la "$PLUGIN_DIR/wav-play/lib/libasound.so"* 2>/dev/null || echo "not found")
+    PB_SYSTEM_LIBASOUND=$(ls -la /usr/lib/libasound.so* 2>/dev/null || echo "not found")
+
+    # Bundled ld-linux presence
+    PB_LD_LINUX=$(ls -la "$PLUGIN_DIR/espeak-ng/lib/ld-linux"* 2>/dev/null || echo "not found")
+
+    # ALSA mixer state on hw:0 (may not have amixer, use /proc fallback)
+    PB_MIXER=$(amixer -c 0 contents 2>/dev/null | head -40 || cat /proc/asound/card0/codec_reg 2>/dev/null | head -20 || echo "n/a")
+
+    # wav-play smoke test: generate a 0.25s silence WAV and try to play it
+    # using the same invocation the plugin uses (bundled ld-linux + libasound).
+    PB_SMOKE_TEST="skipped (no bundled wav-play)"
+    if [ -x "$PLUGIN_DIR/wav-play/wav-play" ] || [ -f "$PLUGIN_DIR/wav-play/wav-play" ]; then
+        _ld=""
+        for _l in "$PLUGIN_DIR/espeak-ng/lib/ld-linux"*; do
+            [ -f "$_l" ] && _ld="$_l" && break
+        done
+        _wav_lib="$PLUGIN_DIR/wav-play/lib"
+        _esp_lib="$PLUGIN_DIR/espeak-ng/lib"
+        # Find ALSA config (prefer /etc/asound.conf: no @hooks, avoids
+        # Nix store plugin path issue in bundled libasound)
+        _alsa_env=""
+        for _ac in /etc/asound.conf /etc/alsa/alsa.conf /usr/share/alsa/alsa.conf; do
+            if [ -f "$_ac" ]; then
+                _alsa_env="ALSA_CONFIG_PATH=$_ac"
+                break
+            fi
+        done
+        # Override compiled-in Nix store ALSA plugin directory
+        for _pd in /usr/lib/alsa-lib /usr/lib/arm-linux-gnueabihf/alsa-lib /usr/lib/alsa; do
+            if [ -d "$_pd" ]; then
+                _alsa_env="$_alsa_env ALSA_PLUGIN_DIR=$_pd"
+                break
+            fi
+        done
+        # Generate 0.25s silence WAV (22050 Hz, 16-bit mono, 11024 bytes of data)
+        _twav="/tmp/.pb_smoke_test.wav"
+        _data_sz=11024
+        {
+            printf 'RIFF'
+            printf '\x34\x2b\x00\x00'    # file size - 8 = 36 + 11024 = 11060
+            printf 'WAVE'
+            printf 'fmt '
+            printf '\x10\x00\x00\x00'    # fmt chunk size = 16
+            printf '\x01\x00'            # PCM
+            printf '\x01\x00'            # 1 channel
+            printf '\x22\x56\x00\x00'    # 22050 Hz
+            printf '\x44\xac\x00\x00'    # byte rate = 44100
+            printf '\x02\x00'            # block align = 2
+            printf '\x10\x00'            # 16 bit
+            printf 'data'
+            printf '\x10\x2b\x00\x00'    # data size = 11024
+            dd if=/dev/zero bs=1 count=$_data_sz 2>/dev/null
+        } > "$_twav" 2>/dev/null
+        if [ -n "$_ld" ] && [ -d "$_wav_lib" ]; then
+            PB_SMOKE_TEST=$($_alsa_env $_ld --library-path "$_wav_lib:$_esp_lib:/usr/lib:/lib" "$PLUGIN_DIR/wav-play/wav-play" "$_twav" 2>&1; echo "exit_code=$?")
+        else
+            PB_SMOKE_TEST=$("$PLUGIN_DIR/wav-play/wav-play" "$_twav" 2>&1; echo "exit_code=$?")
+        fi
+        [ -z "$PB_SMOKE_TEST" ] && PB_SMOKE_TEST="(empty output) exit_code=$?"
+        rm -f "$_twav"
+    fi
+
+    POCKETBOOK_SECTION="
+── PocketBook ──
+  device_cfg:
+$(echo "$PB_DEVICE_CFG" | sed 's/^/    /')
+  asound_conf:
+$(echo "$PB_ASOUND_CONF" | sed 's/^/    /')
+  alsa_conf_path: ${PB_ALSA_CONF_PATH}
+  proc_asound_pcm: ${PB_PROC_ASOUND_PCM}
+  audio_processes: ${PB_AUDIO_PROCS}
+  wav_play_last_log:
+$(echo "$PB_WAV_PLAY_LOG" | sed 's/^/    /')
+  wav_play_bin: ${PB_WAV_PLAY_BIN}
+  wav_play_libasound: ${PB_WAV_PLAY_LIBASOUND}
+  system_libasound: ${PB_SYSTEM_LIBASOUND}
+  ld_linux: ${PB_LD_LINUX}
+  mixer_state:
+$(echo "$PB_MIXER" | sed 's/^/    /')
+  wav_play_smoke_test:
+$(echo "$PB_SMOKE_TEST" | sed 's/^/    /')"
+fi
+
 # Android extras
 ANDROID_SECTION=""
 if [ "$PLATFORM" = "android" ]; then
@@ -869,6 +994,7 @@ $(printf '%b' "$PLAYER_CMDS")  alsa_cards: ${ALSA_CARDS}
   gst_audio_sinks: ${GST_AUDIO_SINKS}
   bt_abstract_socket: ${BT_SOCKET}
 ${KINDLE_SECTION:+${KINDLE_SECTION}
+}${POCKETBOOK_SECTION:+${POCKETBOOK_SECTION}
 }  tmp_writable: ${TMP_WRITABLE}
 
 ── Resources ──
