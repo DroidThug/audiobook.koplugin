@@ -2571,14 +2571,18 @@ function TTSEngine:findAudioPlayer()
 
     -- Bundled wav-play: minimal ALSA player for devices that have a
     -- soundcard + libasound but ship no aplay (e.g. PocketBook).
-    -- Uses the bundled ld-linux wrapper.  System libasound gets priority
-    -- (it knows the device's ALSA config/plugins); our bundled copy is
-    -- a fallback in case the system version is missing or incompatible.
+    -- Uses the bundled ld-linux wrapper.  Bundled libasound gets priority
+    -- so we avoid "internal error" when the system libasound is built
+    -- against an older glibc than our bundled ld-linux.  System dirs are
+    -- still in the path as fallback for other shared objects.
     if has_soundcard and self._wav_play_bin then
         local wav_play_cmd = self._wav_play_bin
         if self.espeak_linker and self._wav_play_lib then
+            -- ALSA_CONFIG_PATH: the bundled libasound has Nix store paths
+            -- compiled in; point it at the system config so named PCM
+            -- devices (e.g. PocketBook's tts_sm) resolve correctly.
             wav_play_cmd = string.format(
-                "%s --library-path /usr/lib:/lib:%s:%s %s",
+                "ALSA_CONFIG_PATH=/usr/share/alsa/alsa.conf %s --library-path %s:%s:/usr/lib:/lib %s",
                 self.espeak_linker, self._wav_play_lib,
                 self.espeak_lib_path, self._wav_play_bin)
         end

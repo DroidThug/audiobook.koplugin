@@ -156,11 +156,12 @@ int main(int argc, char **argv)
     setup_mixer(device, quiet);
 
     /*
-     * On PocketBook, the ALSA "default" device may route to a Loopback card
-     * instead of the real audiocodec (hw:0).  Try the requested device first,
-     * then fall back to plughw:0 and hw:0.
+     * On PocketBook, the ALSA "default" device may not be defined or may
+     * route to a Loopback card.  PocketBook's asound.conf defines named
+     * PCM devices for TTS: try tts_sm (softvol->dmix->Loopback, correct
+     * PocketBook audio pipeline) before falling back to hardware.
      */
-    const char *try_devices[] = { device, "plughw:0", "hw:0", NULL };
+    const char *try_devices[] = { device, "tts_sm", "plughw:0", "hw:0", NULL };
     snd_pcm_t *pcm = NULL;
     int err = -1;
     const char *opened_device = device;

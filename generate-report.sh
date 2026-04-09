@@ -16,12 +16,18 @@ PLUGIN_DIR="$(cd "$(dirname "$0")" && pwd)"
 # ── Helpers ──────────────────────────────────────────────────────────
 
 capture() {
-    # Run a command with a timeout, return stdout trimmed. Empty on failure.
-    if command -v timeout >/dev/null 2>&1; then
-        timeout 3 "$@" 2>/dev/null || true
-    else
-        "$@" 2>/dev/null || true
-    fi
+    # Run a command with a 3-second hard timeout, return stdout.
+    # Uses background process + SIGKILL for portability: works on BusyBox
+    # ash without GNU timeout, and kills commands (e.g. bluetoothctl) that
+    # ignore SIGTERM.
+    "$@" 2>/dev/null &
+    _cpid=$!
+    ( sleep 3 && kill -9 "$_cpid" ) 2>/dev/null &
+    _cwdpid=$!
+    wait "$_cpid" 2>/dev/null
+    kill "$_cwdpid" 2>/dev/null
+    wait "$_cwdpid" 2>/dev/null
+    true
 }
 
 file_exists() { [ -e "$1" ]; }
@@ -43,6 +49,8 @@ if [ -f /etc/rc.d/functions ]; then
     PLATFORM="kindle"
 elif [ -f /bin/kobo_config.sh ]; then
     PLATFORM="kobo"
+elif uname -n 2>/dev/null | grep -qi pocketbook || [ -d /mnt/ext1/applications ]; then
+    PLATFORM="pocketbook"
 elif [ -d /sys/class/android_usb ] || command -v getprop >/dev/null 2>&1; then
     PLATFORM="android"
 elif [ "$(uname -s)" = "Linux" ]; then
@@ -52,10 +60,11 @@ fi
 # ── Pick save location ──────────────────────────────────────────────
 
 case "$PLATFORM" in
-    kobo)      SAVE_DIR="/mnt/onboard" ;;
-    kindle)    SAVE_DIR="/mnt/us" ;;
-    android)   SAVE_DIR="/sdcard" ;;
-    *)         SAVE_DIR="${HOME:-/tmp}" ;;
+    kobo)        SAVE_DIR="/mnt/onboard" ;;
+    kindle)      SAVE_DIR="/mnt/us" ;;
+    pocketbook)  SAVE_DIR="/mnt/ext1" ;;
+    android)     SAVE_DIR="/sdcard" ;;
+    *)           SAVE_DIR="${HOME:-/tmp}" ;;
 esac
 
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date +"%Y-%m-%dT%H:%M:%SZ")
@@ -73,6 +82,11 @@ case "$PLATFORM" in
     kindle)
         [ -f /proc/usid ] && MODEL=$(capture cat /proc/usid)
         ;;
+    pocketbook)
+        MODEL=$(cat /sys/firmware/devicetree/base/model 2>/dev/null \
+            || cat /proc/device-tree/model 2>/dev/null \
+            || echo "PocketBook $(uname -m)")
+        ;;
     android)
         MODEL="$(capture getprop ro.product.brand) $(capture getprop ro.product.model)"
         ;;
@@ -85,6 +99,7 @@ for d in \
     "$(dirname "$PLUGIN_DIR")/../" \
     "/mnt/onboard/.adds/koreader/" \
     "/mnt/us/koreader/" \
+    "/mnt/ext1/applications/koreader/" \
     "/sdcard/koreader/"
 do
     if [ -f "${d}git-rev" ]; then
@@ -801,6 +816,7 @@ for d in \
     "$(dirname "$PLUGIN_DIR")/../settings/" \
     "/mnt/onboard/.adds/koreader/settings/" \
     "/mnt/us/koreader/settings/" \
+    "/mnt/ext1/applications/koreader/settings/" \
     "/sdcard/koreader/settings/"
 do
     SETTINGS_FILE="${d}audiobook.lua"
