@@ -252,12 +252,25 @@ local function collectAudioInfo(plugin)
 
     -- PocketBook-specific ALSA diagnostics
     if Device.isPocketBook and Device:isPocketBook() then
+        -- Read files directly (BusyBox timeout + sh -c is unreliable
+        -- on some PocketBook models for file reads).
+        local function readFileLines(path, maxlines)
+            local f = io.open(path, "r")
+            if not f then return nil end
+            local lines = {}
+            for line in f:lines() do
+                lines[#lines + 1] = line
+                if maxlines and #lines >= maxlines then break end
+            end
+            f:close()
+            local text = table.concat(lines, "\n")
+            if #text > 1500 then text = text:sub(1, 1500) .. "...(truncated)" end
+            return text ~= "" and text or nil
+        end
         -- /etc/asound.conf: the audio routing config (tts_sm, hp, etc.)
-        info.pb_asound_conf = shellCapture(
-            "cat /etc/asound.conf 2>/dev/null", 5) or "not found"
+        info.pb_asound_conf = readFileLines("/etc/asound.conf") or "not found"
         -- /proc/asound/pcm: all PCM subdevices
-        info.pb_proc_asound_pcm = shellCapture(
-            "cat /proc/asound/pcm 2>/dev/null", 2) or "not found"
+        info.pb_proc_asound_pcm = readFileLines("/proc/asound/pcm") or "not found"
         -- ALSA top-level config file
         info.pb_alsa_conf_path = "not found"
         for _, p in ipairs({"/usr/share/alsa/alsa.conf", "/etc/alsa/alsa.conf"}) do
@@ -267,8 +280,7 @@ local function collectAudioInfo(plugin)
             end
         end
         -- Device config (model, variant, BT name)
-        info.pb_device_cfg = shellCapture(
-            "cat /ebrmain/config/device.cfg 2>/dev/null", 3) or "not found"
+        info.pb_device_cfg = readFileLines("/ebrmain/config/device.cfg", 30) or "not found"
     end
 
     -- Bluetooth

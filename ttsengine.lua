@@ -2620,10 +2620,35 @@ function TTSEngine:findAudioPlayer()
                 end
             end
             if alsa_env ~= "" then alsa_env = alsa_env .. " " end
+            -- Use absolute paths in --library-path so the dynamic linker
+            -- stores absolute paths in dladdr().  ALSA's snd_dlopen(NULL)
+            -- calls dladdr() to find libasound.so.2; when the returned
+            -- path is relative (starts without '/'), snd_dlopen prepends
+            -- ALSA_PLUGIN_DIR creating a broken path like:
+            --   /usr/lib/alsa-lib/plugins/.../wav-play/lib/libasound.so.2
+            -- When the path is absolute, snd_dlopen calls dlopen()
+            -- directly on the already-loaded library and it succeeds.
+            local abs_linker = self.espeak_linker
+            local abs_wav_lib = self._wav_play_lib
+            local abs_esp_lib = self.espeak_lib_path
+            local abs_wav_bin = self._wav_play_bin
+            if abs_wav_lib:sub(1, 1) ~= "/" then
+                local h = io.popen("pwd")
+                if h then
+                    local cwd = h:read("*l")
+                    h:close()
+                    if cwd and cwd ~= "" then
+                        abs_linker = cwd .. "/" .. abs_linker
+                        abs_wav_lib = cwd .. "/" .. abs_wav_lib
+                        abs_esp_lib = cwd .. "/" .. abs_esp_lib
+                        abs_wav_bin = cwd .. "/" .. abs_wav_bin
+                    end
+                end
+            end
             wav_play_cmd = string.format(
                 "%s%s --library-path %s:%s:/usr/lib:/lib %s",
-                alsa_env, self.espeak_linker, self._wav_play_lib,
-                self.espeak_lib_path, self._wav_play_bin)
+                alsa_env, abs_linker, abs_wav_lib,
+                abs_esp_lib, abs_wav_bin)
         end
         self.audio_player_type = "aplay"
         self._wav_play_cmd = wav_play_cmd
