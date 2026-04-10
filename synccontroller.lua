@@ -1410,16 +1410,17 @@ function SyncController:startSentenceSyncLoop(sentence)
         -- non-BT player), use 3000ms from launch as the static estimate.
         if not self._latency_locked then
             if self.tts_engine:isGstPlaying() then
-                -- GStreamer just transitioned to PLAYING — audio is flowing.
-                -- For persistent pipeline: the BT socket is always warm
-                -- (silence keeps A2DP alive).  Use the engine's calculated
-                -- latency (pipe_buffer + 200ms ≈ 300ms).
-                -- For legacy: use _socket_clean to estimate cold/warm BT.
+                -- Audio output is about to flow (GStreamer PLAYING state or
+                -- wav-play header confirmation).
                 self.sentence_sync_start = UIManager:getTime()
                 if self.tts_engine._persistent_pipeline then
                     -- Persistent pipeline: latency = feeder read delay +
                     -- pipe buffer + BT codec (~200ms).  Use engine's value.
                     self._locked_latency_ms = self.tts_engine.playback_latency_ms or 300
+                elseif self.tts_engine.audio_player_type == "aplay" then
+                    -- Direct ALSA playback (wav-play): virtually no latency
+                    -- since audio starts as soon as frames are written.
+                    self._locked_latency_ms = 100
                 else
                     local warm = self.tts_engine._socket_clean
                     self._locked_latency_ms = warm and 500 or 1500

@@ -54,7 +54,18 @@
 int h_errno_compat = 0;
 __asm__(".symver h_errno_compat, h_errno@GLIBC_PRIVATE");
 
-#define VERSION "0.3.0"
+/*
+ * Same issue for __res_maybe_init: Kindle's libgstmixersink.so loads
+ * libresolv.so.2 which calls __res_maybe_init@GLIBC_PRIVATE to lazily
+ * initialize the resolver state.  Stub returns 0 (success).
+ */
+int __res_maybe_init_compat(void *statp, int preinit) {
+    (void)statp; (void)preinit;
+    return 0;
+}
+__asm__(".symver __res_maybe_init_compat, __res_maybe_init@GLIBC_PRIVATE");
+
+#define VERSION "0.4.0"
 
 /* ---- GStreamer constants (stable across 0.10 and 1.0) ---- */
 #define GST_STATE_NULL    1

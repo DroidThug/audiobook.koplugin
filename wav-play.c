@@ -210,6 +210,13 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    /* Signal that audio is about to flow.  The SyncController reads stderr
+     * (redirected to /tmp/.gst_status) looking for "PLAYING" to anchor
+     * word-highlight timing.  Without this, it falls back to a 5s timeout
+     * per sentence. */
+    fprintf(stderr, "PLAYING\n");
+    fflush(stderr);
+
     /* Play PCM data */
     size_t frame_size  = hdr.channels * (hdr.bits_per_sample / 8);
     size_t buf_frames  = 1024;

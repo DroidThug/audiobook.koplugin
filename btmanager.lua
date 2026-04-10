@@ -515,10 +515,12 @@ function BTManager:startBluealsa()
     end
 
     -- Build the library search path from bundled libs + system libs.
-    -- Include /usr/lib:/lib so the linker can find system libasound.so.2
-    -- (needed by bluealsa but not always bundled in bluealsa/lib).
+    -- Include wav-play/lib which reliably bundles libasound.so.2 (the
+    -- cross-ldd approach in packaging may miss it for bluealsa).
+    -- Include /usr/lib:/lib as a last resort for other system libs.
     local espeak_lib = ba_dir:gsub("bluealsa/$", "") .. "espeak-ng/lib"
-    local ld_path = ba_dir .. "lib:" .. espeak_lib .. ":/usr/lib:/lib"
+    local wav_play_lib = ba_dir:gsub("bluealsa/$", "") .. "wav-play/lib"
+    local ld_path = ba_dir .. "lib:" .. espeak_lib .. ":" .. wav_play_lib .. ":/usr/lib:/lib"
 
     -- Use the bundled dynamic linker (same as espeak-ng uses)
     local linker = espeak_lib .. "/ld-linux-armhf.so.3"
