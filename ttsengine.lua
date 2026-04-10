@@ -2653,6 +2653,15 @@ function TTSEngine:findAudioPlayer()
         end
         self.audio_player_type = "aplay"
         self._wav_play_cmd = wav_play_cmd
+        -- PocketBook ALSA device override: allow the user to set an
+        -- explicit ALSA device (e.g. "plughw:0" for the built-in
+        -- speaker) instead of the default fallback chain (tts_sm).
+        local alsa_device = self.plugin and self.plugin:getSetting("pb_alsa_device")
+        if alsa_device and alsa_device ~= "" then
+            wav_play_cmd = wav_play_cmd .. " -D " .. alsa_device
+            self._wav_play_cmd = wav_play_cmd
+            logger.warn("TTSEngine: PocketBook ALSA device override:", alsa_device)
+        end
         logger.warn("TTSEngine: Using bundled wav-play for ALSA playback")
         -- Do NOT pass -q: we need stderr output for diagnostics.
         -- Errors are captured via the process-watcher stderr log below.

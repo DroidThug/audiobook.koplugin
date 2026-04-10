@@ -154,6 +154,50 @@ function MenuBuilder.buildVoiceSettingsMenu(plugin)
         })
     end
 
+    -- PocketBook ALSA device selection (only when bundled wav-play is active)
+    if plugin.tts_engine._wav_play_bin then
+        table.insert(menu, {
+            text_func = function()
+                local dev = plugin:getSetting("pb_alsa_device", "")
+                local labels = {
+                    [""] = _("Auto"),
+                    ["plughw:0"] = _("Built-in speaker"),
+                    ["tts_sm"] = _("Bluetooth (PB pipeline)"),
+                }
+                local label = labels[dev] or dev
+                return T(_("Audio output: %1"), label)
+            end,
+            sub_item_table_func = function()
+                return MenuBuilder.buildAlsaDeviceMenu(plugin)
+            end,
+        })
+    end
+
+    return menu
+end
+
+function MenuBuilder.buildAlsaDeviceMenu(plugin)
+    local devices = {
+        { id = "",         label = _("Auto (default fallback chain)") },
+        { id = "plughw:0", label = _("Built-in speaker (plughw:0)") },
+        { id = "tts_sm",   label = _("Bluetooth / PB pipeline (tts_sm)") },
+    }
+    local menu = {}
+    for _, d in ipairs(devices) do
+        table.insert(menu, {
+            text = d.label,
+            checked_func = function()
+                return plugin:getSetting("pb_alsa_device", "") == d.id
+            end,
+            callback = function()
+                plugin:setSetting("pb_alsa_device", d.id)
+                -- Invalidate cached player so the next playback uses the new device
+                if plugin.tts_engine then
+                    plugin.tts_engine._cached_player = nil
+                end
+            end,
+        })
+    end
     return menu
 end
 
