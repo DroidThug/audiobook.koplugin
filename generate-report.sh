@@ -854,10 +854,10 @@ if [ "$PLATFORM" = "pocketbook" ]; then
         done
         _wav_lib="$PLUGIN_DIR/wav-play/lib"
         _esp_lib="$PLUGIN_DIR/espeak-ng/lib"
-        # Find ALSA config (prefer /etc/asound.conf: no @hooks, avoids
-        # Nix store plugin path issue in bundled libasound)
+        # Find ALSA config (prefer /usr/share/alsa/alsa.conf: registers
+        # base PCM types and includes /etc/asound.conf).
         _alsa_env=""
-        for _ac in /etc/asound.conf /etc/alsa/alsa.conf /usr/share/alsa/alsa.conf; do
+        for _ac in /usr/share/alsa/alsa.conf /etc/alsa/alsa.conf /etc/asound.conf; do
             if [ -f "$_ac" ]; then
                 _alsa_env="ALSA_CONFIG_PATH=$_ac"
                 break
@@ -890,7 +890,7 @@ if [ "$PLATFORM" = "pocketbook" ]; then
             dd if=/dev/zero bs=1 count=$_data_sz 2>/dev/null
         } > "$_twav" 2>/dev/null
         if [ -n "$_ld" ] && [ -d "$_wav_lib" ]; then
-            PB_SMOKE_TEST=$($_alsa_env $_ld --library-path "$_wav_lib:$_esp_lib:/usr/lib:/lib" "$PLUGIN_DIR/wav-play/wav-play" "$_twav" 2>&1; echo "exit_code=$?")
+            PB_SMOKE_TEST=$(env $_alsa_env $_ld --library-path "$_wav_lib:$_esp_lib:/usr/lib:/lib" "$PLUGIN_DIR/wav-play/wav-play" "$_twav" 2>&1; echo "exit_code=$?")
         else
             PB_SMOKE_TEST=$("$PLUGIN_DIR/wav-play/wav-play" "$_twav" 2>&1; echo "exit_code=$?")
         fi

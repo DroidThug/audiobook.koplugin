@@ -2580,17 +2580,18 @@ function TTSEngine:findAudioPlayer()
         if self.espeak_linker and self._wav_play_lib then
             -- The bundled libasound (Nix cross-compiled) has Nix store
             -- paths compiled in for ALSA_PLUGIN_DIR and the default
-            -- config.  /usr/share/alsa/alsa.conf has @hooks which call
-            -- snd_dlopen(NULL); that fails because the Nix plugin dir
-            -- does not exist on the device.  Use /etc/asound.conf first:
-            -- it contains only PCM definitions (softvol, dmix, hw) with
-            -- no hooks, so config loading succeeds.
+            -- config.  Prefer /usr/share/alsa/alsa.conf: it registers
+            -- base PCM types (plug, softvol, dmix, hw, etc.) and
+            -- includes /etc/asound.conf for device-specific PCMs.
+            -- Without the base types, ALSA reports "Unknown PCM" for
+            -- every PCM type defined in /etc/asound.conf.
+            -- The @hooks in alsa.conf call snd_dlopen(NULL) which uses
+            -- dladdr(); this works now that --library-path is absolute.
             local alsa_env = ""
-            -- ALSA_CONFIG_PATH: prefer device-specific config (no hooks)
             local alsa_conf_candidates = {
-                "/etc/asound.conf",
-                "/etc/alsa/alsa.conf",
                 "/usr/share/alsa/alsa.conf",
+                "/etc/alsa/alsa.conf",
+                "/etc/asound.conf",
             }
             for _, path in ipairs(alsa_conf_candidates) do
                 local f = io.open(path, "r")
