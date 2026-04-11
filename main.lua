@@ -18,7 +18,7 @@ local _ = require("gettext")
 -- Every function in this file can reference them as upvalues; they start
 -- as nil and become usable after init() succeeds.
 local Device, UIManager, InfoMessage, T
-local BtUI, BtMediaControl, BugReport, BenchmarkRunner, MenuBuilder, Utils
+local BtUI, BtMediaControl, BugReport, BenchmarkRunner, MenuBuilder, Utils, Updater
 local PLUGIN_PATH
 
 local Audiobook = WidgetContainer:extend{
@@ -442,6 +442,16 @@ function Audiobook:addToMainMenu(menu_items)
                     return self._init_ok and BenchmarkRunner ~= nil
                 end,
                 help_text = _("Runs a standardized TTS benchmark on test sentences using each available engine (espeak-ng, Piper). Saves a report you can share on GitHub to help document device performance. Piper tests may take several minutes on slow devices."),
+            },
+            {
+                text = _("Check for updates"),
+                callback = function()
+                    if not Updater then
+                        Updater = dofile(PLUGIN_PATH .. "/updater.lua")
+                    end
+                    Updater.checkForUpdate(self)
+                end,
+                help_text = _("Checks GitHub for a newer release. If an update is available, downloads and installs it. Requires Wi-Fi."),
             },
         },
     }

@@ -283,6 +283,56 @@ local function is_bluetoothd_running()
     return r:match("%d+") ~= nil
 end
 
+-----------------------------------------------------------------------
+-- BT hardware power module helpers (NXP/Freescale Kobo)
+-----------------------------------------------------------------------
+
+--- Check whether the sdio_bt_pwr kernel module is loaded.
+-- @treturn bool true if the module is currently in /proc/modules
+function BTManager:_isBtModuleLoaded()
+    local h = io.open("/proc/modules", "r")
+    if not h then return false end
+    local data = h:read("*a")
+    h:close()
+    return data:match("^sdio_bt_pwr ") ~= nil or data:match("\nsdio_bt_pwr ") ~= nil
+end
+
+--- Load the sdio_bt_pwr kernel module to power on the BT chip.
+-- On NXP/Freescale Kobo devices (Libra 2, etc.) the module lives at
+-- /drivers/<PLATFORM>/wifi/sdio_bt_pwr.ko.  KOReader removes it on
+-- startup, so hci0 never appears until we reload it.
+function BTManager:_loadBtModule()
+    -- Try the PLATFORM env var first (set by koreader.sh or Nickel).
+    local platform = os.getenv("PLATFORM") or ""
+    local candidates = {}
+    if platform ~= "" then
+        table.insert(candidates, "/drivers/" .. platform .. "/wifi/sdio_bt_pwr.ko")
+    end
+    -- Fallback: search common platform dirs.
+    for _, p in ipairs({ "freescale", "mx6sll-ntx", "mx6ull-ntx", "mx50-ntx" }) do
+        table.insert(candidates, "/drivers/" .. p .. "/wifi/sdio_bt_pwr.ko")
+    end
+
+    for _, path in ipairs(candidates) do
+        local f = io.open(path, "r")
+        if f then
+            f:close()
+            logger.warn("BTManager: loading sdio_bt_pwr from", path)
+            os.execute("insmod " .. path .. " 2>/dev/null")
+            os.execute("sleep 2")
+            if self:_isBtModuleLoaded() then
+                logger.warn("BTManager: sdio_bt_pwr loaded successfully")
+                return true
+            else
+                logger.warn("BTManager: insmod returned but module not in /proc/modules")
+            end
+        end
+    end
+
+    logger.warn("BTManager: sdio_bt_pwr.ko not found (may not be needed on this device)")
+    return false
+end
+
 --- Power on the Bluetooth adapter.
 -- For BlueZ devices, starts the bluetoothd daemon and resets the HCI
 -- adapter first (required on Kobo Libra 2 and similar).
@@ -309,6 +359,15 @@ function BTManager:powerOn()
         -- BlueZ requires the bluetoothd daemon and an HCI adapter reset.
         -- On Kobo Libra 2 / Io, the daemon lives at /libexec/bluetooth/
         -- rather than on PATH (ref: OGKevin/kobo.koplugin BT investigation).
+
+        -- On NXP/Freescale Kobo models (Libra 2, etc.), BT hardware
+        -- power is controlled by the sdio_bt_pwr kernel module.
+        -- KOReader's koreader.sh removes this module on startup, so
+        -- hci0 will never appear until we reload it.
+        if not self:_isBtModuleLoaded() then
+            self:_loadBtModule()
+        end
+
         if not is_bluetoothd_running() then
             local daemon = bluetoothd_path or "bluetoothd"
             logger.warn("BTManager: starting bluetoothd from:", daemon)
@@ -328,7 +387,7 @@ function BTManager:powerOn()
         -- Wait for the HCI device to appear (firmware loading on some
         -- Kobo models takes a moment after hciconfig up).
         local hci_ready = false
-        for attempt = 1, 6 do
+        for attempt = 1, 12 do
             os.execute("sleep 0.5")
             local h = io.popen("hciconfig hci0 2>/dev/null")
             local r = h and h:read("*a") or ""
@@ -340,7 +399,7 @@ function BTManager:powerOn()
             end
         end
         if not hci_ready then
-            logger.warn("BTManager: hci0 not found after 3s")
+            logger.warn("BTManager: hci0 not found after 6s")
         end
     end
 
@@ -379,6 +438,11 @@ function BTManager:powerOff()
         -- Stop the daemon we started (safe even if it was already running)
         os.execute("killall bluetoothd 2>/dev/null")
         os.execute("hciconfig hci0 down 2>/dev/null")
+        -- Unload the BT hardware power module (matches the insmod in powerOn)
+        if self:_isBtModuleLoaded() then
+            os.execute("rmmod sdio_bt_pwr 2>/dev/null")
+            logger.warn("BTManager: unloaded sdio_bt_pwr")
+        end
     end
 
     return not self:isPowered()
