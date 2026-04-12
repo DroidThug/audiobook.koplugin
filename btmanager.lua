@@ -333,6 +333,31 @@ function BTManager:_loadBtModule()
     return false
 end
 
+--- Unblock bluetooth via rfkill.
+-- On AllWinner SoC devices (PocketBook Era Color, InkPad Color 3, etc.)
+-- the BT adapter is disabled via rfkill rather than a kernel module.
+-- This must run before bluetoothd can claim hci0.
+function BTManager:_rfkillUnblock()
+    local h = io.popen("which rfkill 2>/dev/null")
+    local path = h and h:read("*l") or ""
+    if h then h:close() end
+    if path == "" then
+        logger.dbg("BTManager: rfkill not found on PATH")
+        return
+    end
+    logger.warn("BTManager: rfkill unblock bluetooth")
+    os.execute("rfkill unblock bluetooth 2>/dev/null")
+    self._rfkill_unblocked = true
+end
+
+--- Re-block bluetooth via rfkill (reverses _rfkillUnblock).
+function BTManager:_rfkillBlock()
+    if not self._rfkill_unblocked then return end
+    logger.warn("BTManager: rfkill block bluetooth")
+    os.execute("rfkill block bluetooth 2>/dev/null")
+    self._rfkill_unblocked = false
+end
+
 --- Power on the Bluetooth adapter.
 -- For BlueZ devices, starts the bluetoothd daemon and resets the HCI
 -- adapter first (required on Kobo Libra 2 and similar).
@@ -367,6 +392,11 @@ function BTManager:powerOn()
         if not self:_isBtModuleLoaded() then
             self:_loadBtModule()
         end
+
+        -- On AllWinner SoC models (PocketBook Era, InkPad Color, etc.),
+        -- BT is gated by rfkill rather than a kernel module.  Unblock
+        -- bluetooth before starting the daemon.
+        self:_rfkillUnblock()
 
         if not is_bluetoothd_running() then
             local daemon = bluetoothd_path or "bluetoothd"
@@ -443,6 +473,8 @@ function BTManager:powerOff()
             os.execute("rmmod sdio_bt_pwr 2>/dev/null")
             logger.warn("BTManager: unloaded sdio_bt_pwr")
         end
+        -- Re-block rfkill (matches the unblock in powerOn)
+        self:_rfkillBlock()
     end
 
     return not self:isPowered()

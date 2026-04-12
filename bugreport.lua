@@ -291,6 +291,7 @@ local function collectAudioInfo(plugin)
     -- BT adapter present?
     info.bt_hci_devices = shellCapture("ls -1 /sys/class/bluetooth/ 2>/dev/null", 2) or "none"
     info.bt_sdio_bt_pwr = shellCapture("grep -c '^sdio_bt_pwr ' /proc/modules 2>/dev/null", 1) == "1" and "loaded" or "not loaded"
+    info.bt_rfkill = shellCapture("rfkill list bluetooth 2>/dev/null", 4) or "rfkill not available"
 
     -- Paired / connected BT devices (bluetoothctl)
     -- Older BlueZ (< 5.65) doesn't support "devices Paired" subcommand

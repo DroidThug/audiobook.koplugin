@@ -152,8 +152,12 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    /* Unmute and maximize mixer volume (best-effort, needed on PocketBook) */
-    setup_mixer(device, quiet);
+    /* Unmute and maximize mixer volume (best-effort, needed on PocketBook).
+     * Always target "hw:0" because plugin devices (plughw:0, tts_sm, etc.)
+     * do not expose mixer controls - the mixer lives on the underlying
+     * hardware card.  Using the -D device here causes "Invalid CTL" errors
+     * when snd_mixer_attach tries to open the plugin name as a CTL. */
+    setup_mixer("hw:0", quiet);
 
     /*
      * On PocketBook, the ALSA "default" device may not be defined or may
@@ -186,9 +190,10 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    /* If we fell back to hw:0, ensure its mixer is also set up */
-    if (strcmp(opened_device, device) != 0)
-        setup_mixer("hw:0", quiet);
+    /* If we fell back to a different device, log it for diagnostics */
+    if (strcmp(opened_device, device) != 0 && !quiet)
+        fprintf(stderr, "wav-play: using '%s' instead of '%s'\n",
+                opened_device, device);
 
     /* Configure hardware params */
     snd_pcm_hw_params_t *params;

@@ -70,6 +70,9 @@ function SyncController:new(o)
     o.reading_sentence_idx = 0
     o.total_sentences = 0
     o.current_sentence = nil
+    -- Chain generation: incremented by beginSentencePlayback so stale
+    -- completion callbacks and polling loops can detect they are outdated.
+    o._chain_generation = 0
     -- Set to true once Piper delivers its first audio; prevents espeak
     -- cold-start from re-triggering on page turns.
     o._piper_warmed_up = false
@@ -125,6 +128,8 @@ function SyncController:start(text)
 
     self.total_sentences = #self.parsed_data.sentences
     self.reading_sentence_idx = 0
+    self._chain_generation = (self._chain_generation or 0) + 1
+    self._highest_dispatched_idx = nil
     -- Don't reset _piper_warmed_up here: it persists across page turns
     -- so espeak cold-start doesn't re-trigger when Piper is already warm.
     -- Honor espeak-only mode: if the user enabled the setting (or it was
@@ -166,7 +171,19 @@ Synthesize and play the next sentence in the queue.
 Chains automatically: when a sentence finishes, this is called again.
 --]]
 function SyncController:readNextSentence()
-    self.reading_sentence_idx = self.reading_sentence_idx + 1
+    local next_idx = self.reading_sentence_idx + 1
+
+    -- Guard: reject backward jumps caused by stale scheduled callbacks.
+    -- _highest_dispatched_idx tracks the highest sentence index ever passed
+    -- to beginSentencePlayback on the current page.  If a callback fires
+    -- late and tries to read a sentence we already played, skip it.
+    if self._highest_dispatched_idx and next_idx <= self._highest_dispatched_idx then
+        logger.warn("SyncController: readNextSentence REJECTED stale idx=", next_idx,
+            " (already dispatched up to", self._highest_dispatched_idx, ")")
+        return
+    end
+
+    self.reading_sentence_idx = next_idx
     logger.warn("SyncController: readNextSentence idx=", self.reading_sentence_idx, "/", self.total_sentences, "state=", self.state)
 
     if self.reading_sentence_idx > self.total_sentences then
@@ -222,6 +239,7 @@ function SyncController:readNextSentence()
     -- For Piper: if a prefetch is pending/queued, wait for it instead of
     -- launching a duplicate synthesis (which wastes ~11s and RAM).
     local piper_status = self.tts_engine:getPiperPrefetchStatus(sentence.text)
+    local my_chain_gen = self._chain_generation or 0
     if piper_status == "pending" or piper_status == "queued" then
         -- ── espeak cold-start fallback ─────────────────────────────
         -- While Piper hasn't delivered any audio yet, keep playing via
@@ -268,6 +286,10 @@ function SyncController:readNextSentence()
 
         local function waitForPiperPrefetch()
             if controller.state == controller.STATE.STOPPED then return end
+            if (controller._chain_generation or 0) ~= my_chain_gen then
+                logger.warn("SyncController: waitForPiperPrefetch STALE gen=", my_chain_gen, ", bailing")
+                return
+            end
             poll_count = poll_count + 1
 
             -- Use non-consuming peek so we can delay playback for buffering
@@ -407,6 +429,10 @@ function SyncController:readNextSentence()
         local max_polls = 360  -- 90s timeout (batches can take 40-70s on ARM)
         local function waitForPiperSynth()
             if controller.state == controller.STATE.STOPPED then return end
+            if (controller._chain_generation or 0) ~= my_chain_gen then
+                logger.warn("SyncController: waitForPiperSynth STALE gen=", my_chain_gen, ", bailing")
+                return
+            end
             poll_count = poll_count + 1
             local ok = controller.tts_engine:usePrefetched(sentence.text)
             if ok then
@@ -517,6 +543,10 @@ function SyncController:beginSentencePlayback(sentence)
     self.current_sentence = sentence
     self.current_sentence_index = sentence.index
     self.current_word_index = 0
+    -- Bump chain generation so stale completion callbacks bail out.
+    self._chain_generation = (self._chain_generation or 0) + 1
+    -- Track highest sentence ever dispatched for the backward-jump guard.
+    self._highest_dispatched_idx = sentence.index
     -- Remember the first sentence's text so _remapAfterRotation can find
     -- reading_sentence_idx in a re-parsed page.
     self._first_play_sentence_text = sentence.text
@@ -696,6 +726,7 @@ function SyncController:beginSentencePlayback(sentence)
     end
 
     local sentences_in_play = 1 + #concat_sentences
+    local my_chain_gen = self._chain_generation or 0
 
     -- Start TTS audio playback with callbacks
     local play_ok = self.tts_engine:play(
@@ -708,6 +739,12 @@ function SyncController:beginSentencePlayback(sentence)
         end,
         -- Completion callback — entire concat stream finished
         function()
+            -- Bail if a newer beginSentencePlayback superseded us
+            if (controller._chain_generation or 0) ~= my_chain_gen then
+                logger.warn("SyncController: Completion callback STALE gen=", my_chain_gen,
+                    "current=", controller._chain_generation, ", ignoring")
+                return
+            end
             local last_idx = sentence.index + sentences_in_play - 1
             logger.warn("SyncController: Completion callback, concat ending at sentence",
                 last_idx, "state=", controller.state)
@@ -745,6 +782,7 @@ function SyncController:beginSentencePlayback(sentence)
                             controller.parsed_data = fresh_parsed
                             controller.total_sentences = #fresh_parsed.sentences
                             controller.reading_sentence_idx = found_idx
+                            controller._highest_dispatched_idx = found_idx
                             -- readNextSentence() will +1 → found_idx+1
                             -- If > total_sentences → advance; else play remaining
                         else
@@ -752,6 +790,7 @@ function SyncController:beginSentencePlayback(sentence)
                             -- (it scrolled off entirely) — force page advance
                             logger.warn("SyncController: Post-rotation: last sentence not on page, advancing")
                             controller.reading_sentence_idx = controller.total_sentences
+                            controller._highest_dispatched_idx = controller.total_sentences
                         end
                     end
                 end
@@ -778,12 +817,22 @@ function SyncController:beginSentencePlayback(sentence)
                 "from sentence=", last_sent.index, "state=", controller.state)
             local chain_func = function()
                 controller._pending_chain_func = nil
+                -- Bail if a newer sentence started playing since this was scheduled
+                if (controller._chain_generation or 0) ~= my_chain_gen then
+                    logger.warn("SyncController: chain_func STALE gen=", my_chain_gen,
+                        "current=", controller._chain_generation, ", ignoring")
+                    return
+                end
                 if controller.state ~= controller.STATE.STOPPED then
                     controller:readNextSentence()
                 else
                     logger.dbg("SyncController: chain timer fired after user-initiated stop",
                         "(was scheduled after sentence", last_sent.index, ")")
                 end
+            end
+            -- Unschedule any stale chain_func from a previous completion
+            if controller._pending_chain_func then
+                UIManager:unschedule(controller._pending_chain_func)
             end
             controller._pending_chain_func = chain_func
             UIManager:scheduleIn(delay, chain_func)
@@ -1301,6 +1350,9 @@ function SyncController:_remapAfterRotation()
         for i, s in ipairs(fresh_parsed.sentences) do
             if Utils.ws(s.text) == Utils.ws(first_text) then
                 self.reading_sentence_idx = i
+                -- Update the backward-jump guard so post-rotation
+                -- readNextSentence calls are accepted.
+                self._highest_dispatched_idx = i
                 break
             end
         end
@@ -1756,6 +1808,7 @@ function SyncController:stop()
     self.current_word_index = 0
     self.current_sentence_index = 0
     self.reading_sentence_idx = 0
+    self._highest_dispatched_idx = nil
     self._piper_warmed_up = false
     self._piper_abandoned = false
     self._espeak_fallback_count = 0
@@ -1798,6 +1851,8 @@ function SyncController:nextSentence()
     pcall(function() self.tts_engine:stop() end)
     self.highlight_manager:clearHighlights()
 
+    -- User-initiated jump: reset backward-jump guard
+    self._highest_dispatched_idx = nil
     -- readNextSentence() increments the index and starts the next one
     self:readNextSentence()
 end
@@ -1821,6 +1876,8 @@ function SyncController:prevSentence()
     pcall(function() self.tts_engine:stop() end)
     self.highlight_manager:clearHighlights()
 
+    -- User-initiated jump: reset backward-jump guard
+    self._highest_dispatched_idx = nil
     -- Go back 2 because readNextSentence() will increment by 1
     self.reading_sentence_idx = math.max(0, current_idx - 2)
     self:readNextSentence()
