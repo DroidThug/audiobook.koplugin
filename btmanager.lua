@@ -385,51 +385,68 @@ function BTManager:powerOn()
         -- On Kobo Libra 2 / Io, the daemon lives at /libexec/bluetooth/
         -- rather than on PATH (ref: OGKevin/kobo.koplugin BT investigation).
 
-        -- On NXP/Freescale Kobo models (Libra 2, etc.), BT hardware
-        -- power is controlled by the sdio_bt_pwr kernel module.
-        -- KOReader's koreader.sh removes this module on startup, so
-        -- hci0 will never appear until we reload it.
-        if not self:_isBtModuleLoaded() then
-            self:_loadBtModule()
-        end
-
-        -- On AllWinner SoC models (PocketBook Era, InkPad Color, etc.),
-        -- BT is gated by rfkill rather than a kernel module.  Unblock
-        -- bluetooth before starting the daemon.
-        self:_rfkillUnblock()
-
-        if not is_bluetoothd_running() then
-            local daemon = bluetoothd_path or "bluetoothd"
-            logger.warn("BTManager: starting bluetoothd from:", daemon)
-            os.execute(daemon .. " 2>/dev/null &")
-            os.execute("sleep 1")
-            if not is_bluetoothd_running() then
-                logger.warn("BTManager: bluetoothd failed to start from", daemon)
-            end
-        else
-            logger.warn("BTManager: bluetoothd already running")
-        end
-        -- Reset the HCI adapter.  Use ";" instead of "&&" so that
-        -- "hci0 up" still runs even when "hci0 down" fails (which
-        -- happens on Kobo Libra 2 when the adapter hasn't been
-        -- initialised yet and hci0 doesn't exist).
-        os.execute("hciconfig hci0 down 2>/dev/null; hciconfig hci0 up 2>/dev/null")
-        -- Wait for the HCI device to appear (firmware loading on some
-        -- Kobo models takes a moment after hciconfig up).
-        local hci_ready = false
-        for attempt = 1, 12 do
-            os.execute("sleep 0.5")
+        -- On PocketBook devices, the system firmware may have already
+        -- powered on BT and started bluetoothd (e.g. when the user
+        -- enables BT from the device menu).  Detect this and skip
+        -- the full startup sequence.
+        local hci_already_up = false
+        if is_bluetoothd_running() then
             local h = io.popen("hciconfig hci0 2>/dev/null")
             local r = h and h:read("*a") or ""
             if h then h:close() end
-            if r:match("hci0") then
-                hci_ready = true
-                logger.warn("BTManager: hci0 ready after", attempt * 0.5, "s")
-                break
+            if r:match("UP") then
+                hci_already_up = true
+                logger.warn("BTManager: hci0 already UP and bluetoothd running, skipping startup")
             end
         end
-        if not hci_ready then
-            logger.warn("BTManager: hci0 not found after 6s")
+
+        if not hci_already_up then
+            -- On NXP/Freescale Kobo models (Libra 2, etc.), BT hardware
+            -- power is controlled by the sdio_bt_pwr kernel module.
+            -- KOReader's koreader.sh removes this module on startup, so
+            -- hci0 will never appear until we reload it.
+            if not self:_isBtModuleLoaded() then
+                self:_loadBtModule()
+            end
+
+            -- On AllWinner SoC models (PocketBook Era, InkPad Color, etc.),
+            -- BT is gated by rfkill rather than a kernel module.  Unblock
+            -- bluetooth before starting the daemon.
+            self:_rfkillUnblock()
+
+            if not is_bluetoothd_running() then
+                local daemon = bluetoothd_path or "bluetoothd"
+                logger.warn("BTManager: starting bluetoothd from:", daemon)
+                os.execute(daemon .. " 2>/dev/null &")
+                os.execute("sleep 1")
+                if not is_bluetoothd_running() then
+                    logger.warn("BTManager: bluetoothd failed to start from", daemon)
+                end
+            else
+                logger.warn("BTManager: bluetoothd already running")
+            end
+            -- Reset the HCI adapter.  Use ";" instead of "&&" so that
+            -- "hci0 up" still runs even when "hci0 down" fails (which
+            -- happens on Kobo Libra 2 when the adapter hasn't been
+            -- initialised yet and hci0 doesn't exist).
+            os.execute("hciconfig hci0 down 2>/dev/null; hciconfig hci0 up 2>/dev/null")
+            -- Wait for the HCI device to appear (firmware loading on some
+            -- Kobo models takes a moment after hciconfig up).
+            local hci_ready = false
+            for attempt = 1, 12 do
+                os.execute("sleep 0.5")
+                local h = io.popen("hciconfig hci0 2>/dev/null")
+                local r = h and h:read("*a") or ""
+                if h then h:close() end
+                if r:match("hci0") then
+                    hci_ready = true
+                    logger.warn("BTManager: hci0 ready after", attempt * 0.5, "s")
+                    break
+                end
+            end
+            if not hci_ready then
+                logger.warn("BTManager: hci0 not found after 6s")
+            end
         end
     end
 

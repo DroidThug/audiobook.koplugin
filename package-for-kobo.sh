@@ -47,7 +47,7 @@ rm -rf "$BUNDLE_DIR"
 mkdir -p "$ESPEAK_DEST/bin" "$ESPEAK_DEST/lib" "$ESPEAK_DEST/share/espeak-ng-data/lang/gmw" "$ESPEAK_DEST/share/espeak-ng-data/voices"
 
 # Plugin Lua files first
-for f in main.lua textparser.lua ttsengine.lua highlightmanager.lua synccontroller.lua playbackbar.lua menubuilder.lua btmanager.lua btui.lua btmediacontrol.lua utils.lua wavutils.lua piperqueue.lua bugreport.lua androidtts.lua benchmarkrunner.lua _meta.lua; do
+for f in main.lua textparser.lua ttsengine.lua highlightmanager.lua synccontroller.lua playbackbar.lua menubuilder.lua btmanager.lua btui.lua btmediacontrol.lua utils.lua wavutils.lua piperqueue.lua bugreport.lua androidtts.lua benchmarkrunner.lua updater.lua _meta.lua; do
     if [ -f "$SCRIPT_DIR/$f" ]; then
         cp "$SCRIPT_DIR/$f" "$PLUGIN_DEST/"
     fi

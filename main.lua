@@ -447,7 +447,16 @@ function Audiobook:addToMainMenu(menu_items)
                 text = _("Check for updates"),
                 callback = function()
                     if not Updater then
-                        Updater = dofile(PLUGIN_PATH .. "/updater.lua")
+                        local ok, mod = pcall(dofile, PLUGIN_PATH .. "/updater.lua")
+                        if not ok then
+                            local UIManager = require("ui/uimanager")
+                            local InfoMessage = require("ui/widget/infomessage")
+                            UIManager:show(InfoMessage:new{
+                                text = _("Could not load updater module."),
+                            })
+                            return
+                        end
+                        Updater = mod
                     end
                     Updater.checkForUpdate(self)
                 end,

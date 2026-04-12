@@ -206,6 +206,13 @@ int main(int argc, char **argv)
     unsigned int rate = hdr.sample_rate;
     snd_pcm_hw_params_set_rate_near(pcm, params, &rate, NULL);
 
+    if (rate != hdr.sample_rate) {
+        fprintf(stderr, "wav-play: rate mismatch: requested %u Hz, got %u Hz\n",
+                hdr.sample_rate, rate);
+        fprintf(stderr, "wav-play: audio will play at wrong speed; "
+                "try device 'plughw:0' for automatic resampling\n");
+    }
+
     err = snd_pcm_hw_params(pcm, params);
     if (err < 0) {
         if (!quiet) fprintf(stderr, "wav-play: cannot set params: %s\n",
