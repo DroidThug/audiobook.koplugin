@@ -63,6 +63,8 @@ local function fetchLatestRelease()
     local JSON = require("json")
     local ok, data = pcall(JSON.decode, JSON, body)
     if not ok or type(data) ~= "table" then
+        local preview = body and tostring(body):sub(1, 200) or "(empty)"
+        logger.warn("Updater: JSON parse failed:", tostring(data), "body:", preview)
         return nil, _("Failed to parse GitHub response")
     end
 
@@ -199,7 +201,18 @@ function Updater._performUpdate(plugin, release)
     })
     UIManager:forceRePaint()
 
+    -- Use external storage on PocketBook: /tmp is a tiny tmpfs that
+    -- fills up and destabilises the device when large zips are written.
     local tmp_dir = os.getenv("TMPDIR") or "/tmp"
+    local Device = require("device")
+    if Device:isPocketBook() then
+        local ext = "/mnt/ext1/tmp"
+        os.execute('mkdir -p "' .. ext .. '" 2>/dev/null')
+        local lfs = require("libs/libkoreader-lfs")
+        if lfs.attributes(ext, "mode") == "directory" then
+            tmp_dir = ext
+        end
+    end
     local zip_path = tmp_dir .. "/audiobook-koplugin-update.zip"
 
     local ok, err = downloadFile(release.zip_url, zip_path)

@@ -2653,10 +2653,11 @@ function TTSEngine:findAudioPlayer()
         end
         self.audio_player_type = "aplay"
         self._wav_play_cmd = wav_play_cmd
-        -- PocketBook ALSA device override: allow the user to set an
-        -- explicit ALSA device (e.g. "plughw:0" for the built-in
-        -- speaker) instead of the default fallback chain (tts_sm).
-        local alsa_device = self.plugin and self.plugin:getSetting("pb_alsa_device")
+        -- PocketBook ALSA device override: default is tts_sm which
+        -- routes through the PocketBook audio pipeline (softvol,
+        -- dmix, proper resampling).  Setting to "" disables the
+        -- override and lets wav-play use its built-in fallback chain.
+        local alsa_device = self.plugin and self.plugin:getSetting("pb_alsa_device", "tts_sm")
         if alsa_device and alsa_device ~= "" then
             wav_play_cmd = wav_play_cmd .. " -D " .. alsa_device
             self._wav_play_cmd = wav_play_cmd

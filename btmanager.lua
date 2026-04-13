@@ -341,21 +341,35 @@ function BTManager:_rfkillUnblock()
     local h = io.popen("which rfkill 2>/dev/null")
     local path = h and h:read("*l") or ""
     if h then h:close() end
+    -- PB632 and others have rfkill outside $PATH
     if path == "" then
-        logger.dbg("BTManager: rfkill not found on PATH")
+        for _, candidate in ipairs({"/usr/sbin/rfkill", "/sbin/rfkill"}) do
+            local f = io.open(candidate, "r")
+            if f then
+                f:close()
+                path = candidate
+                break
+            end
+        end
+    end
+    if path == "" then
+        logger.dbg("BTManager: rfkill not found on PATH or common locations")
         return
     end
-    logger.warn("BTManager: rfkill unblock bluetooth")
-    os.execute("rfkill unblock bluetooth 2>/dev/null")
+    logger.warn("BTManager: rfkill unblock bluetooth using", path)
+    os.execute(path .. " unblock bluetooth 2>/dev/null")
     self._rfkill_unblocked = true
+    self._rfkill_path = path
 end
 
 --- Re-block bluetooth via rfkill (reverses _rfkillUnblock).
 function BTManager:_rfkillBlock()
     if not self._rfkill_unblocked then return end
+    local cmd = (self._rfkill_path or "rfkill") .. " block bluetooth 2>/dev/null"
     logger.warn("BTManager: rfkill block bluetooth")
-    os.execute("rfkill block bluetooth 2>/dev/null")
+    os.execute(cmd)
     self._rfkill_unblocked = false
+    self._rfkill_path = nil
 end
 
 --- Power on the Bluetooth adapter.

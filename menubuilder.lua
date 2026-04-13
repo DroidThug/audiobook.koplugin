@@ -158,11 +158,10 @@ function MenuBuilder.buildVoiceSettingsMenu(plugin)
     if plugin.tts_engine._wav_play_bin then
         table.insert(menu, {
             text_func = function()
-                local dev = plugin:getSetting("pb_alsa_device", "")
+                local dev = plugin:getSetting("pb_alsa_device", "tts_sm")
                 local labels = {
+                    ["tts_sm"] = _("PocketBook pipeline"),
                     [""] = _("Auto"),
-                    ["plughw:0"] = _("Built-in speaker"),
-                    ["tts_sm"] = _("Bluetooth (PB pipeline)"),
                 }
                 local label = labels[dev] or dev
                 return T(_("Audio output: %1"), label)
@@ -178,16 +177,15 @@ end
 
 function MenuBuilder.buildAlsaDeviceMenu(plugin)
     local devices = {
-        { id = "",         label = _("Auto (default fallback chain)") },
-        { id = "plughw:0", label = _("Built-in speaker (plughw:0)") },
-        { id = "tts_sm",   label = _("Bluetooth / PB pipeline (tts_sm)") },
+        { id = "tts_sm",   label = _("PocketBook pipeline - tts_sm (recommended)") },
+        { id = "",         label = _("Auto (wav-play fallback chain)") },
     }
     local menu = {}
     for _, d in ipairs(devices) do
         table.insert(menu, {
             text = d.label,
             checked_func = function()
-                return plugin:getSetting("pb_alsa_device", "") == d.id
+                return plugin:getSetting("pb_alsa_device", "tts_sm") == d.id
             end,
             callback = function()
                 plugin:setSetting("pb_alsa_device", d.id)

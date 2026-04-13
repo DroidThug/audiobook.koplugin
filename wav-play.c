@@ -3,9 +3,9 @@
  * Bundled with audiobook.koplugin for devices that have an ALSA soundcard
  * and libasound but no aplay binary (e.g. PocketBook).
  *
- * On startup, tries to unmute and maximize all ALSA playback mixer controls.
- * This is needed because PocketBook (and similar devices) may have the
- * mixer muted or at zero volume by default.
+ * On startup, unmutes ALSA playback mixer controls and raises volume to
+ * 75% if it is at zero.  Previous versions set all elements to max,
+ * which permanently saturated the speaker gain chain on PB700C.
  *
  * Supports -q (quiet), -D <device> (ALSA PCM device name).
  * Uses only ALSA 0.9.x-era functions for maximum compatibility.
@@ -20,9 +20,10 @@
 #include <string.h>
 
 /*
- * Try to unmute and maximize all playback mixer controls on the given card.
- * Ignores errors - best-effort only.  Devices that do not need this (or
- * have no mixer) simply return early.
+ * Unmute playback mixer controls and nudge volume up if at zero.
+ * Previous versions set every element to vmax which overdrove the
+ * speaker amplifier on PB700C.  Now we only raise volume when it is
+ * zero, and cap at 75% of [vmin,vmax] to avoid saturation.
  */
 static void setup_mixer(const char *card, int quiet)
 {
@@ -49,11 +50,17 @@ static void setup_mixer(const char *card, int quiet)
         if (snd_mixer_selem_has_playback_switch(elem))
             snd_mixer_selem_set_playback_switch_all(elem, 1);
 
-        /* Set volume to maximum */
+        /* Raise volume only when at zero; cap at 75% to avoid
+         * overdriving the speaker amplifier (PB700C regression). */
         if (snd_mixer_selem_has_playback_volume(elem)) {
-            long vmin, vmax;
+            long vmin, vmax, cur;
             snd_mixer_selem_get_playback_volume_range(elem, &vmin, &vmax);
-            snd_mixer_selem_set_playback_volume_all(elem, vmax);
+            snd_mixer_selem_get_playback_volume(elem,
+                    SND_MIXER_SCHN_FRONT_LEFT, &cur);
+            if (cur <= vmin) {
+                long target = vmin + (vmax - vmin) * 3 / 4; /* 75% */
+                snd_mixer_selem_set_playback_volume_all(elem, target);
+            }
         }
     }
 
@@ -207,10 +214,60 @@ int main(int argc, char **argv)
     snd_pcm_hw_params_set_rate_near(pcm, params, &rate, NULL);
 
     if (rate != hdr.sample_rate) {
-        fprintf(stderr, "wav-play: rate mismatch: requested %u Hz, got %u Hz\n",
-                hdr.sample_rate, rate);
-        fprintf(stderr, "wav-play: audio will play at wrong speed; "
-                "try device 'plughw:0' for automatic resampling\n");
+        fprintf(stderr, "wav-play: rate mismatch on '%s': requested %u Hz, got %u Hz\n",
+                opened_device, hdr.sample_rate, rate);
+        /* Close this device and try the next one in the fallback list.
+         * plughw:0 does automatic resampling via the ALSA plug layer. */
+        snd_pcm_close(pcm);
+        pcm = NULL;
+        int found_current = 0;
+        for (int j = 0; try_devices[j]; j++) {
+            if (strcmp(try_devices[j], opened_device) == 0) {
+                found_current = 1;
+                continue;
+            }
+            if (!found_current)
+                continue;
+            err = snd_pcm_open(&pcm, try_devices[j], SND_PCM_STREAM_PLAYBACK, 0);
+            if (err < 0)
+                continue;
+            /* Reconfigure on the new device */
+            snd_pcm_hw_params_any(pcm, params);
+            snd_pcm_hw_params_set_access(pcm, params, SND_PCM_ACCESS_RW_INTERLEAVED);
+            snd_pcm_hw_params_set_format(pcm, params, format);
+            snd_pcm_hw_params_set_channels(pcm, params, hdr.channels);
+            unsigned int retry_rate = hdr.sample_rate;
+            snd_pcm_hw_params_set_rate_near(pcm, params, &retry_rate, NULL);
+            if (retry_rate != hdr.sample_rate) {
+                fprintf(stderr, "wav-play: rate mismatch persists on '%s' (%u Hz)\n",
+                        try_devices[j], retry_rate);
+                snd_pcm_close(pcm);
+                pcm = NULL;
+                continue;
+            }
+            opened_device = try_devices[j];
+            rate = retry_rate;
+            fprintf(stderr, "wav-play: rate OK on fallback '%s' (%u Hz)\n",
+                    opened_device, rate);
+            break;
+        }
+        if (!pcm) {
+            fprintf(stderr, "wav-play: no device supports %u Hz, proceeding anyway\n",
+                    hdr.sample_rate);
+            /* Re-open the original device as last resort */
+            err = snd_pcm_open(&pcm, device, SND_PCM_STREAM_PLAYBACK, 0);
+            if (err < 0) {
+                fclose(f);
+                return 1;
+            }
+            snd_pcm_hw_params_any(pcm, params);
+            snd_pcm_hw_params_set_access(pcm, params, SND_PCM_ACCESS_RW_INTERLEAVED);
+            snd_pcm_hw_params_set_format(pcm, params, format);
+            snd_pcm_hw_params_set_channels(pcm, params, hdr.channels);
+            rate = hdr.sample_rate;
+            snd_pcm_hw_params_set_rate_near(pcm, params, &rate, NULL);
+            opened_device = device;
+        }
     }
 
     err = snd_pcm_hw_params(pcm, params);
