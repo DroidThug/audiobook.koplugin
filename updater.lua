@@ -61,7 +61,7 @@ local function fetchLatestRelease()
 
     local body = table.concat(sink)
     local JSON = require("json")
-    local ok, data = pcall(JSON.decode, JSON, body)
+    local ok, data = pcall(JSON.decode, body)
     if not ok or type(data) ~= "table" then
         local preview = body and tostring(body):sub(1, 200) or "(empty)"
         logger.warn("Updater: JSON parse failed:", tostring(data), "body:", preview)

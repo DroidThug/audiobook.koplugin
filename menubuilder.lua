@@ -154,28 +154,11 @@ function MenuBuilder.buildVoiceSettingsMenu(plugin)
         })
     end
 
-    -- PocketBook ALSA device selection (only when bundled wav-play is active)
-    if plugin.tts_engine._wav_play_bin then
-        table.insert(menu, {
-            text_func = function()
-                local dev = plugin:getSetting("pb_alsa_device", "tts_sm")
-                local labels = {
-                    ["tts_sm"] = _("PocketBook pipeline"),
-                    [""] = _("Auto"),
-                }
-                local label = labels[dev] or dev
-                return T(_("Audio output: %1"), label)
-            end,
-            sub_item_table_func = function()
-                return MenuBuilder.buildAlsaDeviceMenu(plugin)
-            end,
-        })
-    end
-
     return menu
 end
 
 function MenuBuilder.buildAlsaDeviceMenu(plugin)
+    local pb_default = plugin.tts_engine._pb_has_tts_sm and "tts_sm" or ""
     local devices = {
         { id = "tts_sm",   label = _("PocketBook pipeline - tts_sm (recommended)") },
         { id = "",         label = _("Auto (wav-play fallback chain)") },
@@ -185,7 +168,7 @@ function MenuBuilder.buildAlsaDeviceMenu(plugin)
         table.insert(menu, {
             text = d.label,
             checked_func = function()
-                return plugin:getSetting("pb_alsa_device", "tts_sm") == d.id
+                return plugin:getSetting("pb_alsa_device", pb_default) == d.id
             end,
             callback = function()
                 plugin:setSetting("pb_alsa_device", d.id)

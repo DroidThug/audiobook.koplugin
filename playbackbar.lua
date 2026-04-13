@@ -361,20 +361,36 @@ function PlaybackBar:onSetDimensions()
     return true
 end
 
---- Override handleEvent so that we only consume tap gestures within
---- our bar area.  Swipe/pan gestures are ALWAYS passed through so the
---- bottom-swipe ConfigMenu activation works even when the bar is visible.
+--- Override handleEvent so that:
+--- 1. Taps on the reading area toggle play/pause (tap-to-pause).
+---    This prevents stray taps from triggering dictionary lookup on
+---    the CRE selection that the highlight manager maintains, and
+---    gives 6" screen users an easy way to control playback.
+--- 2. Taps inside the bar area go to the buttons normally.
+--- 3. Swipe/pan/hold gestures ALWAYS pass through so the bottom-swipe
+---    ConfigMenu and long-press dictionary still work.
 function PlaybackBar:handleEvent(event)
     local arg1 = event.args and event.args[1]
     if event.handler == "onGesture" or (type(arg1) == "table" and arg1.ges) then
-        -- This is a gesture event from GestureDetector
         local ges = type(arg1) == "table" and arg1 or nil
-        if ges and (ges.ges == "swipe" or ges.ges == "pan" or ges.ges == "hold" or ges.ges == "hold_pan") then
+        if ges then
             -- Let swipe/pan/hold pass through unconditionally
-            return false
+            if ges.ges == "swipe" or ges.ges == "pan" or ges.ges == "hold" or ges.ges == "hold_pan" then
+                return false
+            end
+            -- Tap during active playback with no overlay on top
+            if ges.ges == "tap" and self.visible and not self:_isOverlayActive() then
+                -- Taps inside the bar area: dispatch to buttons
+                if ges.pos and self.dimen and ges.pos.y >= self.dimen.y then
+                    return InputContainer.handleEvent(self, event)
+                end
+                -- Taps on the reading area: toggle play/pause
+                self:onPlayPause()
+                return true
+            end
         end
     end
-    -- For taps and everything else, use standard InputContainer dispatch
+    -- Non-gesture events, or when not visible / overlay active: standard dispatch
     return InputContainer.handleEvent(self, event)
 end
 

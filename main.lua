@@ -307,6 +307,27 @@ function Audiobook:addToMainMenu(menu_items)
                     return BtUI.buildBTDisconnectMenu(self)
                 end,
             },
+            -- Audio output device (PocketBook only, next to BT for discoverability)
+            {
+                text_func = function()
+                    if not self._init_ok or not self.tts_engine._wav_play_bin then
+                        return _("Audio output: N/A")
+                    end
+                    local pb_default = self.tts_engine._pb_has_tts_sm and "tts_sm" or ""
+                    local dev = self:getSetting("pb_alsa_device", pb_default)
+                    local labels = {
+                        ["tts_sm"] = _("PocketBook pipeline"),
+                        [""] = _("Auto"),
+                    }
+                    return T(_("Audio output: %1"), labels[dev] or dev)
+                end,
+                sub_item_table_func = function()
+                    return MenuBuilder.buildAlsaDeviceMenu(self)
+                end,
+                enabled_func = function()
+                    return self._init_ok and self.tts_engine._wav_play_bin ~= nil
+                end,
+            },
             -- ── Voice & highlight settings ──
             {
                 text_func = function()

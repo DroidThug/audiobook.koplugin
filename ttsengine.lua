@@ -2653,11 +2653,33 @@ function TTSEngine:findAudioPlayer()
         end
         self.audio_player_type = "aplay"
         self._wav_play_cmd = wav_play_cmd
-        -- PocketBook ALSA device override: default is tts_sm which
-        -- routes through the PocketBook audio pipeline (softvol,
-        -- dmix, proper resampling).  Setting to "" disables the
-        -- override and lets wav-play use its built-in fallback chain.
-        local alsa_device = self.plugin and self.plugin:getSetting("pb_alsa_device", "tts_sm")
+        -- PocketBook ALSA device override: tts_sm routes through the
+        -- PocketBook audio pipeline (softvol, dmix, proper resampling).
+        -- Only default to tts_sm when the device actually defines it in
+        -- asound.conf; devices like PB632 lack tts_sm entirely and would
+        -- fall through to plughw:0/hw:0 which bypasses BT routing.
+        local pb_default = ""
+        if not self._pb_has_tts_sm_probed then
+            self._pb_has_tts_sm_probed = true
+            self._pb_has_tts_sm = false
+            for _, conf in ipairs({"/etc/asound.conf", "/usr/share/alsa/asound.conf"}) do
+                local fh = io.open(conf, "r")
+                if fh then
+                    local content = fh:read("*a")
+                    fh:close()
+                    if content and content:find("pcm%.tts_sm") then
+                        self._pb_has_tts_sm = true
+                        logger.warn("TTSEngine: tts_sm PCM found in", conf)
+                        break
+                    end
+                end
+            end
+            if not self._pb_has_tts_sm then
+                logger.warn("TTSEngine: tts_sm PCM not found in asound.conf, using Auto")
+            end
+        end
+        if self._pb_has_tts_sm then pb_default = "tts_sm" end
+        local alsa_device = self.plugin and self.plugin:getSetting("pb_alsa_device", pb_default)
         if alsa_device and alsa_device ~= "" then
             wav_play_cmd = wav_play_cmd .. " -D " .. alsa_device
             self._wav_play_cmd = wav_play_cmd

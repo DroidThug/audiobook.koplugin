@@ -4,7 +4,7 @@
  * and libasound but no aplay binary (e.g. PocketBook).
  *
  * On startup, unmutes ALSA playback mixer controls and raises volume to
- * 75% if it is at zero.  Previous versions set all elements to max,
+ * 50% if it is at zero.  Previous versions set all elements to max,
  * which permanently saturated the speaker gain chain on PB700C.
  *
  * Supports -q (quiet), -D <device> (ALSA PCM device name).
@@ -23,7 +23,7 @@
  * Unmute playback mixer controls and nudge volume up if at zero.
  * Previous versions set every element to vmax which overdrove the
  * speaker amplifier on PB700C.  Now we only raise volume when it is
- * zero, and cap at 75% of [vmin,vmax] to avoid saturation.
+ * zero, and cap at 50% of [vmin,vmax] to avoid saturation.
  */
 static void setup_mixer(const char *card, int quiet)
 {
@@ -50,15 +50,16 @@ static void setup_mixer(const char *card, int quiet)
         if (snd_mixer_selem_has_playback_switch(elem))
             snd_mixer_selem_set_playback_switch_all(elem, 1);
 
-        /* Raise volume only when at zero; cap at 75% to avoid
-         * overdriving the speaker amplifier (PB700C regression). */
+        /* Raise volume only when at zero; cap at 50% to avoid
+         * overdriving the speaker amplifier (PB700C regression,
+         * PB631 alc5640 high-pitch oscillation at higher gains). */
         if (snd_mixer_selem_has_playback_volume(elem)) {
             long vmin, vmax, cur;
             snd_mixer_selem_get_playback_volume_range(elem, &vmin, &vmax);
             snd_mixer_selem_get_playback_volume(elem,
                     SND_MIXER_SCHN_FRONT_LEFT, &cur);
             if (cur <= vmin) {
-                long target = vmin + (vmax - vmin) * 3 / 4; /* 75% */
+                long target = vmin + (vmax - vmin) / 2; /* 50% */
                 snd_mixer_selem_set_playback_volume_all(elem, target);
             }
         }

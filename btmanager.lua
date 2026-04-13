@@ -343,7 +343,7 @@ function BTManager:_rfkillUnblock()
     if h then h:close() end
     -- PB632 and others have rfkill outside $PATH
     if path == "" then
-        for _, candidate in ipairs({"/usr/sbin/rfkill", "/sbin/rfkill"}) do
+        for _, candidate in ipairs({"/usr/sbin/rfkill", "/sbin/rfkill", "/usr/bin/rfkill"}) do
             local f = io.open(candidate, "r")
             if f then
                 f:close()
@@ -353,7 +353,37 @@ function BTManager:_rfkillUnblock()
         end
     end
     if path == "" then
-        logger.dbg("BTManager: rfkill not found on PATH or common locations")
+        -- No rfkill binary at all: try the sysfs interface directly.
+        -- /sys/class/rfkill/rfkillN/type == "bluetooth" → write 0 to soft
+        local found_sysfs = false
+        local dir_h = io.popen("ls /sys/class/rfkill/ 2>/dev/null")
+        if dir_h then
+            for entry in dir_h:lines() do
+                local type_path = "/sys/class/rfkill/" .. entry .. "/type"
+                local tf = io.open(type_path, "r")
+                if tf then
+                    local rtype = tf:read("*l") or ""
+                    tf:close()
+                    if rtype == "bluetooth" then
+                        local soft_path = "/sys/class/rfkill/" .. entry .. "/soft"
+                        local sw = io.open(soft_path, "w")
+                        if sw then
+                            sw:write("0\n")
+                            sw:close()
+                            found_sysfs = true
+                            logger.warn("BTManager: rfkill unblock via sysfs:", soft_path)
+                            self._rfkill_unblocked = true
+                            self._rfkill_sysfs = soft_path
+                        end
+                        break
+                    end
+                end
+            end
+            dir_h:close()
+        end
+        if not found_sysfs then
+            logger.dbg("BTManager: rfkill not found on PATH, common locations, or sysfs")
+        end
         return
     end
     logger.warn("BTManager: rfkill unblock bluetooth using", path)
@@ -365,11 +395,21 @@ end
 --- Re-block bluetooth via rfkill (reverses _rfkillUnblock).
 function BTManager:_rfkillBlock()
     if not self._rfkill_unblocked then return end
-    local cmd = (self._rfkill_path or "rfkill") .. " block bluetooth 2>/dev/null"
-    logger.warn("BTManager: rfkill block bluetooth")
-    os.execute(cmd)
+    if self._rfkill_sysfs then
+        local sw = io.open(self._rfkill_sysfs, "w")
+        if sw then
+            sw:write("1\n")
+            sw:close()
+            logger.warn("BTManager: rfkill block via sysfs:", self._rfkill_sysfs)
+        end
+    else
+        local cmd = (self._rfkill_path or "rfkill") .. " block bluetooth 2>/dev/null"
+        logger.warn("BTManager: rfkill block bluetooth")
+        os.execute(cmd)
+    end
     self._rfkill_unblocked = false
     self._rfkill_path = nil
+    self._rfkill_sysfs = nil
 end
 
 --- Power on the Bluetooth adapter.
@@ -415,6 +455,30 @@ function BTManager:powerOn()
         end
 
         if not hci_already_up then
+            -- On PocketBook, try the native netagent command first.
+            -- This handles rfkill, bluetoothd, and HCI initialization
+            -- in one step, matching what the system Settings app does.
+            if Device:isPocketBook() then
+                local na = io.open("/ebrmain/cramfs/bin/netagent", "r")
+                if na then
+                    na:close()
+                    logger.warn("BTManager: trying PocketBook netagent bt on")
+                    os.execute("/ebrmain/cramfs/bin/netagent bt on 2>/dev/null")
+                    os.execute("sleep 2")
+                    local h = io.popen("hciconfig hci0 2>/dev/null")
+                    local r = h and h:read("*a") or ""
+                    if h then h:close() end
+                    if r:match("UP") then
+                        hci_already_up = true
+                        logger.warn("BTManager: netagent brought hci0 UP")
+                    else
+                        logger.warn("BTManager: netagent did not bring hci0 UP, falling through")
+                    end
+                end
+            end
+        end
+
+        if not hci_already_up then
             -- On NXP/Freescale Kobo models (Libra 2, etc.), BT hardware
             -- power is controlled by the sdio_bt_pwr kernel module.
             -- KOReader's koreader.sh removes this module on startup, so
@@ -444,17 +508,17 @@ function BTManager:powerOn()
             -- happens on Kobo Libra 2 when the adapter hasn't been
             -- initialised yet and hci0 doesn't exist).
             os.execute("hciconfig hci0 down 2>/dev/null; hciconfig hci0 up 2>/dev/null")
-            -- Wait for the HCI device to appear (firmware loading on some
-            -- Kobo models takes a moment after hciconfig up).
+            -- Wait for the HCI device to appear.  Use integer sleep
+            -- because PocketBook's BusyBox sleep rejects fractions.
             local hci_ready = false
-            for attempt = 1, 12 do
-                os.execute("sleep 0.5")
+            for attempt = 1, 6 do
+                os.execute("sleep 1")
                 local h = io.popen("hciconfig hci0 2>/dev/null")
                 local r = h and h:read("*a") or ""
                 if h then h:close() end
                 if r:match("hci0") then
                     hci_ready = true
-                    logger.warn("BTManager: hci0 ready after", attempt * 0.5, "s")
+                    logger.warn("BTManager: hci0 ready after", attempt, "s")
                     break
                 end
             end
@@ -496,6 +560,15 @@ function BTManager:powerOff()
     if bt_stack == "bluez" then
         -- Stop bluealsa daemon if we started it
         self:stopBluealsa()
+        -- On PocketBook, use the native netagent to turn off BT.
+        if Device:isPocketBook() then
+            local na = io.open("/ebrmain/cramfs/bin/netagent", "r")
+            if na then
+                na:close()
+                os.execute("/ebrmain/cramfs/bin/netagent bt off 2>/dev/null")
+                logger.warn("BTManager: netagent bt off")
+            end
+        end
         -- Stop the daemon we started (safe even if it was already running)
         os.execute("killall bluetoothd 2>/dev/null")
         os.execute("hciconfig hci0 down 2>/dev/null")
@@ -606,7 +679,7 @@ function BTManager:startBluealsa()
                 pd:close()
                 -- Reload dbus config
                 os.execute("killall -HUP dbus-daemon 2>/dev/null")
-                os.execute("sleep 0.5")
+                os.execute("sleep 1")
                 logger.warn("BTManager: installed bluealsa D-Bus policy")
             end
         end
@@ -681,7 +754,7 @@ end
 function BTManager:stopBluealsa()
     if self:isBluealsaRunning() then
         os.execute("killall bluealsa 2>/dev/null")
-        os.execute("sleep 0.5")
+        os.execute("sleep 1")
         logger.warn("BTManager: bluealsa stopped")
     end
 end
