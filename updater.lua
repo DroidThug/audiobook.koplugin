@@ -204,13 +204,16 @@ function Updater._performUpdate(plugin, release)
     -- Use external storage on PocketBook: /tmp is a tiny tmpfs that
     -- fills up and destabilises the device when large zips are written.
     local tmp_dir = os.getenv("TMPDIR") or "/tmp"
+    local created_ext_tmp = false
     local Device = require("device")
     if Device:isPocketBook() then
         local ext = "/mnt/ext1/tmp"
-        os.execute('mkdir -p "' .. ext .. '" 2>/dev/null')
         local lfs = require("libs/libkoreader-lfs")
+        local already_exists = lfs.attributes(ext, "mode") == "directory"
+        os.execute('mkdir -p "' .. ext .. '" 2>/dev/null')
         if lfs.attributes(ext, "mode") == "directory" then
             tmp_dir = ext
+            created_ext_tmp = not already_exists
         end
     end
     local zip_path = tmp_dir .. "/audiobook-koplugin-update.zip"
@@ -256,8 +259,13 @@ function Updater._performUpdate(plugin, release)
         os.execute('rm -rf "' .. tmp_dir .. '/audiobook-update-tmp" 2>/dev/null')
     end
 
-    -- Clean up the downloaded zip
+    -- Clean up the downloaded zip and, on PocketBook, the tmp directory if
+    -- we created it (it is normally absent and the plugin should not leave
+    -- it behind after an update).
     os.remove(zip_path)
+    if created_ext_tmp then
+        os.execute('rmdir "' .. tmp_dir .. '" 2>/dev/null')
+    end
 
     if not extract_ok then
         UIManager:show(InfoMessage:new{

@@ -33,9 +33,13 @@ local PlaybackBar = InputContainer:extend{
     is_playing = true,
     current_word = "",
     progress = 0,
-    -- Mark as toast so UIManager never blocks events to widgets below us.
-    -- Toast widgets receive events but never become the exclusive "top_widget".
-    toast = true,
+    -- Do NOT set toast = true.  Toast widgets cannot consume events: returning
+    -- true from handleEvent has no effect and the reader below still receives
+    -- the same tap, triggering its own gesture handler (showing the reader
+    -- toolbar and hiding the playback bar).  As a non-toast widget we sit on
+    -- top of the reader in the UIManager window stack and returning true from
+    -- handleEvent actually stops propagation.  Swipe/hold/pan events are still
+    -- passed through explicitly in handleEvent below.
     -- Callbacks from sync_controller
     on_play_pause = nil,
     on_rewind = nil,
@@ -369,6 +373,8 @@ end
 --- 2. Taps inside the bar area go to the buttons normally.
 --- 3. Swipe/pan/hold gestures ALWAYS pass through so the bottom-swipe
 ---    ConfigMenu and long-press dictionary still work.
+--- 4. When any overlay (menu/dialog) is active, ALL events pass through
+---    so the overlay can handle its own taps and dismiss correctly.
 function PlaybackBar:handleEvent(event)
     local arg1 = event.args and event.args[1]
     if event.handler == "onGesture" or (type(arg1) == "table" and arg1.ges) then
@@ -378,8 +384,13 @@ function PlaybackBar:handleEvent(event)
             if ges.ges == "swipe" or ges.ges == "pan" or ges.ges == "hold" or ges.ges == "hold_pan" then
                 return false
             end
-            -- Tap during active playback with no overlay on top
-            if ges.ges == "tap" and self.visible and not self:_isOverlayActive() then
+            -- When a menu or dialog is open, pass through so it can handle
+            -- its own events (e.g. dismiss on outside tap).
+            if self:_isOverlayActive() then
+                return false
+            end
+            -- Tap during active playback
+            if ges.ges == "tap" and self.visible then
                 -- Taps inside the bar area: dispatch to buttons
                 if ges.pos and self.dimen and ges.pos.y >= self.dimen.y then
                     return InputContainer.handleEvent(self, event)
@@ -390,7 +401,7 @@ function PlaybackBar:handleEvent(event)
             end
         end
     end
-    -- Non-gesture events, or when not visible / overlay active: standard dispatch
+    -- Non-gesture events or when not visible: standard dispatch
     return InputContainer.handleEvent(self, event)
 end
 

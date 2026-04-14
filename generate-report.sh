@@ -9,7 +9,8 @@
 # The report is saved to the device's root storage (same location as
 # the in-app report) and also printed to stdout.
 
-set -e
+set +e  # Never abort on error: every variable has a fallback value and a
+        # partial report is far more useful than no report at all.
 
 PLUGIN_DIR="$(cd "$(dirname "$0")" && pwd)"
 

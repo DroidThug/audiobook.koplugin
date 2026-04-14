@@ -3,9 +3,12 @@
  * Bundled with audiobook.koplugin for devices that have an ALSA soundcard
  * and libasound but no aplay binary (e.g. PocketBook).
  *
- * On startup, unmutes ALSA playback mixer controls and raises volume to
- * 50% if it is at zero.  Previous versions set all elements to max,
- * which permanently saturated the speaker gain chain on PB700C.
+ * When using a hardware PCM device (hw:, plughw:), nudges volume to 50%
+ * if it is at zero.  Previous versions set all elements to max AND unmuted
+ * all switches unconditionally, which permanently destroyed the internal
+ * speaker on PB700C.  Switch state is never modified now.
+ * Software pipeline devices (tts_sm, etc.) manage volume in software and
+ * skip mixer setup entirely.
  *
  * Supports -q (quiet), -D <device> (ALSA PCM device name).
  * Uses only ALSA 0.9.x-era functions for maximum compatibility.
@@ -20,10 +23,12 @@
 #include <string.h>
 
 /*
- * Unmute playback mixer controls and nudge volume up if at zero.
- * Previous versions set every element to vmax which overdrove the
- * speaker amplifier on PB700C.  Now we only raise volume when it is
- * zero, and cap at 50% of [vmin,vmax] to avoid saturation.
+ * Nudge playback volume up if at zero.  Called only for hardware PCM
+ * devices (hw:, plughw:).  Does NOT touch playback switches: unconditional
+ * unmuting permanently destroyed the internal speaker on PB700C by engaging
+ * hardware amplifier paths that the device firmware deliberately leaves
+ * disabled.  Only volume is adjusted, and only when currently at the
+ * minimum, capped at 50% of [vmin,vmax] to avoid overdrive.
  */
 static void setup_mixer(const char *card, int quiet)
 {
@@ -42,18 +47,13 @@ static void setup_mixer(const char *card, int quiet)
          elem = snd_mixer_elem_next(elem)) {
         if (!snd_mixer_selem_is_active(elem))
             continue;
-        if (!snd_mixer_selem_has_playback_volume(elem) &&
-            !snd_mixer_selem_has_playback_switch(elem))
+        if (!snd_mixer_selem_has_playback_volume(elem))
             continue;
 
-        /* Unmute */
-        if (snd_mixer_selem_has_playback_switch(elem))
-            snd_mixer_selem_set_playback_switch_all(elem, 1);
-
         /* Raise volume only when at zero; cap at 50% to avoid
-         * overdriving the speaker amplifier (PB700C regression,
-         * PB631 alc5640 high-pitch oscillation at higher gains). */
-        if (snd_mixer_selem_has_playback_volume(elem)) {
+         * overdriving the speaker amplifier.  Never touch playback
+         * switches -- see function comment above. */
+        {
             long vmin, vmax, cur;
             snd_mixer_selem_get_playback_volume_range(elem, &vmin, &vmax);
             snd_mixer_selem_get_playback_volume(elem,
@@ -160,13 +160,6 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    /* Unmute and maximize mixer volume (best-effort, needed on PocketBook).
-     * Always target "hw:0" because plugin devices (plughw:0, tts_sm, etc.)
-     * do not expose mixer controls - the mixer lives on the underlying
-     * hardware card.  Using the -D device here causes "Invalid CTL" errors
-     * when snd_mixer_attach tries to open the plugin name as a CTL. */
-    setup_mixer("hw:0", quiet);
-
     /*
      * On PocketBook, the ALSA "default" device may not be defined or may
      * route to a Loopback card.  PocketBook's asound.conf defines named
@@ -270,6 +263,16 @@ int main(int argc, char **argv)
             opened_device = device;
         }
     }
+
+    /* Adjust mixer volume on hardware PCM devices (best-effort).
+     * Always target "hw:0": plugin devices (tts_sm, plughw:0, etc.)
+     * do not expose mixer controls -- the mixer lives on the hardware card.
+     * Skip for software pipeline devices (tts_sm, etc.) that manage volume
+     * in software via softvol/dmix; touching hw:0 is both unnecessary and
+     * dangerous on hardware with undocumented amplifier paths (PB700C). */
+    if (strncmp(opened_device, "hw:", 3) == 0 ||
+        strncmp(opened_device, "plughw:", 7) == 0)
+        setup_mixer("hw:0", quiet);
 
     err = snd_pcm_hw_params(pcm, params);
     if (err < 0) {

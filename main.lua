@@ -580,8 +580,11 @@ function Audiobook:startReadAlong(text, start_pos)
     -- will notify the user if all audio BT devices disconnect while
     -- read-along is active.  This runs infrequently and only while the
     -- plugin is in use to avoid extra battery drain.
+    --
+    -- Also probe for an audio player now, before synthesis starts, so we
+    -- can warn the user immediately if no audio output is available instead
+    -- of making them wait through TTS synthesis only to get an error.
     pcall(function()
-        -- Ensure audio_player_type is initialized
         if not self.tts_engine.audio_player_type then
             self.tts_engine:findAudioPlayer()
         end
@@ -593,6 +596,22 @@ function Audiobook:startReadAlong(text, start_pos)
             end
         end
     end)
+
+    -- Early no-audio warning: if the probe found no usable audio player
+    -- and there is no BT device connected, warn before synthesis runs.
+    if self.tts_engine._no_real_audio_output and not self.tts_engine._cached_player then
+        local ConfirmBox = require("ui/widget/confirmbox")
+        UIManager:show(ConfirmBox:new{
+            text = _("No audio output device found.\n\nTTS synthesis will run but audio may not play. Start anyway?"),
+            ok_text = _("Start"),
+            cancel_text = _("Cancel"),
+            ok_callback = function()
+                pcall(function() BtMediaControl.sendPlaybackStatus("playing") end)
+                self.sync_controller:start(page_text)
+            end,
+        })
+        return
+    end
 
     -- Notify BT device that playback is starting
     pcall(function() BtMediaControl.sendPlaybackStatus("playing") end)
