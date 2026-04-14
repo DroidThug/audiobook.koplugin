@@ -3,12 +3,13 @@
  * Bundled with audiobook.koplugin for devices that have an ALSA soundcard
  * and libasound but no aplay binary (e.g. PocketBook).
  *
- * When using a hardware PCM device (hw:, plughw:), nudges volume to 50%
- * if it is at zero.  Previous versions set all elements to max AND unmuted
- * all switches unconditionally, which permanently destroyed the internal
- * speaker on PB700C.  Switch state is never modified now.
- * Software pipeline devices (tts_sm, etc.) manage volume in software and
- * skip mixer setup entirely.
+ * Always nudges hw:0 mixer volume to 50% if at zero, regardless of which
+ * PCM device is used for playback.  Previous versions set all elements to
+ * max AND unmuted all switches unconditionally, which permanently destroyed
+ * the internal speaker on PB700C.  Switch state is never modified now.
+ * The hw:0 call is required even for software pipeline devices (tts_sm,
+ * softvol+dmix+Loopback): if hw:0 volume is at zero the ring buffer reader
+ * discards all samples, the buffer fills, and snd_pcm_writei() blocks.
  *
  * Supports -q (quiet), -D <device> (ALSA PCM device name).
  * Uses only ALSA 0.9.x-era functions for maximum compatibility.
@@ -264,15 +265,18 @@ int main(int argc, char **argv)
         }
     }
 
-    /* Adjust mixer volume on hardware PCM devices (best-effort).
-     * Always target "hw:0": plugin devices (tts_sm, plughw:0, etc.)
-     * do not expose mixer controls -- the mixer lives on the hardware card.
-     * Skip for software pipeline devices (tts_sm, etc.) that manage volume
-     * in software via softvol/dmix; touching hw:0 is both unnecessary and
-     * dangerous on hardware with undocumented amplifier paths (PB700C). */
-    if (strncmp(opened_device, "hw:", 3) == 0 ||
-        strncmp(opened_device, "plughw:", 7) == 0)
-        setup_mixer("hw:0", quiet);
+    /* Nudge hw:0 mixer volume unconditionally (best-effort).
+     * Software pipeline devices (tts_sm, plughw:0, etc.) do not expose mixer
+     * controls themselves -- the mixer lives on the underlying hardware card.
+     * We must always call setup_mixer("hw:0") regardless of the opened PCM
+     * device because on PB700C the tts_sm -> softvol -> dmix -> Loopback
+     * pipeline writes into a ring buffer that is drained by a separate reader
+     * process.  If hw:0 volume is at zero that reader process silently discards
+     * all samples, the ring buffer fills, and snd_pcm_writei() blocks
+     * indefinitely -- freezing KOReader.  setup_mixer() never modifies switch
+     * state (see function comment), so calling it on hw:0 is safe even on
+     * devices with sensitive amplifier paths like PB700C. */
+    setup_mixer("hw:0", quiet);
 
     err = snd_pcm_hw_params(pcm, params);
     if (err < 0) {
