@@ -8,9 +8,11 @@
  * switch state after snd_pcm_drain().  On PocketBook, active switches trigger
  * the audio daemon to drain the tts_sm -> Loopback ring buffer; with them
  * muted the daemon stops consuming, the buffer fills, and snd_pcm_writei()
- * blocks -- freezing KOReader.  Saving and restoring avoids persistent ALSA
- * state corruption on devices like PB700C where the firmware intentionally
- * leaves amplifier paths disabled.
+ * blocks, freezing KOReader.  The unmuting MUST happen before snd_pcm_open()
+ * so the daemon is already draining by the time data reaches the Loopback.
+ * Saving and restoring avoids persistent ALSA state corruption on devices
+ * like PB700C where the firmware intentionally leaves amplifier paths
+ * disabled.
  *
  * Supports -q (quiet), -D <device> (ALSA PCM device name).
  * Uses only ALSA 0.9.x-era functions for maximum compatibility.
@@ -23,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* Saved playback switch states -- restored after snd_pcm_drain() */
 #define MAX_SWITCH_SAVES 32
@@ -231,6 +234,14 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    /* Save hw:0 switch state, unmute switches, raise volume from zero.
+     * This MUST run before snd_pcm_open(): on PocketBook the audio daemon
+     * only starts draining the tts_sm -> Loopback ring buffer when hw:0
+     * switches are already unmuted at the time the PCM device is opened.
+     * restore_mixer_switches() is called after snd_pcm_drain(). */
+    setup_mixer("hw:0", quiet);
+    usleep(50000);  /* 50 ms -- let audio daemon react to switch change */
+
     /*
      * On PocketBook, the ALSA "default" device may not be defined or may
      * route to a Loopback card.  PocketBook's asound.conf defines named
@@ -334,11 +345,6 @@ int main(int argc, char **argv)
             opened_device = device;
         }
     }
-
-    /* Save hw:0 switch state, unmute switches, raise volume from zero.
-     * See setup_mixer() for the full explanation.  restore_mixer_switches()
-     * is called after snd_pcm_drain() to put the state back. */
-    setup_mixer("hw:0", quiet);
 
     err = snd_pcm_hw_params(pcm, params);
     if (err < 0) {
