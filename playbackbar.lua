@@ -418,14 +418,15 @@ function PlaybackBar:paintTo(bb, x, y)
 end
 
 --- Check if any menu or dialog sits between us and the base reader.
--- In normal operation there is exactly 1 non-toast widget (the reader).
--- When a menu/dialog opens, there are 2+.
+-- In normal operation there is exactly 1 non-toast widget (the reader)
+-- plus ourselves.  When a menu/dialog opens, there are 3+.
 function PlaybackBar:_isOverlayActive()
     local stack = UIManager._window_stack
     if not stack then return false end
     local non_toast = 0
     for i = 1, #stack do
-        if not stack[i].widget.toast then
+        local w = stack[i].widget
+        if w ~= self and not w.toast then
             non_toast = non_toast + 1
             if non_toast > 1 then
                 return true
