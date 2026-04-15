@@ -3,13 +3,14 @@
  * Bundled with audiobook.koplugin for devices that have an ALSA soundcard
  * and libasound but no aplay binary (e.g. PocketBook).
  *
- * Always nudges hw:0 mixer volume to 50% if at zero, regardless of which
- * PCM device is used for playback.  Previous versions set all elements to
- * max AND unmuted all switches unconditionally, which permanently destroyed
- * the internal speaker on PB700C.  Switch state is never modified now.
- * The hw:0 call is required even for software pipeline devices (tts_sm,
- * softvol+dmix+Loopback): if hw:0 volume is at zero the ring buffer reader
- * discards all samples, the buffer fills, and snd_pcm_writei() blocks.
+ * Saves hw:0 playback switch state, unmutes all playback switches, and
+ * raises volume to 50% if at zero before playback.  Restores the original
+ * switch state after snd_pcm_drain().  On PocketBook, active switches trigger
+ * the audio daemon to drain the tts_sm -> Loopback ring buffer; with them
+ * muted the daemon stops consuming, the buffer fills, and snd_pcm_writei()
+ * blocks -- freezing KOReader.  Saving and restoring avoids persistent ALSA
+ * state corruption on devices like PB700C where the firmware intentionally
+ * leaves amplifier paths disabled.
  *
  * Supports -q (quiet), -D <device> (ALSA PCM device name).
  * Uses only ALSA 0.9.x-era functions for maximum compatibility.
@@ -23,16 +24,31 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Saved playback switch states -- restored after snd_pcm_drain() */
+#define MAX_SWITCH_SAVES 32
+struct switch_save { char name[64]; int val; };
+static struct switch_save g_saved_sw[MAX_SWITCH_SAVES];
+static int                g_saved_sw_count = 0;
+static char               g_mixer_card[32] = "";
+
 /*
- * Nudge playback volume up if at zero.  Called only for hardware PCM
- * devices (hw:, plughw:).  Does NOT touch playback switches: unconditional
- * unmuting permanently destroyed the internal speaker on PB700C by engaging
- * hardware amplifier paths that the device firmware deliberately leaves
- * disabled.  Only volume is adjusted, and only when currently at the
- * minimum, capped at 50% of [vmin,vmax] to avoid overdrive.
+ * Saves playback switch state, unmutes all playback switches, and nudges
+ * volume to 50% if at zero.  Call restore_mixer_switches() after
+ * snd_pcm_drain() to put switches back to their original state.
+ *
+ * On PocketBook, playback switches must be active for the audio daemon to
+ * drain the tts_sm -> Loopback pipeline.  With switches muted the daemon
+ * stops consuming the ring buffer, snd_pcm_writei() blocks indefinitely,
+ * and KOReader freezes.  Saving and restoring the original state prevents
+ * persistent ALSA corruption on devices like PB700C where the firmware
+ * intentionally leaves amplifier paths disabled.
  */
 static void setup_mixer(const char *card, int quiet)
 {
+    g_saved_sw_count = 0;
+    strncpy(g_mixer_card, card, sizeof(g_mixer_card) - 1);
+    g_mixer_card[sizeof(g_mixer_card) - 1] = '\0';
+
     snd_mixer_t *mixer = NULL;
     if (snd_mixer_open(&mixer, 0) < 0)
         return;
@@ -48,13 +64,28 @@ static void setup_mixer(const char *card, int quiet)
          elem = snd_mixer_elem_next(elem)) {
         if (!snd_mixer_selem_is_active(elem))
             continue;
-        if (!snd_mixer_selem_has_playback_volume(elem))
-            continue;
 
-        /* Raise volume only when at zero; cap at 50% to avoid
-         * overdriving the speaker amplifier.  Never touch playback
-         * switches -- see function comment above. */
-        {
+        /* Save and unmute playback switches so the PocketBook audio daemon
+         * will drain the Loopback ring buffer.  We only save elements that
+         * are currently muted (those are the ones we change). */
+        if (snd_mixer_selem_has_playback_switch(elem)) {
+            int curval = 1 /* assume unmuted */;
+            snd_mixer_selem_get_playback_switch(elem,
+                    SND_MIXER_SCHN_FRONT_LEFT, &curval);
+            if (!curval && g_saved_sw_count < MAX_SWITCH_SAVES) {
+                const char *ename = snd_mixer_selem_get_name(elem);
+                strncpy(g_saved_sw[g_saved_sw_count].name, ename,
+                        sizeof(g_saved_sw[0].name) - 1);
+                g_saved_sw[g_saved_sw_count].name[
+                        sizeof(g_saved_sw[0].name) - 1] = '\0';
+                g_saved_sw[g_saved_sw_count].val = curval;
+                g_saved_sw_count++;
+            }
+            snd_mixer_selem_set_playback_switch_all(elem, 1);
+        }
+
+        /* Raise volume only when at zero; cap at 50% to avoid overdrive. */
+        if (snd_mixer_selem_has_playback_volume(elem)) {
             long vmin, vmax, cur;
             snd_mixer_selem_get_playback_volume_range(elem, &vmin, &vmax);
             snd_mixer_selem_get_playback_volume(elem,
@@ -69,6 +100,45 @@ static void setup_mixer(const char *card, int quiet)
     snd_mixer_close(mixer);
     if (!quiet)
         fprintf(stderr, "wav-play: mixer initialized on %s\n", card);
+}
+
+/*
+ * Restore playback switch states saved by setup_mixer().  Call this after
+ * snd_pcm_drain() so the audio daemon has fully consumed the ring buffer
+ * before we re-mute the amplifier paths.
+ */
+static void restore_mixer_switches(int quiet)
+{
+    if (g_saved_sw_count == 0 || g_mixer_card[0] == '\0')
+        return;
+    snd_mixer_t *mixer = NULL;
+    if (snd_mixer_open(&mixer, 0) < 0)
+        return;
+    if (snd_mixer_attach(mixer, g_mixer_card) < 0) {
+        snd_mixer_close(mixer);
+        return;
+    }
+    snd_mixer_selem_register(mixer, NULL, NULL);
+    snd_mixer_load(mixer);
+
+    for (int i = 0; i < g_saved_sw_count; i++) {
+        snd_mixer_elem_t *elem;
+        for (elem = snd_mixer_first_elem(mixer); elem;
+             elem = snd_mixer_elem_next(elem)) {
+            if (!snd_mixer_selem_has_playback_switch(elem))
+                continue;
+            if (strcmp(snd_mixer_selem_get_name(elem),
+                       g_saved_sw[i].name) == 0) {
+                snd_mixer_selem_set_playback_switch_all(elem,
+                        g_saved_sw[i].val);
+                break;
+            }
+        }
+    }
+    snd_mixer_close(mixer);
+    if (!quiet)
+        fprintf(stderr, "wav-play: mixer switches restored on %s\n",
+                g_mixer_card);
 }
 
 /* Minimal WAV header (PCM format only) */
@@ -265,17 +335,9 @@ int main(int argc, char **argv)
         }
     }
 
-    /* Nudge hw:0 mixer volume unconditionally (best-effort).
-     * Software pipeline devices (tts_sm, plughw:0, etc.) do not expose mixer
-     * controls themselves -- the mixer lives on the underlying hardware card.
-     * We must always call setup_mixer("hw:0") regardless of the opened PCM
-     * device because on PB700C the tts_sm -> softvol -> dmix -> Loopback
-     * pipeline writes into a ring buffer that is drained by a separate reader
-     * process.  If hw:0 volume is at zero that reader process silently discards
-     * all samples, the ring buffer fills, and snd_pcm_writei() blocks
-     * indefinitely -- freezing KOReader.  setup_mixer() never modifies switch
-     * state (see function comment), so calling it on hw:0 is safe even on
-     * devices with sensitive amplifier paths like PB700C. */
+    /* Save hw:0 switch state, unmute switches, raise volume from zero.
+     * See setup_mixer() for the full explanation.  restore_mixer_switches()
+     * is called after snd_pcm_drain() to put the state back. */
     setup_mixer("hw:0", quiet);
 
     err = snd_pcm_hw_params(pcm, params);
@@ -283,6 +345,7 @@ int main(int argc, char **argv)
         if (!quiet) fprintf(stderr, "wav-play: cannot set params: %s\n",
                             snd_strerror(err));
         snd_pcm_close(pcm);
+        restore_mixer_switches(quiet);
         fclose(f);
         return 1;
     }
@@ -300,6 +363,7 @@ int main(int argc, char **argv)
     unsigned char *buf = malloc(buf_frames * frame_size);
     if (!buf) {
         snd_pcm_close(pcm);
+        restore_mixer_switches(quiet);
         fclose(f);
         return 1;
     }
@@ -331,6 +395,10 @@ int main(int argc, char **argv)
 
     snd_pcm_drain(pcm);
     snd_pcm_close(pcm);
+    /* Restore switch state now that all audio has been consumed from the
+     * ring buffer.  This undoes the unmuting done by setup_mixer() and
+     * leaves hw:0 exactly as the firmware/OS configured it. */
+    restore_mixer_switches(quiet);
     free(buf);
     fclose(f);
     return 0;
