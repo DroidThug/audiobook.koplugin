@@ -283,6 +283,7 @@ function Updater._performUpdate(plugin, release)
             UIManager:restartKOReader()
         end,
         cancel_text = _("Later"),
+        dismissable = false,
     })
 end
 

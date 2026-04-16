@@ -845,8 +845,10 @@ if [ "$PLATFORM" = "pocketbook" ]; then
     # ALSA mixer state on hw:0 (may not have amixer, use /proc fallback)
     PB_MIXER=$(amixer -c 0 contents 2>/dev/null | head -40 || cat /proc/asound/card0/codec_reg 2>/dev/null | head -20 || echo "n/a")
 
-    # wav-play smoke test: generate a 0.25s silence WAV and try to play it
-    # using the same invocation the plugin uses (bundled ld-linux + libasound).
+    # wav-play smoke test: verify the binary loads (ld-linux + libasound)
+    # WITHOUT playing audio.  Running wav-play with no arguments prints
+    # usage and exits.  This avoids calling setup_mixer() which unmutes
+    # hw:0 switches and corrupts PocketBook speaker state on PB700c.
     PB_SMOKE_TEST="skipped (no bundled wav-play)"
     if [ -x "$PLUGIN_DIR/wav-play/wav-play" ] || [ -f "$PLUGIN_DIR/wav-play/wav-play" ]; then
         _ld=""
@@ -855,8 +857,6 @@ if [ "$PLATFORM" = "pocketbook" ]; then
         done
         _wav_lib="$PLUGIN_DIR/wav-play/lib"
         _esp_lib="$PLUGIN_DIR/espeak-ng/lib"
-        # Find ALSA config (prefer /usr/share/alsa/alsa.conf: registers
-        # base PCM types and includes /etc/asound.conf).
         _alsa_env=""
         for _ac in /usr/share/alsa/alsa.conf /etc/alsa/alsa.conf /etc/asound.conf; do
             if [ -f "$_ac" ]; then
@@ -864,39 +864,21 @@ if [ "$PLATFORM" = "pocketbook" ]; then
                 break
             fi
         done
-        # Override compiled-in Nix store ALSA plugin directory
         for _pd in /usr/lib/alsa-lib /usr/lib/arm-linux-gnueabihf/alsa-lib /usr/lib/alsa; do
             if [ -d "$_pd" ]; then
                 _alsa_env="$_alsa_env ALSA_PLUGIN_DIR=$_pd"
                 break
             fi
         done
-        # Generate 0.25s silence WAV (22050 Hz, 16-bit mono, 11024 bytes of data)
-        _twav="/tmp/.pb_smoke_test.wav"
-        _data_sz=11024
-        {
-            printf 'RIFF'
-            printf '\x34\x2b\x00\x00'    # file size - 8 = 36 + 11024 = 11060
-            printf 'WAVE'
-            printf 'fmt '
-            printf '\x10\x00\x00\x00'    # fmt chunk size = 16
-            printf '\x01\x00'            # PCM
-            printf '\x01\x00'            # 1 channel
-            printf '\x22\x56\x00\x00'    # 22050 Hz
-            printf '\x44\xac\x00\x00'    # byte rate = 44100
-            printf '\x02\x00'            # block align = 2
-            printf '\x10\x00'            # 16 bit
-            printf 'data'
-            printf '\x10\x2b\x00\x00'    # data size = 11024
-            dd if=/dev/zero bs=1 count=$_data_sz 2>/dev/null
-        } > "$_twav" 2>/dev/null
+        # Invoke wav-play with no file argument: prints usage to stderr,
+        # exits 1.  This exercises the ld-linux + libasound load path
+        # without opening any ALSA device or touching the mixer.
         if [ -n "$_ld" ] && [ -d "$_wav_lib" ]; then
-            PB_SMOKE_TEST=$(env $_alsa_env $_ld --library-path "$_wav_lib:$_esp_lib:/usr/lib:/lib" "$PLUGIN_DIR/wav-play/wav-play" "$_twav" 2>&1; echo "exit_code=$?")
+            PB_SMOKE_TEST=$(env $_alsa_env $_ld --library-path "$_wav_lib:$_esp_lib:/usr/lib:/lib" "$PLUGIN_DIR/wav-play/wav-play" 2>&1; echo "exit_code=$?")
         else
-            PB_SMOKE_TEST=$("$PLUGIN_DIR/wav-play/wav-play" "$_twav" 2>&1; echo "exit_code=$?")
+            PB_SMOKE_TEST=$("$PLUGIN_DIR/wav-play/wav-play" 2>&1; echo "exit_code=$?")
         fi
         [ -z "$PB_SMOKE_TEST" ] && PB_SMOKE_TEST="(empty output) exit_code=$?"
-        rm -f "$_twav"
     fi
 
     POCKETBOOK_SECTION="

@@ -206,6 +206,15 @@ function AndroidTts:init()
             "pausePlayback", "()V")
         self._method.resumePlayback = env[0].GetMethodID(env, helper_class,
             "resumePlayback", "()V")
+        -- Pipeline methods (synth-then-play with audio focus)
+        self._method.synthesizeAndPlay = env[0].GetMethodID(env, helper_class,
+            "synthesizeAndPlay", "(Ljava/lang/String;Ljava/lang/String;)I")
+        self._method.getPipelineStatus = env[0].GetMethodID(env, helper_class,
+            "getPipelineStatus", "()I")
+        self._method.getPipelineDurationMs = env[0].GetMethodID(env, helper_class,
+            "getPipelineDurationMs", "()I")
+        self._method.stopPipeline = env[0].GetMethodID(env, helper_class,
+            "stopPipeline", "()V")
 
         if checkException(env) then
             logger.err("AndroidTts: Failed to resolve one or more method IDs")
@@ -487,6 +496,75 @@ function AndroidTts:resumePlayback()
     android.jni:context(android.app.activity.vm, function(jni)
         jni.env[0].CallVoidMethod(jni.env,
             self._helper_ref, self._method.resumePlayback)
+    end)
+end
+
+--[[--
+Start a combined synthesize-then-play pipeline.
+Synthesis runs asynchronously; when complete, playback starts
+automatically on the Java side without needing a Lua poll round-trip.
+@param text string  Text to synthesize
+@param output_path string  Full path for the output WAV file
+@return number  0 on successful dispatch, -1 if not ready, >0 on error
+--]]
+function AndroidTts:synthesizeAndPlay(text, output_path)
+    if not self._initialized or not self._helper_ref then return -1 end
+    local android = self._android
+    return android.jni:context(android.app.activity.vm, function(jni)
+        local env = jni.env
+        local j_text = env[0].NewStringUTF(env, text)
+        local j_path = env[0].NewStringUTF(env, output_path)
+        local result = env[0].CallIntMethod(env,
+            self._helper_ref, self._method.synthesizeAndPlay, j_text, j_path)
+        env[0].DeleteLocalRef(env, j_text)
+        env[0].DeleteLocalRef(env, j_path)
+        if checkException(env) then
+            logger.err("AndroidTts: synthesizeAndPlay threw exception")
+            return -1
+        end
+        return result
+    end)
+end
+
+--[[--
+Poll the combined pipeline status.
+@return number  -1 idle, 0 synthesizing, 1 playing, 2 done OK, 3 error
+--]]
+function AndroidTts:getPipelineStatus()
+    if not self._initialized or not self._helper_ref then return -1 end
+    local android = self._android
+    return android.jni:context(android.app.activity.vm, function(jni)
+        local result = jni.env[0].CallIntMethod(jni.env,
+            self._helper_ref, self._method.getPipelineStatus)
+        if checkException(jni.env) then return 3 end
+        return result
+    end)
+end
+
+--[[--
+Get playback duration from the pipeline (available once status = 1).
+@return number  Duration in ms, or 0 if not yet available
+--]]
+function AndroidTts:getPipelineDurationMs()
+    if not self._initialized or not self._helper_ref then return 0 end
+    local android = self._android
+    return android.jni:context(android.app.activity.vm, function(jni)
+        local result = jni.env[0].CallIntMethod(jni.env,
+            self._helper_ref, self._method.getPipelineDurationMs)
+        if checkException(jni.env) then return 0 end
+        return result
+    end)
+end
+
+--[[--
+Cancel the pipeline (synthesis and/or playback) and release audio focus.
+--]]
+function AndroidTts:stopPipeline()
+    if not self._initialized or not self._helper_ref then return end
+    local android = self._android
+    android.jni:context(android.app.activity.vm, function(jni)
+        jni.env[0].CallVoidMethod(jni.env,
+            self._helper_ref, self._method.stopPipeline)
     end)
 end
 

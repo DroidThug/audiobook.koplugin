@@ -715,56 +715,55 @@ function TTSEngine:synthesizeAndroid(text, audio_file, callback)
     local android_pitch = 0.5 + ((self.pitch or 50) / 99) * 1.5
     atts:setPitch(android_pitch)
 
-    logger.dbg("TTSEngine: Android TTS synthesis for:", text:sub(1, 60))
+    logger.dbg("TTSEngine: Android TTS pipeline for:", text:sub(1, 60))
 
-    -- Dispatch synthesis (async -- the Java engine writes the WAV in background)
-    local dispatch = atts:synthesizeToFile(text, audio_file)
+    -- Dispatch synth-then-play pipeline.  The Java side synthesizes the
+    -- WAV and starts MediaPlayer automatically, without needing a Lua
+    -- round-trip between synthesis and playback.  This keeps audio going
+    -- even when the Lua event loop is throttled (app backgrounded).
+    local dispatch = atts:synthesizeAndPlay(text, audio_file)
     if dispatch ~= 0 then
-        logger.err("TTSEngine: Android TTS dispatch failed, code:", dispatch)
+        logger.err("TTSEngine: Android TTS pipeline dispatch failed, code:", dispatch)
         if callback then callback(false, nil) end
         return false
     end
 
-    -- Poll for completion via UIManager (keeps UI responsive)
+    -- Poll for the pipeline to reach "playing" status.
+    -- The synth-to-play transition happens in Java, so even if these polls
+    -- are delayed (backgrounded), playback will have started on its own.
     local engine = self
     self._android_synth_gen = (self._android_synth_gen or 0) + 1
     local my_gen = self._android_synth_gen
     local poll_count = 0
     local max_polls = 120  -- 60 seconds max (120 x 0.5s)
-    local function pollAndroidDone()
+    local function pollPipelineReady()
         -- Stale poll guard: another synthesis was dispatched
         if (engine._android_synth_gen or 0) ~= my_gen then return end
         poll_count = poll_count + 1
-        local status = atts:getSynthStatus()
-        if status == 1 then
-            -- Synthesis complete -- check the output file
-            local f = io.open(audio_file, "r")
-            if f then
-                f:close()
-                local size = engine:getFileSize(audio_file)
-                if size and size > 0 then
-                    engine.current_audio_file = audio_file
-                    engine:generateTimingEstimates(text)
-                    logger.dbg("TTSEngine: Android TTS done, file size:", size)
-                    if callback then
-                        callback(true, engine.timing_data)
-                    end
-                    return
-                end
+        local status = atts:getPipelineStatus()
+        if status == 1 or status == 2 then
+            -- Pipeline is playing (or already finished if Lua was slow).
+            -- Get the real duration from the pipeline.
+            local dur_ms = atts:getPipelineDurationMs()
+            engine._android_pipeline_duration_ms = dur_ms
+            engine.current_audio_file = audio_file
+            engine:generateTimingEstimates(text)
+            logger.dbg("TTSEngine: Android pipeline playing, duration:", dur_ms, "ms")
+            if callback then
+                callback(true, engine.timing_data)
             end
-            logger.err("TTSEngine: Android TTS reported done but WAV missing/empty")
-            if callback then callback(false, nil) end
-        elseif status == 2 then
-            logger.err("TTSEngine: Android TTS synthesis error")
+        elseif status == 3 then
+            logger.err("TTSEngine: Android TTS pipeline error")
             if callback then callback(false, nil) end
         elseif poll_count < max_polls then
-            UIManager:scheduleIn(0.5, pollAndroidDone)
+            UIManager:scheduleIn(0.5, pollPipelineReady)
         else
-            logger.err("TTSEngine: Android TTS timed out after", max_polls * 0.5, "s")
+            logger.err("TTSEngine: Android TTS pipeline timed out after", max_polls * 0.5, "s")
+            atts:stopPipeline()
             if callback then callback(false, nil) end
         end
     end
-    UIManager:scheduleIn(0.3, pollAndroidDone)
+    UIManager:scheduleIn(0.3, pollPipelineReady)
     -- Return nil to signal async (same convention as Piper)
     return nil
 end
@@ -1589,54 +1588,65 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
     end
     
     -- === ANDROID MEDIAPLAYER PATH ===
+    -- Audio is already playing via the synthesizeAndPlay pipeline.
+    -- We just need to set up word-timing and poll for completion.
     if self.audio_player_type == "android" then
         local atts = self._android_tts
         self._concat_durations = nil
-        self._expected_play_duration_ms = self._current_audio_duration_ms
         self.play_generation = (self.play_generation or 0) + 1
         local my_gen = self.play_generation
         self.playback_latency_ms = 0
 
-        local dur_ms = atts:playFile(self.current_audio_file)
-        if dur_ms < 0 then
-            logger.err("TTSEngine: Android playFile failed")
-            self.is_speaking = false
-            return false
+        -- Use the pipeline's real duration for timing; fall back to WAV estimate
+        local dur_ms = self._android_pipeline_duration_ms
+            or self._current_audio_duration_ms or 5000
+        self._expected_play_duration_ms = dur_ms
+        self._android_pipeline_duration_ms = nil
+
+        -- Check if playback already finished (Lua was slow to call play())
+        local pipeline_status = atts:getPipelineStatus()
+        if pipeline_status == 2 or pipeline_status == 3 then
+            logger.dbg("TTSEngine: Android pipeline already done (status=", pipeline_status, ")")
+            self._audio_launched_at = UIManager:getTime()
+            self:onPlaybackComplete()
+            return true
         end
+
         self._audio_launched_at = UIManager:getTime()
-        logger.dbg("TTSEngine: Android playback started, duration:", dur_ms, "ms")
+        logger.dbg("TTSEngine: Android pipeline playback in progress, duration:", dur_ms, "ms")
 
         -- Start timing loop for word highlighting
         self:startTimingLoop()
 
-        -- Poll for playback completion with safety timeout.
-        -- If the Java completion listener never fires (device quirk, JNI
-        -- exception, etc.), force completion so the chain doesn't stall.
+        -- Poll for pipeline completion
         local engine = self
         local poll_count = 0
-        -- Max polls: at least 300 (30s) or 3x expected duration
         local max_polls = math.max(300, math.floor(dur_ms * 3 / 100))
-        local function pollPlaybackDone()
+        local function pollPipelineDone()
             if (engine.play_generation or 0) ~= my_gen then return end
             if not engine.is_speaking then return end
             if engine.is_paused then
-                UIManager:scheduleIn(0.3, pollPlaybackDone)
+                UIManager:scheduleIn(0.3, pollPipelineDone)
                 return
             end
             poll_count = poll_count + 1
-            if atts:isPlaybackDone() then
-                logger.dbg("TTSEngine: Android playback complete")
+            local status = atts:getPipelineStatus()
+            if status == 2 then
+                logger.dbg("TTSEngine: Android pipeline complete")
+                engine:onPlaybackComplete()
+            elseif status == 3 then
+                logger.warn("TTSEngine: Android pipeline error during playback")
                 engine:onPlaybackComplete()
             elseif poll_count >= max_polls then
-                logger.warn("TTSEngine: Android playback timed out after",
-                    poll_count * 0.1, "s -- forcing completion")
-                atts:stopPlayback()
+                logger.warn("TTSEngine: Android pipeline timed out after",
+                    poll_count * 0.1, "s, forcing completion")
+                atts:stopPipeline()
                 engine:onPlaybackComplete()
             else
-                UIManager:scheduleIn(0.1, pollPlaybackDone)
+                UIManager:scheduleIn(0.1, pollPipelineDone)
             end
         end
-        UIManager:scheduleIn(0.1, pollPlaybackDone)
+        UIManager:scheduleIn(0.1, pollPipelineDone)
         return true
     end
 
@@ -3228,7 +3238,8 @@ function TTSEngine:_startProcessWatcher(bt_retry_allowed, skip_on_fail)
                 -- a runaway loop that freezes single-core devices.
                 local RAPID_EXIT_MS = 200
                 local is_kindle_dev = Device:isKindle()
-                if elapsed_ms < RAPID_EXIT_MS and (engine._no_real_audio_output or is_kindle_dev) then
+                local is_pb_dev = Device.isPocketBook and Device:isPocketBook()
+                if elapsed_ms < RAPID_EXIT_MS and (engine._no_real_audio_output or is_kindle_dev or is_pb_dev) then
                     engine._rapid_fail_count = (engine._rapid_fail_count or 0) + 1
                     logger.warn("TTSEngine: rapid audio exit (" .. elapsed_ms
                         .. "ms), no soundcard — count:", engine._rapid_fail_count)
@@ -3240,9 +3251,23 @@ function TTSEngine:_startProcessWatcher(bt_retry_allowed, skip_on_fail)
                         engine.play_generation = (engine.play_generation or 0) + 1
                         engine:cleanup()
                         engine._rapid_fail_count = 0
+                        -- Capture last stderr for the message
+                        local stderr_hint = ""
+                        if engine._gst_status_file then
+                            local sf = io.open(engine._gst_status_file, "r")
+                            if sf then
+                                local out = sf:read("*a") or ""; sf:close()
+                                out = out:match("^%s*(.-)%s*$") or out
+                                if out ~= "" then
+                                    stderr_hint = "\n\nLast error: " .. out:sub(1, 200)
+                                end
+                            end
+                        end
                         local msg
                         if is_kindle_dev then
                             msg = _("No audio output available.\n\nKindle has no built-in speaker. Audio needs Bluetooth headphones connected via Kindle Settings.\n\nThe Kindle audio subsystem did not expose a usable ALSA device. Please generate a bug report (Audiobook > Report a bug) and share it on the GitHub issue -- it will help identify the correct audio path for this Kindle model.")
+                        elseif is_pb_dev then
+                            msg = _("No audio output available.\n\nThe audio player exited immediately. Please check that a playback device is available (speaker or Bluetooth headphones)." .. stderr_hint .. "\n\nIf this persists, generate a bug report (Audiobook > Report a bug) and share it on the GitHub issue.")
                         else
                             msg = _("No audio output available.\n\nThis device has no built-in speaker. Please connect a Bluetooth audio device first:\n\n1. Go to Audiobook > Bluetooth\n2. Turn Bluetooth on\n3. Scan and pair your headphones/speaker\n4. Then start read-along again.")
                         end
@@ -3400,9 +3425,9 @@ function TTSEngine:stop()
         self._completion_timer_fn = nil
     end
 
-    -- Stop Android MediaPlayer if active
+    -- Stop Android pipeline/MediaPlayer if active
     if self.audio_player_type == "android" and self._android_tts then
-        self._android_tts:stopPlayback()
+        self._android_tts:stopPipeline()
     end
 
     -- Stop Kindle LIPC playermgr if active
