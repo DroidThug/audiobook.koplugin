@@ -2680,6 +2680,14 @@ function TTSEngine:findAudioPlayer()
         end
         if self._pb_has_tts_sm then pb_default = "tts_sm" end
         local alsa_device = self.plugin and self.plugin:getSetting("pb_alsa_device", pb_default)
+        -- When "Auto" is selected (empty string) but tts_sm exists, use
+        -- tts_sm.  Falling through to wav-play's "default" device on
+        -- PocketBook can trigger the hw:0/plughw:0 fallback chain which
+        -- bypasses the PocketBook audio pipeline, causing clicking,
+        -- inaudible TTS, and persistent audio state corruption.
+        if (not alsa_device or alsa_device == "") and self._pb_has_tts_sm then
+            alsa_device = "tts_sm"
+        end
         if alsa_device and alsa_device ~= "" then
             wav_play_cmd = wav_play_cmd .. " -D " .. alsa_device
             self._wav_play_cmd = wav_play_cmd
@@ -3118,6 +3126,21 @@ function TTSEngine:_startProcessWatcher(bt_retry_allowed, skip_on_fail)
         end
 
         if engine:_isAudioProcessRunning() then
+            -- Hard timeout: if the process has been running for more than
+            -- 3x the expected duration (min 30s), it is likely hung (e.g.,
+            -- snd_pcm_writei blocked because ALSA state is corrupted).
+            -- Force-kill it so the reading chain doesn't stall forever.
+            local elapsed_ms = time.to_ms(UIManager:getTime() - launch_time)
+            local expected = engine._expected_play_duration_ms or 5000
+            local hard_timeout_ms = math.max(30000, expected * 3)
+            if elapsed_ms > hard_timeout_ms then
+                logger.err("TTSEngine: Process watcher hard timeout after",
+                    elapsed_ms, "ms (expected", expected, "ms), force-killing PID",
+                    engine.audio_pid)
+                engine:_killAudioProcess()
+                engine:onPlaybackComplete()
+                return
+            end
             UIManager:scheduleIn(0.1, checkProcess)
         else
             local elapsed_ms = time.to_ms(UIManager:getTime() - launch_time)

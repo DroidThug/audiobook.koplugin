@@ -27,9 +27,16 @@
 #include <string.h>
 #include <unistd.h>
 
-/* Saved playback switch states -- restored after snd_pcm_drain() */
+/* Saved playback switch + volume states -- restored after snd_pcm_drain() */
 #define MAX_SWITCH_SAVES 32
-struct switch_save { char name[64]; int val; };
+#define NAME_BUF 64
+struct switch_save {
+    char name[NAME_BUF];
+    int  val;          /* playback switch state (0=muted, 1=unmuted) */
+    long volume;       /* playback volume level */
+    int  had_volume;   /* 1 if element has a volume control */
+    int  changed_vol;  /* 1 if we raised volume from zero */
+};
 static struct switch_save g_saved_sw[MAX_SWITCH_SAVES];
 static int                g_saved_sw_count = 0;
 static char               g_mixer_card[32] = "";
@@ -71,32 +78,41 @@ static void setup_mixer(const char *card, int quiet)
         /* Save and unmute playback switches so the PocketBook audio daemon
          * will drain the Loopback ring buffer.  We only save elements that
          * are currently muted (those are the ones we change). */
-        if (snd_mixer_selem_has_playback_switch(elem)) {
-            int curval = 1 /* assume unmuted */;
+        if (snd_mixer_selem_has_playback_switch(elem)
+                && g_saved_sw_count < MAX_SWITCH_SAVES) {
+            int idx = g_saved_sw_count;
+            const char *ename = snd_mixer_selem_get_name(elem);
+            strncpy(g_saved_sw[idx].name, ename, NAME_BUF - 1);
+            g_saved_sw[idx].name[NAME_BUF - 1] = '\0';
+
+            int curval = 1;
             snd_mixer_selem_get_playback_switch(elem,
                     SND_MIXER_SCHN_FRONT_LEFT, &curval);
-            if (!curval && g_saved_sw_count < MAX_SWITCH_SAVES) {
-                const char *ename = snd_mixer_selem_get_name(elem);
-                strncpy(g_saved_sw[g_saved_sw_count].name, ename,
-                        sizeof(g_saved_sw[0].name) - 1);
-                g_saved_sw[g_saved_sw_count].name[
-                        sizeof(g_saved_sw[0].name) - 1] = '\0';
-                g_saved_sw[g_saved_sw_count].val = curval;
-                g_saved_sw_count++;
-            }
-            snd_mixer_selem_set_playback_switch_all(elem, 1);
-        }
+            g_saved_sw[idx].val = curval;
 
-        /* Raise volume only when at zero; cap at 50% to avoid overdrive. */
-        if (snd_mixer_selem_has_playback_volume(elem)) {
-            long vmin, vmax, cur;
-            snd_mixer_selem_get_playback_volume_range(elem, &vmin, &vmax);
-            snd_mixer_selem_get_playback_volume(elem,
-                    SND_MIXER_SCHN_FRONT_LEFT, &cur);
-            if (cur <= vmin) {
-                long target = vmin + (vmax - vmin) / 2; /* 50% */
-                snd_mixer_selem_set_playback_volume_all(elem, target);
+            /* Save volume level so we can restore it exactly. */
+            g_saved_sw[idx].had_volume = 0;
+            g_saved_sw[idx].changed_vol = 0;
+            if (snd_mixer_selem_has_playback_volume(elem)) {
+                long vmin, vmax, cur;
+                snd_mixer_selem_get_playback_volume_range(elem, &vmin, &vmax);
+                snd_mixer_selem_get_playback_volume(elem,
+                        SND_MIXER_SCHN_FRONT_LEFT, &cur);
+                g_saved_sw[idx].had_volume = 1;
+                g_saved_sw[idx].volume = cur;
+                /* Raise volume only when at zero; cap at 50%. */
+                if (cur <= vmin) {
+                    long target = vmin + (vmax - vmin) / 2;
+                    snd_mixer_selem_set_playback_volume_all(elem, target);
+                    g_saved_sw[idx].changed_vol = 1;
+                }
             }
+
+            /* Unmute if muted. */
+            if (!curval)
+                snd_mixer_selem_set_playback_switch_all(elem, 1);
+
+            g_saved_sw_count++;
         }
     }
 
@@ -134,6 +150,10 @@ static void restore_mixer_switches(int quiet)
                        g_saved_sw[i].name) == 0) {
                 snd_mixer_selem_set_playback_switch_all(elem,
                         g_saved_sw[i].val);
+                /* Restore volume if we changed it. */
+                if (g_saved_sw[i].had_volume && g_saved_sw[i].changed_vol)
+                    snd_mixer_selem_set_playback_volume_all(elem,
+                            g_saved_sw[i].volume);
                 break;
             }
         }
@@ -243,32 +263,74 @@ int main(int argc, char **argv)
     usleep(50000);  /* 50 ms -- let audio daemon react to switch change */
 
     /*
-     * On PocketBook, the ALSA "default" device may not be defined or may
-     * route to a Loopback card.  PocketBook's asound.conf defines named
-     * PCM devices for TTS: try tts_sm (softvol->dmix->Loopback, correct
-     * PocketBook audio pipeline) before falling back to hardware.
+     * Device selection strategy:
+     *
+     * When a specific device is given via -D (not "default"), use ONLY
+     * that device: try plug:<device> first (for automatic sample rate
+     * and format conversion), then the raw device.  Never fall through
+     * to other devices.  This prevents bypassing the PocketBook audio
+     * pipeline (tts_sm -> softvol -> dmix -> Loopback) by accidentally
+     * falling through to plughw:0 or hw:0 which write directly to the
+     * hardware CODEC, causing clicking, inaudible audio, and persistent
+     * audio state corruption.
+     *
+     * When device is "default", use a fallback chain:
+     * default -> tts_sm -> plughw:0.  hw:0 is intentionally excluded
+     * because direct hardware access bypasses PocketBook audio routing.
      */
-    const char *try_devices[] = { device, "tts_sm", "plughw:0", "hw:0", NULL };
+    int strict_device = (strcmp(device, "default") != 0);
     snd_pcm_t *pcm = NULL;
     int err = -1;
     const char *opened_device = device;
-    for (int i = 0; try_devices[i]; i++) {
-        if (i > 0 && strcmp(try_devices[i], device) == 0)
-            continue;   /* skip duplicate */
-        err = snd_pcm_open(&pcm, try_devices[i], SND_PCM_STREAM_PLAYBACK, 0);
+    /* Static buffer for plug:<device> name (device is at most ~64 chars) */
+    static char plug_buf[128];
+
+    if (strict_device) {
+        /* Try plug:<device> first for automatic rate/format conversion. */
+        snprintf(plug_buf, sizeof(plug_buf), "plug:%s", device);
+        err = snd_pcm_open(&pcm, plug_buf, SND_PCM_STREAM_PLAYBACK, 0);
         if (err >= 0) {
-            opened_device = try_devices[i];
-            if (i > 0 && !quiet)
-                fprintf(stderr, "wav-play: '%s' failed, using fallback '%s'\n",
-                        device, opened_device);
-            break;
+            opened_device = plug_buf;
+            if (!quiet)
+                fprintf(stderr, "wav-play: opened '%s' (plug wrapper)\n",
+                        opened_device);
+        } else {
+            if (!quiet)
+                fprintf(stderr, "wav-play: plug wrapper '%s' failed: %s\n",
+                        plug_buf, snd_strerror(err));
+            /* Fall back to raw device (no format conversion). */
+            err = snd_pcm_open(&pcm, device, SND_PCM_STREAM_PLAYBACK, 0);
+            if (err >= 0) {
+                opened_device = device;
+            } else {
+                if (!quiet)
+                    fprintf(stderr, "wav-play: cannot open '%s': %s\n",
+                            device, snd_strerror(err));
+            }
         }
-        if (!quiet)
-            fprintf(stderr, "wav-play: cannot open '%s': %s (trying next)\n",
-                    try_devices[i], snd_strerror(err));
+    } else {
+        /* Fallback chain for "default".  hw:0 is excluded to prevent
+         * bypassing PocketBook audio routing. */
+        const char *try_devices[] = { device, "tts_sm", "plughw:0", NULL };
+        for (int i = 0; try_devices[i]; i++) {
+            if (i > 0 && strcmp(try_devices[i], device) == 0)
+                continue;   /* skip duplicate */
+            err = snd_pcm_open(&pcm, try_devices[i], SND_PCM_STREAM_PLAYBACK, 0);
+            if (err >= 0) {
+                opened_device = try_devices[i];
+                if (i > 0 && !quiet)
+                    fprintf(stderr, "wav-play: '%s' failed, using fallback '%s'\n",
+                            device, opened_device);
+                break;
+            }
+            if (!quiet)
+                fprintf(stderr, "wav-play: cannot open '%s': %s (trying next)\n",
+                        try_devices[i], snd_strerror(err));
+        }
     }
     if (err < 0) {
         if (!quiet) fprintf(stderr, "wav-play: all devices failed\n");
+        restore_mixer_switches(quiet);
         fclose(f);
         return 1;
     }
@@ -292,57 +354,71 @@ int main(int argc, char **argv)
     if (rate != hdr.sample_rate) {
         fprintf(stderr, "wav-play: rate mismatch on '%s': requested %u Hz, got %u Hz\n",
                 opened_device, hdr.sample_rate, rate);
-        /* Close this device and try the next one in the fallback list.
-         * plughw:0 does automatic resampling via the ALSA plug layer. */
-        snd_pcm_close(pcm);
-        pcm = NULL;
-        int found_current = 0;
-        for (int j = 0; try_devices[j]; j++) {
-            if (strcmp(try_devices[j], opened_device) == 0) {
-                found_current = 1;
-                continue;
+
+        if (strict_device) {
+            /* In strict mode we already tried plug:<device> which handles
+             * resampling.  If the raw device also mismatches, proceed
+             * with the nearest rate - ALSA will play at the device's
+             * native rate.  Audio will sound slightly off-pitch but this
+             * is far better than falling through to hw:0 which corrupts
+             * PocketBook audio state. */
+            fprintf(stderr, "wav-play: strict mode, proceeding with %u Hz\n", rate);
+        } else {
+            /* Fallback chain: try remaining devices for one that accepts
+             * the requested rate.  Only try devices from the fallback
+             * chain (tts_sm, plughw:0) - never hw:0. */
+            const char *try_devices[] = { device, "tts_sm", "plughw:0", NULL };
+            snd_pcm_close(pcm);
+            pcm = NULL;
+            int found_current = 0;
+            for (int j = 0; try_devices[j]; j++) {
+                if (strcmp(try_devices[j], opened_device) == 0) {
+                    found_current = 1;
+                    continue;
+                }
+                if (!found_current)
+                    continue;
+                err = snd_pcm_open(&pcm, try_devices[j], SND_PCM_STREAM_PLAYBACK, 0);
+                if (err < 0)
+                    continue;
+                /* Reconfigure on the new device */
+                snd_pcm_hw_params_any(pcm, params);
+                snd_pcm_hw_params_set_access(pcm, params, SND_PCM_ACCESS_RW_INTERLEAVED);
+                snd_pcm_hw_params_set_format(pcm, params, format);
+                snd_pcm_hw_params_set_channels(pcm, params, hdr.channels);
+                unsigned int retry_rate = hdr.sample_rate;
+                snd_pcm_hw_params_set_rate_near(pcm, params, &retry_rate, NULL);
+                if (retry_rate != hdr.sample_rate) {
+                    fprintf(stderr, "wav-play: rate mismatch persists on '%s' (%u Hz)\n",
+                            try_devices[j], retry_rate);
+                    snd_pcm_close(pcm);
+                    pcm = NULL;
+                    continue;
+                }
+                opened_device = try_devices[j];
+                rate = retry_rate;
+                fprintf(stderr, "wav-play: rate OK on fallback '%s' (%u Hz)\n",
+                        opened_device, rate);
+                break;
             }
-            if (!found_current)
-                continue;
-            err = snd_pcm_open(&pcm, try_devices[j], SND_PCM_STREAM_PLAYBACK, 0);
-            if (err < 0)
-                continue;
-            /* Reconfigure on the new device */
-            snd_pcm_hw_params_any(pcm, params);
-            snd_pcm_hw_params_set_access(pcm, params, SND_PCM_ACCESS_RW_INTERLEAVED);
-            snd_pcm_hw_params_set_format(pcm, params, format);
-            snd_pcm_hw_params_set_channels(pcm, params, hdr.channels);
-            unsigned int retry_rate = hdr.sample_rate;
-            snd_pcm_hw_params_set_rate_near(pcm, params, &retry_rate, NULL);
-            if (retry_rate != hdr.sample_rate) {
-                fprintf(stderr, "wav-play: rate mismatch persists on '%s' (%u Hz)\n",
-                        try_devices[j], retry_rate);
-                snd_pcm_close(pcm);
-                pcm = NULL;
-                continue;
+            if (!pcm) {
+                fprintf(stderr, "wav-play: no device supports %u Hz, proceeding anyway\n",
+                        hdr.sample_rate);
+                /* Re-open the original device as last resort */
+                err = snd_pcm_open(&pcm, device, SND_PCM_STREAM_PLAYBACK, 0);
+                if (err < 0) {
+                    restore_mixer_switches(quiet);
+                    fclose(f);
+                    return 1;
+                }
+                snd_pcm_hw_params_any(pcm, params);
+                snd_pcm_hw_params_set_access(pcm, params, SND_PCM_ACCESS_RW_INTERLEAVED);
+                snd_pcm_hw_params_set_format(pcm, params, format);
+                snd_pcm_hw_params_set_channels(pcm, params, hdr.channels);
+                rate = hdr.sample_rate;
+                snd_pcm_hw_params_set_rate_near(pcm, params, &rate, NULL);
+                opened_device = device;
             }
-            opened_device = try_devices[j];
-            rate = retry_rate;
-            fprintf(stderr, "wav-play: rate OK on fallback '%s' (%u Hz)\n",
-                    opened_device, rate);
-            break;
-        }
-        if (!pcm) {
-            fprintf(stderr, "wav-play: no device supports %u Hz, proceeding anyway\n",
-                    hdr.sample_rate);
-            /* Re-open the original device as last resort */
-            err = snd_pcm_open(&pcm, device, SND_PCM_STREAM_PLAYBACK, 0);
-            if (err < 0) {
-                fclose(f);
-                return 1;
-            }
-            snd_pcm_hw_params_any(pcm, params);
-            snd_pcm_hw_params_set_access(pcm, params, SND_PCM_ACCESS_RW_INTERLEAVED);
-            snd_pcm_hw_params_set_format(pcm, params, format);
-            snd_pcm_hw_params_set_channels(pcm, params, hdr.channels);
-            rate = hdr.sample_rate;
-            snd_pcm_hw_params_set_rate_near(pcm, params, &rate, NULL);
-            opened_device = device;
         }
     }
 

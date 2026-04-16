@@ -5,7 +5,7 @@
 <h3 align="center">
 
 ![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)
-![Platform](https://img.shields.io/badge/platform-Kobo%20%7C%20Kindle%20%7C%20Linux-blue)
+![Platform](https://img.shields.io/badge/platform-Kobo%20%7C%20Kindle%20%7C%20PocketBook%20%7C%20Linux-blue)
 ![Android](https://img.shields.io/badge/Android-supported-brightgreen)
 ![TTS](https://img.shields.io/badge/TTS-Piper%20%7C%20espeak--ng%20%7C%20Android-green)
 
@@ -130,6 +130,10 @@ curl -LO https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/ryan/
 
 Browse all available voices: [huggingface.co/rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices/tree/main)
 
+## PocketBook audio
+
+On PocketBook, the system ALSA configuration routes all audio through a Loopback card. The `tts_sm` PCM device (defined in `/etc/asound.conf`) chains through `softvol -> dmix -> hw:Loopback,0`. A system process (`alsaloop`) reads from `hw:Loopback,1` and plays to the physical codec (`hw:0`). The plugin bundles a small ALSA player (`wav-play`) that opens `tts_sm` directly, avoiding any dependency on `aplay` or GStreamer. Bluetooth output on PocketBook uses the standard BlueZ + `alsaloop` path managed by the firmware.
+
 ## Bluetooth audio (Kobo)
 
 The plugin outputs audio through a Bluetooth A2DP connection when a BT device is paired. The connection is managed through the plugin menu:
@@ -192,6 +196,7 @@ audiobook.koplugin/
   wavutils.lua         - WAV file reading, writing, and manipulation
   androidtts.lua       - Android TTS via JNI (DexClassLoader + TtsHelper)
   utils.lua            - shared helpers
+  wav-play.c           - minimal ALSA WAV player for PocketBook (compiled to wav-play/wav-play)
 ```
 
 ### Design notes
@@ -209,7 +214,7 @@ audiobook.koplugin/
 | Problem | Fix |
 |---------|-----|
 | Plugin not in menu | Folder must be `audiobook.koplugin` inside `plugins/`. The plugin only appears in the **Tools** menu when a book is open. Restart KOReader after copying. |
-| No sound | Run `espeak-ng "hello" -w /tmp/t.wav && aplay /tmp/t.wav` over SSH. |
+| No sound | **Kobo/Linux:** Run `espeak-ng "hello" -w /tmp/t.wav && aplay /tmp/t.wav` over SSH. **PocketBook:** generate a bug report and check `wav_play_smoke_test` -- it runs wav-play against the `tts_sm` device and prints `PLAYING` on success. |
 | No audio player found (Kindle) | Pair BT headphones via the Kindle top-swipe menu **before** starting playback. If already paired, restart KOReader so the plugin re-detects the audio output. |
 | No TTS engine found | Install espeak-ng (see Quick start). |
 | No TTS engine found (Android) | Ensure `android/tts_helper.dex` is present inside the plugin folder. The pre-built release includes it; if you cloned from source, run `./build-dex.sh` in the `android/` directory. The device must also have a TTS engine installed (most do by default). See [Android support](#android-support). |
@@ -268,6 +273,11 @@ The report is printed to the terminal and also saved to a file. If using the ter
 - TTS engine detection results (which backends were found/missing)
 - Audio player availability (aplay, GStreamer, etc.)
 - Plugin settings (speech rate, highlight style, etc.)
+- Full ALSA configuration (`asound.conf` contents, sound card list)
+- Audio process list (alsaloop, bluealsa, etc. with PIDs)
+- wav-play binary details and smoke test result (opens `tts_sm`, plays silence, checks for `PLAYING`)
+- ALSA mixer state
+- Bluetooth hardware details (HCI devices, paired/connected devices, adapter info)
 - Memory and disk info
 
 **What the report does NOT contain:**
@@ -303,7 +313,9 @@ Connect your device via USB and copy the file. On Kobo the `.adds` folder is hid
 
 | Diagnostic question | Bug report | Crash log |
 |---------------------|:----------:|:---------:|
-| Device model, hardware specs, KOReader version, plugin version, audio output (ALSA, BT, GStreamer), TTS engines installed (espeak, Piper, Android), plugin settings (rate, highlight, voice), Bluetooth pairing and connection state | yes | no |
+| Device model, hardware specs, KOReader version, plugin version, TTS engines installed (espeak, Piper, Android), plugin settings (rate, highlight, voice) | yes | no |
+| Full ALSA configuration (asound.conf, sound cards, PCM devices), audio process list (alsaloop, bluealsa PIDs), ALSA mixer state, wav-play smoke test result | yes | no |
+| Bluetooth pairing and connection state, HCI devices, adapter info | yes | no |
 | Lua errors and stack traces, TTS process spawning and fallback events, sentence progression and page turns, timing of operations (delays, freezes), Piper server startup and delivery, device freeze or resource exhaustion | no | yes |
 
 ## Device benchmark
@@ -341,7 +353,7 @@ No book content, highlights, or personal data is included.
 ### Example output
 
 ```
-=== Audiobook TTS Benchmark (v0.1.5.10) ===
+=== Audiobook TTS Benchmark (v0.1.5.65) ===
 Generated: 2026-03-27T12:00:00Z
 
 ── Device ──
@@ -421,7 +433,7 @@ For the full technical analysis, see [docs/ANDROID_TTS.md](docs/ANDROID_TTS.md).
 
 ## Building from source
 
-The `package-for-kobo.sh` script cross-compiles espeak-ng for ARM and bundles the plugin into a ready-to-deploy directory. It requires [Nix](https://nixos.org/download) for the cross-compilation toolchain.
+The `package-for-kobo.sh` script cross-compiles espeak-ng and wav-play for ARM and bundles the plugin into a ready-to-deploy directory. It targets ARMv7 and works for both Kobo and PocketBook. It requires [Nix](https://nixos.org/download) for the cross-compilation toolchain.
 
 ```bash
 # Plugin + espeak-ng only
@@ -448,7 +460,7 @@ If you don't want to use the packaging script, you can assemble the Piper runtim
 2. Extract `piper`, its `lib/` directory, and `espeak-ng-data/` into `audiobook.koplugin/piper/`.
 3. Download a voice model (`.onnx` + `.onnx.json`) as described in [Downloading additional voices](#downloading-additional-voices) and place them in the same `piper/` directory.
 
-> **Note:** The [rhasspy/piper](https://github.com/rhasspy/piper) repository was archived in October 2025. The binaries on the releases page still work. The project continues as [OHF-Voice/piper1-gpl](https://github.com/OHF-Voice/piper1-gpl).
+> The [rhasspy/piper](https://github.com/rhasspy/piper) repository was archived in October 2025. The binaries on the releases page still work and are what this plugin ships. The project continues under [OHF-Voice/piper1-gpl](https://github.com/OHF-Voice/piper1-gpl) but those newer builds have not been tested with this plugin.
 
 ## To Do
 

@@ -957,12 +957,14 @@ function SyncController:_prefetchNextSentence(explicit_idx)
         return
     end
     -- Defer prefetch so it doesn't block the UI thread.
-    -- espeak-ng synthesis takes ~100-300ms — running it synchronously right
-    -- after play() would freeze touch input.  Scheduling with a small delay
-    -- lets UIManager process any pending touch events first.
+    -- espeak-ng synthesis takes ~100-300ms - running it synchronously right
+    -- after play() would freeze touch input.  A 200ms delay lets UIManager
+    -- drain any queued touch/gesture events before the blocking synthesis
+    -- starts.  The prefetched audio is still available well before a
+    -- typical sentence finishes playing (~2-5s).
     local engine = self.tts_engine
     local text = next_sentence.text
-    UIManager:scheduleIn(0.05, function()
+    UIManager:scheduleIn(0.2, function()
         engine:prefetch(text)
     end)
 end

@@ -161,7 +161,8 @@ function MenuBuilder.buildAlsaDeviceMenu(plugin)
     local pb_default = plugin.tts_engine._pb_has_tts_sm and "tts_sm" or ""
     local devices = {
         { id = "tts_sm",   label = _("PocketBook pipeline - tts_sm (recommended)") },
-        { id = "",         label = _("Auto (wav-play fallback chain)") },
+        { id = "plughw:0", label = _("Direct hardware with resampling - plughw:0") },
+        { id = "",         label = _("Auto (default ALSA device)") },
     }
     local menu = {}
     for _, d in ipairs(devices) do
