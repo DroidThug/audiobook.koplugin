@@ -9,6 +9,7 @@ lets crengine draw the selection highlight natively.
 @module highlightmanager
 --]]
 
+local Blitbuffer = require("ffi/blitbuffer")
 local Device = require("device")
 local UIManager = require("ui/uimanager")
 local logger = require("logger")
@@ -301,19 +302,70 @@ function HighlightManager:_highlightSentenceRolling(sentence, parsed_data, doc, 
     end
 
     -- ── Draw the final selection ─────────────────────────────────
-    local sel = doc:getTextFromPositions(
-        {x = start_x, y = start_y},
-        {x = end_x,   y = end_y},
-        false  -- draw selection
-    )
-
-    if sel then
-        self._selection_active = true
-        self.is_highlighting = true
-        UIManager:setDirty(self.ui.dialog or "all", "ui")
+    if self.current_style == self.STYLES.INVERT then
+        -- Invert: let crengine draw its native selection highlight
+        local sel = doc:getTextFromPositions(
+            {x = start_x, y = start_y},
+            {x = end_x,   y = end_y},
+            false  -- draw selection
+        )
+        if sel then
+            self._selection_active = true
+            self.is_highlighting = true
+            UIManager:setDirty(self.ui.dialog or "all", "ui")
+        end
+    else
+        -- Non-invert styles: query only, then draw manually
+        local sel = doc:getTextFromPositions(
+            {x = start_x, y = start_y},
+            {x = end_x,   y = end_y},
+            true  -- query only, no draw
+        )
+        if sel and sel.pos0 and sel.pos1 then
+            local boxes = doc:getScreenBoxesFromPositions(sel.pos0, sel.pos1, true)
+            if boxes and #boxes > 0 then
+                self:_drawHighlightBoxes(boxes)
+                self.is_highlighting = true
+                UIManager:setDirty(self.ui.dialog or "all", "ui")
+            end
+        end
     end
 
 
+end
+
+--[[--
+Draw highlight rectangles using Blitbuffer for non-invert styles.
+@param boxes table Array of {x, y, w, h} screen rectangles
+--]]
+function HighlightManager:_drawHighlightBoxes(boxes)
+    local bb = Screen.bb
+    if not bb then return end
+    local style = self.current_style
+    local line_w = Screen:scaleBySize(2)
+
+    for _, box in ipairs(boxes) do
+        if box.w > 0 and box.h > 0 then
+            if style == self.STYLES.UNDERLINE then
+                bb:paintRect(box.x, box.y + box.h - line_w, box.w, line_w,
+                    Blitbuffer.COLOR_BLACK)
+            elseif style == self.STYLES.BACKGROUND then
+                bb:paintRect(box.x, box.y, box.w, box.h,
+                    Blitbuffer.COLOR_LIGHT_GRAY)
+            elseif style == self.STYLES.BOX then
+                -- Top
+                bb:paintRect(box.x, box.y, box.w, line_w, Blitbuffer.COLOR_BLACK)
+                -- Bottom
+                bb:paintRect(box.x, box.y + box.h - line_w, box.w, line_w,
+                    Blitbuffer.COLOR_BLACK)
+                -- Left
+                bb:paintRect(box.x, box.y, line_w, box.h, Blitbuffer.COLOR_BLACK)
+                -- Right
+                bb:paintRect(box.x + box.w - line_w, box.y, line_w, box.h,
+                    Blitbuffer.COLOR_BLACK)
+            end
+        end
+    end
 end
 
 --[[--
@@ -341,8 +393,10 @@ Clear all highlights.
 function HighlightManager:clearHighlights()
     if self._selection_active and self.ui and self.ui.document then
         pcall(function() self.ui.document:clearSelection() end)
-        UIManager:setDirty(self.ui.dialog or "all", "ui")
         self._selection_active = false
+    end
+    if self.is_highlighting then
+        UIManager:setDirty(self.ui.dialog or "all", "ui")
     end
     self.current_word = nil
     self.is_highlighting = false

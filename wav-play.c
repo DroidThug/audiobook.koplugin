@@ -14,7 +14,8 @@
  * like PB700C where the firmware intentionally leaves amplifier paths
  * disabled.
  *
- * Supports -q (quiet), -D <device> (ALSA PCM device name).
+ * Supports -q (quiet), -D <device> (ALSA PCM device name),
+ * --no-mixer (skip hw:0 mixer setup/restore).
  * Uses only ALSA 0.9.x-era functions for maximum compatibility.
  *
  * Build: $CC -O2 -o wav-play wav-play.c -lasound
@@ -184,6 +185,7 @@ int main(int argc, char **argv)
     const char *device   = "default";
     const char *filename = NULL;
     int quiet = 0;
+    int no_mixer = 0;
 
     /* Parse arguments (aplay-compatible subset) */
     for (int i = 1; i < argc; i++) {
@@ -191,12 +193,14 @@ int main(int argc, char **argv)
             device = argv[++i];
         else if (strcmp(argv[i], "-q") == 0)
             quiet = 1;
+        else if (strcmp(argv[i], "--no-mixer") == 0)
+            no_mixer = 1;
         else if (argv[i][0] != '-')
             filename = argv[i];
     }
 
     if (!filename) {
-        fprintf(stderr, "Usage: wav-play [-q] [-D device] file.wav\n");
+        fprintf(stderr, "Usage: wav-play [-q] [--no-mixer] [-D device] file.wav\n");
         return 1;
     }
 
@@ -258,9 +262,16 @@ int main(int argc, char **argv)
      * This MUST run before snd_pcm_open(): on PocketBook the audio daemon
      * only starts draining the tts_sm -> Loopback ring buffer when hw:0
      * switches are already unmuted at the time the PCM device is opened.
-     * restore_mixer_switches() is called after snd_pcm_drain(). */
-    setup_mixer("hw:0", quiet);
-    usleep(50000);  /* 50 ms -- let audio daemon react to switch change */
+     * restore_mixer_switches() is called after snd_pcm_drain().
+     *
+     * --no-mixer skips this entirely.  When routing through tts_sm the
+     * PocketBook audio daemon manages hw:0 natively.  Touching the mixer
+     * corrupts the amplifier state on PB700c, killing the speaker
+     * system-wide until reboot. */
+    if (!no_mixer) {
+        setup_mixer("hw:0", quiet);
+        usleep(50000);  /* 50 ms -- let audio daemon react to switch change */
+    }
 
     /*
      * Device selection strategy:
@@ -480,7 +491,8 @@ int main(int argc, char **argv)
     /* Restore switch state now that all audio has been consumed from the
      * ring buffer.  This undoes the unmuting done by setup_mixer() and
      * leaves hw:0 exactly as the firmware/OS configured it. */
-    restore_mixer_switches(quiet);
+    if (!no_mixer)
+        restore_mixer_switches(quiet);
     free(buf);
     fclose(f);
     return 0;
