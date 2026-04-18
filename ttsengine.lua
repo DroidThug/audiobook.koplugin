@@ -1240,38 +1240,32 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
     -- PocketBook without tts_sm (e.g. PB632): the ALSA card exists
     -- (AllWinner SoC) but there is no built-in speaker.  wav-play will
     -- open plughw:0 successfully and play the full WAV duration into
-    -- silence, so the rapid-fail detection never fires.  Check once on
-    -- the first play() whether BT headphones are connected; if not,
-    -- warn the user and refuse to play.
+    -- silence, so the rapid-fail detection never fires.  Check on every
+    -- play() whether BT headphones are connected; if not, warn the user
+    -- and refuse to play.
     if not self._no_real_audio_output
         and self.audio_player_type == "aplay"
         and self._wav_play_cmd
         and Device.isPocketBook and Device:isPocketBook()
         and not self._pb_has_tts_sm then
-        if not self._pb_no_speaker_warned then
-            local bt_connected = false
-            local btm = self.plugin and self.plugin.bt_manager
-            if btm then
-                local ok, devices = pcall(btm.listAudioDevices, btm)
-                if ok and devices then
-                    for _, dev in ipairs(devices) do
-                        if dev.connected then bt_connected = true; break end
-                    end
+        local bt_connected = false
+        local btm = self.plugin and self.plugin.bt_manager
+        if btm then
+            local ok, devices = pcall(btm.listAudioDevices, btm)
+            if ok and devices then
+                for _, dev in ipairs(devices) do
+                    if dev.connected then bt_connected = true; break end
                 end
             end
-            if not bt_connected then
-                logger.warn("TTSEngine: PocketBook without tts_sm and no BT - refusing to play")
-                self.is_speaking = false
-                self._pb_no_speaker_warned = true
-                UIManager:show(InfoMessage:new{
-                    text = _("No audio output available.\n\nThis PocketBook has no built-in speaker. Please connect Bluetooth headphones first, then try again."),
-                    timeout = 10,
-                })
-                return false
-            else
-                -- BT is connected, allow playback and don't warn again
-                self._pb_no_speaker_warned = true
-            end
+        end
+        if not bt_connected then
+            logger.warn("TTSEngine: PocketBook without tts_sm and no BT - refusing to play")
+            self.is_speaking = false
+            UIManager:show(InfoMessage:new{
+                text = _("No audio output available.\n\nThis PocketBook has no built-in speaker. Please connect Bluetooth headphones first, then try again."),
+                timeout = 10,
+            })
+            return false
         end
     end
 
@@ -2737,16 +2731,22 @@ function TTSEngine:findAudioPlayer()
             alsa_device = "tts_sm"
         end
         if alsa_device and alsa_device ~= "" then
-            -- When routing through tts_sm, the PocketBook audio daemon
-            -- manages hw:0 natively.  Skip wav-play's mixer
-            -- setup/restore to avoid corrupting amplifier state on
-            -- PB700c (kills speaker system-wide until reboot).
-            if alsa_device == "tts_sm" then
-                wav_play_cmd = wav_play_cmd .. " --no-mixer"
-            end
+            -- On PocketBook, skip wav-play's mixer setup/restore to
+            -- avoid corrupting amplifier state.  The PocketBook audio
+            -- daemon manages hw:0 natively; touching the mixer kills the
+            -- speaker system-wide until reboot on devices like PB700c.
+            -- This applies to all device choices, not only tts_sm,
+            -- because setup_mixer always targets hw:0 regardless of
+            -- which PCM device is opened for playback.
+            wav_play_cmd = wav_play_cmd .. " --no-mixer"
             wav_play_cmd = wav_play_cmd .. " -D " .. alsa_device
             self._wav_play_cmd = wav_play_cmd
             logger.warn("TTSEngine: PocketBook ALSA device override:", alsa_device)
+        else
+            -- No explicit device selected and no tts_sm: still pass
+            -- --no-mixer to protect PocketBook amplifier state.
+            wav_play_cmd = wav_play_cmd .. " --no-mixer"
+            self._wav_play_cmd = wav_play_cmd
         end
         logger.warn("TTSEngine: Using bundled wav-play for ALSA playback")
         -- Do NOT pass -q: we need stderr output for diagnostics.

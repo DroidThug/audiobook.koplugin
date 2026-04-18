@@ -367,13 +367,64 @@ int main(int argc, char **argv)
                 opened_device, hdr.sample_rate, rate);
 
         if (strict_device) {
-            /* In strict mode we already tried plug:<device> which handles
-             * resampling.  If the raw device also mismatches, proceed
-             * with the nearest rate - ALSA will play at the device's
-             * native rate.  Audio will sound slightly off-pitch but this
-             * is far better than falling through to hw:0 which corrupts
-             * PocketBook audio state. */
-            fprintf(stderr, "wav-play: strict mode, proceeding with %u Hz\n", rate);
+            /* In strict mode, the raw device does not support the WAV's
+             * sample rate.  If we opened the raw device (plug: wrapper
+             * failed earlier), try plug: one more time on the currently
+             * opened device.  The first plug: attempt may have targeted
+             * a different device name variation.
+             *
+             * If plug: is unavailable or also mismatches, proceed with
+             * the nearest rate and warn.  Audio will play at the wrong
+             * speed but this is better than falling through to hw:0
+             * which corrupts PocketBook audio state. */
+            if (strncmp(opened_device, "plug:", 5) != 0) {
+                /* The plug: wrapper was not used; retry with plug: */
+                snd_pcm_close(pcm);
+                pcm = NULL;
+                snprintf(plug_buf, sizeof(plug_buf), "plug:%s", device);
+                err = snd_pcm_open(&pcm, plug_buf, SND_PCM_STREAM_PLAYBACK, 0);
+                if (err >= 0) {
+                    snd_pcm_hw_params_any(pcm, params);
+                    snd_pcm_hw_params_set_access(pcm, params, SND_PCM_ACCESS_RW_INTERLEAVED);
+                    snd_pcm_hw_params_set_format(pcm, params, format);
+                    snd_pcm_hw_params_set_channels(pcm, params, hdr.channels);
+                    unsigned int plug_rate = hdr.sample_rate;
+                    snd_pcm_hw_params_set_rate_near(pcm, params, &plug_rate, NULL);
+                    if (plug_rate == hdr.sample_rate) {
+                        opened_device = plug_buf;
+                        rate = plug_rate;
+                        fprintf(stderr, "wav-play: plug: retry succeeded at %u Hz\n", rate);
+                    } else {
+                        /* plug: also mismatched; fall back to raw device */
+                        fprintf(stderr, "wav-play: plug: retry still mismatches (%u Hz)\n", plug_rate);
+                        snd_pcm_close(pcm);
+                        pcm = NULL;
+                    }
+                } else {
+                    fprintf(stderr, "wav-play: plug: retry open failed: %s\n", snd_strerror(err));
+                }
+                if (!pcm) {
+                    /* Reopen the raw device as last resort */
+                    err = snd_pcm_open(&pcm, device, SND_PCM_STREAM_PLAYBACK, 0);
+                    if (err < 0) {
+                        restore_mixer_switches(quiet);
+                        fclose(f);
+                        return 1;
+                    }
+                    opened_device = device;
+                    snd_pcm_hw_params_any(pcm, params);
+                    snd_pcm_hw_params_set_access(pcm, params, SND_PCM_ACCESS_RW_INTERLEAVED);
+                    snd_pcm_hw_params_set_format(pcm, params, format);
+                    snd_pcm_hw_params_set_channels(pcm, params, hdr.channels);
+                    rate = hdr.sample_rate;
+                    snd_pcm_hw_params_set_rate_near(pcm, params, &rate, NULL);
+                    fprintf(stderr, "wav-play: WARNING: playing %u Hz audio at %u Hz (%.1fx speed)\n",
+                            hdr.sample_rate, rate, (double)rate / hdr.sample_rate);
+                }
+            } else {
+                fprintf(stderr, "wav-play: WARNING: plug: device rate mismatch, playing %u Hz audio at %u Hz (%.1fx speed)\n",
+                        hdr.sample_rate, rate, (double)rate / hdr.sample_rate);
+            }
         } else {
             /* Fallback chain: try remaining devices for one that accepts
              * the requested rate.  Only try devices from the fallback

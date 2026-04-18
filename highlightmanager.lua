@@ -40,6 +40,9 @@ function HighlightManager:new(o)
     o.current_word = nil
     -- For native crengine highlighting
     o._selection_active = false
+    -- Pending boxes for non-invert styles, drawn by the view module
+    o._pending_boxes = nil
+    o._view_module_registered = false
 
     return o
 end
@@ -315,7 +318,7 @@ function HighlightManager:_highlightSentenceRolling(sentence, parsed_data, doc, 
             UIManager:setDirty(self.ui.dialog or "all", "ui")
         end
     else
-        -- Non-invert styles: query only, then draw manually
+        -- Non-invert styles: query only, then draw via view module
         local sel = doc:getTextFromPositions(
             {x = start_x, y = start_y},
             {x = end_x,   y = end_y},
@@ -324,7 +327,8 @@ function HighlightManager:_highlightSentenceRolling(sentence, parsed_data, doc, 
         if sel and sel.pos0 and sel.pos1 then
             local boxes = doc:getScreenBoxesFromPositions(sel.pos0, sel.pos1, true)
             if boxes and #boxes > 0 then
-                self:_drawHighlightBoxes(boxes)
+                self._pending_boxes = boxes
+                self:_ensureViewModule()
                 self.is_highlighting = true
                 UIManager:setDirty(self.ui.dialog or "all", "ui")
             end
@@ -335,11 +339,28 @@ function HighlightManager:_highlightSentenceRolling(sentence, parsed_data, doc, 
 end
 
 --[[--
-Draw highlight rectangles using Blitbuffer for non-invert styles.
-@param boxes table Array of {x, y, w, h} screen rectangles
+Register a view module so our paintTo runs after page content is drawn.
+This is necessary because painting directly onto Screen.bb before the
+repaint cycle causes the page redraw to overwrite our rectangles.
 --]]
-function HighlightManager:_drawHighlightBoxes(boxes)
-    local bb = Screen.bb
+function HighlightManager:_ensureViewModule()
+    if self._view_module_registered then return end
+    if not self.ui or not self.ui.view then return end
+    -- Create a minimal view module that delegates paintTo to us
+    local hm = self
+    local module = { paintTo = function(_, bb, x, y) hm:_paintOverlay(bb, x, y) end }
+    self.ui.view:registerViewModule("audiobook_highlight", module)
+    self._view_module_registered = true
+end
+
+--[[--
+Called by the view module after page content is drawn.
+Paints highlight rectangles for non-invert styles.
+@param bb BlitBuffer The screen framebuffer
+--]]
+function HighlightManager:_paintOverlay(bb, _x, _y)
+    local boxes = self._pending_boxes
+    if not boxes or #boxes == 0 then return end
     if not bb then return end
     local style = self.current_style
     local line_w = Screen:scaleBySize(2)
@@ -395,6 +416,7 @@ function HighlightManager:clearHighlights()
         pcall(function() self.ui.document:clearSelection() end)
         self._selection_active = false
     end
+    self._pending_boxes = nil
     if self.is_highlighting then
         UIManager:setDirty(self.ui.dialog or "all", "ui")
     end

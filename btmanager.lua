@@ -883,10 +883,25 @@ function BTManager:listDevices()
     return devices
 end
 
+--- Clear the cached result from listAudioDevices().
+-- Call this after any operation that changes BT connection state.
+function BTManager:clearAudioDeviceCache()
+    self._audio_cache = nil
+    self._audio_cache_time = nil
+end
+
 --- Filter devices: only those that are audio-related OR paired.
 -- Unnamed BLE beacons are dropped.
+-- Results are cached for 5 seconds to avoid repeated D-Bus round-trips
+-- during the per-sentence play() hot path.
 -- @treturn table filtered device list
 function BTManager:listAudioDevices()
+    local now = os.time()
+    if self._audio_cache and self._audio_cache_time
+        and now - self._audio_cache_time < 5 then
+        return self._audio_cache
+    end
+
     local all = self:listDevices()
     local result = {}
     local audio_icons = {
@@ -907,6 +922,9 @@ function BTManager:listAudioDevices()
         if a.paired ~= b.paired then return a.paired end
         return (a.name or "") < (b.name or "")
     end)
+
+    self._audio_cache = result
+    self._audio_cache_time = now
     return result
 end
 
@@ -930,6 +948,7 @@ end
 -- @treturn bool success
 -- @treturn string error message (if any)
 function BTManager:pair(address)
+    self:clearAudioDeviceCache()
     logger.warn("BTManager: pairing with", address)
 
     if bt_stack == "kindle" then
@@ -1056,6 +1075,7 @@ end
 -- @treturn bool success
 -- @treturn string error message (if any)
 function BTManager:connect(address)
+    self:clearAudioDeviceCache()
     detectStack()
     if bt_stack == "kindle" then
         return false, "Connect through Kindle Settings"
@@ -1159,6 +1179,7 @@ end
 -- @string address  MAC address
 -- @treturn bool success
 function BTManager:disconnect(address)
+    self:clearAudioDeviceCache()
     logger.dbg("BTManager: disconnecting", address)
     local path = mac_to_path(address)
     local _, ok = dbus(dbus_cmd(path, DEVICE_IFACE .. ".Disconnect"))
@@ -1169,6 +1190,7 @@ end
 -- @string address  MAC address
 -- @treturn bool success
 function BTManager:remove(address)
+    self:clearAudioDeviceCache()
     logger.dbg("BTManager: removing", address)
     local path = mac_to_path(address)
     local _, ok = dbus(dbus_cmd(ADAPTER_PATH, ADAPTER_IFACE .. ".RemoveDevice",
