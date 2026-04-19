@@ -212,7 +212,11 @@ function HighlightManager:_highlightSentenceRolling(sentence, parsed_data, doc, 
     -- ── Phase 1: Initial proportional estimates ──────────────────
     local sl_off = vis_start - cum[start_line - 1]
     local el_off = vis_end   - cum[end_line - 1]
-    local start_x = estimateX(sb, start_line, sl_off)
+    -- sl_off is 1-based char offset within the line.  For the start
+    -- position we want the LEFT edge of that character, so subtract 1
+    -- to convert to 0-based.  For end we want the RIGHT edge, so the
+    -- 1-based offset maps directly to "fraction of line covered".
+    local start_x = estimateX(sb, start_line, math.max(0, sl_off - 1))
     local end_x   = estimateX(eb, end_line, el_off)
 
     -- ── Phase 2: Binary-search refinement for end_x ──────────────
@@ -290,11 +294,13 @@ function HighlightManager:_highlightSentenceRolling(sentence, parsed_data, doc, 
                     local mid_start = mid_text:sub(1, math.min(20, #mid_text))
                     if mid_start == want_start then
                         best_x = mid
-                        -- Tighten: try going right to find rightmost valid start
-                        lo = mid
-                    else
-                        -- Selection start is wrong — go left to include more
+                        -- Expand left to find leftmost pixel that still
+                        -- selects the correct first word.  This ensures the
+                        -- visual highlight box covers the full first word.
                         hi = mid
+                    else
+                        -- Went too far left (includes previous word) — go right
+                        lo = mid
                     end
                 end
                 start_x = best_x
@@ -305,45 +311,33 @@ function HighlightManager:_highlightSentenceRolling(sentence, parsed_data, doc, 
     end
 
     -- ── Draw the final selection ─────────────────────────────────
-    if self.current_style == self.STYLES.INVERT then
-        -- Invert: let crengine draw its native selection highlight
-        local sel = doc:getTextFromPositions(
-            {x = start_x, y = start_y},
-            {x = end_x,   y = end_y},
-            false  -- draw selection
-        )
-        if sel then
-            self._selection_active = true
-            self.is_highlighting = true
-            UIManager:setDirty(self.ui.dialog or "all", "ui")
+    -- All styles use box computation from the line map.  Previous
+    -- versions used CRe native selection for INVERT, but its visual
+    -- style varies by crengine build (can look like a dim instead of
+    -- true inversion).  Using invertRect via the view module gives
+    -- consistent pixel inversion on all devices.
+    local boxes = {}
+    for i = start_line, end_line do
+        local box = sboxes[i]
+        local bx, bw = box.x, box.w
+        if i == start_line and i == end_line then
+            bx = start_x
+            bw = end_x - start_x
+        elseif i == start_line then
+            bw = (box.x + box.w) - start_x
+            bx = start_x
+        elseif i == end_line then
+            bw = end_x - box.x
         end
-    else
-        -- Non-invert styles: compute boxes from the line map directly.
-        -- This avoids a second getTextFromPositions call whose pos0/pos1
-        -- xpointers may be nil on some crengine builds.
-        local boxes = {}
-        for i = start_line, end_line do
-            local box = sboxes[i]
-            local bx, bw = box.x, box.w
-            if i == start_line and i == end_line then
-                bx = start_x
-                bw = end_x - start_x
-            elseif i == start_line then
-                bw = (box.x + box.w) - start_x
-                bx = start_x
-            elseif i == end_line then
-                bw = end_x - box.x
-            end
-            if bw > 0 and box.h > 0 then
-                table.insert(boxes, {x = bx, y = box.y, w = bw, h = box.h})
-            end
+        if bw > 0 and box.h > 0 then
+            table.insert(boxes, {x = bx, y = box.y, w = bw, h = box.h})
         end
-        if #boxes > 0 then
-            self._pending_boxes = boxes
-            self:_ensureViewModule()
-            self.is_highlighting = true
-            UIManager:setDirty(self.ui.dialog or "all", "ui")
-        end
+    end
+    if #boxes > 0 then
+        self._pending_boxes = boxes
+        self:_ensureViewModule()
+        self.is_highlighting = true
+        UIManager:setDirty(self.ui.dialog or "all", "ui")
     end
 
 
@@ -366,7 +360,7 @@ end
 
 --[[--
 Called by the view module after page content is drawn.
-Paints highlight rectangles for non-invert styles.
+Paints highlight rectangles for all styles (including invert).
 @param bb BlitBuffer The screen framebuffer
 --]]
 function HighlightManager:_paintOverlay(bb, _x, _y)
@@ -375,24 +369,36 @@ function HighlightManager:_paintOverlay(bb, _x, _y)
     if not bb then return end
     local style = self.current_style
     local line_w = Screen:scaleBySize(2)
+    local sw, sh = Screen:getWidth(), Screen:getHeight()
 
     for _, box in ipairs(boxes) do
-        if box.w > 0 and box.h > 0 then
-            if style == self.STYLES.UNDERLINE then
-                bb:paintRect(box.x, box.y + box.h - line_w, box.w, line_w,
+        -- Clip to screen bounds to prevent out-of-range framebuffer access
+        local bx = math.max(0, box.x)
+        local by = math.max(0, box.y)
+        local bw = math.min(box.w - (bx - box.x), sw - bx)
+        local bh = math.min(box.h - (by - box.y), sh - by)
+        if bw > 0 and bh > 0 then
+            if style == self.STYLES.INVERT then
+                pcall(bb.invertRect, bb, bx, by, bw, bh)
+            elseif style == self.STYLES.UNDERLINE then
+                bb:paintRect(bx, by + bh - line_w, bw, line_w,
                     Blitbuffer.COLOR_BLACK)
             elseif style == self.STYLES.BACKGROUND then
-                bb:dimRect(box.x, box.y, box.w, box.h)
+                local ok = pcall(bb.dimRect, bb, bx, by, bw, bh)
+                if not ok then
+                    -- Fallback: invertRect if dimRect unavailable
+                    pcall(bb.invertRect, bb, bx, by, bw, bh)
+                end
             elseif style == self.STYLES.BOX then
                 -- Top
-                bb:paintRect(box.x, box.y, box.w, line_w, Blitbuffer.COLOR_BLACK)
+                bb:paintRect(bx, by, bw, line_w, Blitbuffer.COLOR_BLACK)
                 -- Bottom
-                bb:paintRect(box.x, box.y + box.h - line_w, box.w, line_w,
+                bb:paintRect(bx, by + bh - line_w, bw, line_w,
                     Blitbuffer.COLOR_BLACK)
                 -- Left
-                bb:paintRect(box.x, box.y, line_w, box.h, Blitbuffer.COLOR_BLACK)
+                bb:paintRect(bx, by, line_w, bh, Blitbuffer.COLOR_BLACK)
                 -- Right
-                bb:paintRect(box.x + box.w - line_w, box.y, line_w, box.h,
+                bb:paintRect(bx + bw - line_w, by, line_w, bh,
                     Blitbuffer.COLOR_BLACK)
             end
         end

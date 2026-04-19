@@ -1253,11 +1253,28 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
     -- and refuse to play.
     local is_pb = Device.isPocketBook and Device:isPocketBook()
     -- Fallback PB detection: some KOReader builds may not set the device
-    -- type correctly.  If /ebrmain/config/device.cfg exists, it's a PB.
+    -- type correctly.  Try multiple indicators.
     if not is_pb then
         local d = io.open("/ebrmain/config/device.cfg", "r")
         if d then d:close(); is_pb = true end
     end
+    if not is_pb then
+        local h = io.open("/etc/hostname", "r")
+        if h then
+            local name = h:read("*l") or ""
+            h:close()
+            if name:lower():find("pocketbook") then is_pb = true end
+        end
+    end
+    if not is_pb then
+        local d = io.open("/mnt/ext1/applications/koreader", "r")
+        if d then d:close(); is_pb = true end
+    end
+    logger.dbg("TTSEngine: PB pre-flight:",
+        "is_pb=", is_pb,
+        "has_tts_sm=", self._pb_has_tts_sm,
+        "no_real_audio=", self._no_real_audio_output,
+        "player_type=", self.audio_player_type)
     if is_pb and not self._pb_has_tts_sm
         and not self._no_real_audio_output
         and (self.audio_player_type == "aplay"
