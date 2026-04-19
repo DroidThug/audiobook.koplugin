@@ -2859,6 +2859,15 @@ function TTSEngine:findAudioPlayer()
         end
         if self._pb_has_tts_sm then pb_default = "tts_sm" end
         local alsa_device = self.plugin and self.plugin:getSetting("pb_alsa_device", pb_default)
+        -- "inkview" is handled above via the InkView FFI path.  If we reach
+        -- this point with alsa_device == "inkview" it means InkView failed
+        -- to load.  Treat it as "Auto" so wav-play does NOT receive "-D inkview"
+        -- (an invalid ALSA device that causes the fallback chain to open hw:0
+        -- and corrupt the PocketBook amplifier state).
+        if alsa_device == "inkview" then
+            logger.warn("TTSEngine: InkView unavailable, falling back to Auto for wav-play")
+            alsa_device = pb_default
+        end
         -- When "Auto" is selected (empty string) but tts_sm exists, use
         -- tts_sm.  Falling through to wav-play's "default" device on
         -- PocketBook can trigger the hw:0/plughw:0 fallback chain which
