@@ -163,6 +163,7 @@ function MenuBuilder.buildAlsaDeviceMenu(plugin)
         { id = "tts_sm",   label = _("PocketBook pipeline - tts_sm (recommended)") },
         { id = "plughw:0", label = _("Direct hardware with resampling - plughw:0") },
         { id = "",         label = _("Auto (default ALSA device)") },
+        { id = "inkview",  label = _("System player (InkView) - experimental") },
     }
     local menu = {}
     for _, d in ipairs(devices) do

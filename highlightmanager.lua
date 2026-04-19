@@ -318,20 +318,31 @@ function HighlightManager:_highlightSentenceRolling(sentence, parsed_data, doc, 
             UIManager:setDirty(self.ui.dialog or "all", "ui")
         end
     else
-        -- Non-invert styles: query only, then draw via view module
-        local sel = doc:getTextFromPositions(
-            {x = start_x, y = start_y},
-            {x = end_x,   y = end_y},
-            true  -- query only, no draw
-        )
-        if sel and sel.pos0 and sel.pos1 then
-            local boxes = doc:getScreenBoxesFromPositions(sel.pos0, sel.pos1, true)
-            if boxes and #boxes > 0 then
-                self._pending_boxes = boxes
-                self:_ensureViewModule()
-                self.is_highlighting = true
-                UIManager:setDirty(self.ui.dialog or "all", "ui")
+        -- Non-invert styles: compute boxes from the line map directly.
+        -- This avoids a second getTextFromPositions call whose pos0/pos1
+        -- xpointers may be nil on some crengine builds.
+        local boxes = {}
+        for i = start_line, end_line do
+            local box = sboxes[i]
+            local bx, bw = box.x, box.w
+            if i == start_line and i == end_line then
+                bx = start_x
+                bw = end_x - start_x
+            elseif i == start_line then
+                bw = (box.x + box.w) - start_x
+                bx = start_x
+            elseif i == end_line then
+                bw = end_x - box.x
             end
+            if bw > 0 and box.h > 0 then
+                table.insert(boxes, {x = bx, y = box.y, w = bw, h = box.h})
+            end
+        end
+        if #boxes > 0 then
+            self._pending_boxes = boxes
+            self:_ensureViewModule()
+            self.is_highlighting = true
+            UIManager:setDirty(self.ui.dialog or "all", "ui")
         end
     end
 
@@ -371,8 +382,7 @@ function HighlightManager:_paintOverlay(bb, _x, _y)
                 bb:paintRect(box.x, box.y + box.h - line_w, box.w, line_w,
                     Blitbuffer.COLOR_BLACK)
             elseif style == self.STYLES.BACKGROUND then
-                bb:paintRect(box.x, box.y, box.w, box.h,
-                    Blitbuffer.COLOR_LIGHT_GRAY)
+                bb:dimRect(box.x, box.y, box.w, box.h)
             elseif style == self.STYLES.BOX then
                 -- Top
                 bb:paintRect(box.x, box.y, box.w, line_w, Blitbuffer.COLOR_BLACK)

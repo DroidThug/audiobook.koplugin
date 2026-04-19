@@ -37,6 +37,14 @@ pcall(function() ffi.cdef[[
     void LipcFreeString(char *str);
 ]] end)
 local _lipc_lib  -- loaded lazily on first Kindle native TTS use
+
+-- InkView audio FFI: PocketBook audio daemon integration.
+-- PlayFile routes through mpd.app instead of opening ALSA directly,
+-- avoiding the amplifier corruption that kills PB700c speakers.
+-- Declared separately so a missing symbol doesn't block other cdefs.
+pcall(function() ffi.cdef[[ void PlayFile(const char *file); ]] end)
+pcall(function() ffi.cdef[[ int GetPlayerState(void); ]] end)
+local _inkview_audio  -- loaded lazily on first PB InkView use
 local logger = require("logger")
 local time = require("ui/time")
 local _ = require("gettext")
@@ -1243,11 +1251,17 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
     -- silence, so the rapid-fail detection never fires.  Check on every
     -- play() whether BT headphones are connected; if not, warn the user
     -- and refuse to play.
-    if not self._no_real_audio_output
-        and self.audio_player_type == "aplay"
-        and self._wav_play_cmd
-        and Device.isPocketBook and Device:isPocketBook()
-        and not self._pb_has_tts_sm then
+    local is_pb = Device.isPocketBook and Device:isPocketBook()
+    -- Fallback PB detection: some KOReader builds may not set the device
+    -- type correctly.  If /ebrmain/config/device.cfg exists, it's a PB.
+    if not is_pb then
+        local d = io.open("/ebrmain/config/device.cfg", "r")
+        if d then d:close(); is_pb = true end
+    end
+    if is_pb and not self._pb_has_tts_sm
+        and not self._no_real_audio_output
+        and (self.audio_player_type == "aplay"
+             or self.audio_player_type == "pb-inkview") then
         local bt_connected = false
         local btm = self.plugin and self.plugin.bt_manager
         if btm then
@@ -1257,9 +1271,14 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                     if dev.connected then bt_connected = true; break end
                 end
             end
+        else
+            logger.warn("TTSEngine: PB pre-flight: bt_manager is nil")
         end
         if not bt_connected then
-            logger.warn("TTSEngine: PocketBook without tts_sm and no BT - refusing to play")
+            logger.warn("TTSEngine: PocketBook without tts_sm and no BT - refusing to play",
+                "(player_type=", self.audio_player_type,
+                "wav_play_cmd=", self._wav_play_cmd and "set" or "nil",
+                "no_real_audio=", self._no_real_audio_output, ")")
             self.is_speaking = false
             UIManager:show(InfoMessage:new{
                 text = _("No audio output available.\n\nThis PocketBook has no built-in speaker. Please connect Bluetooth headphones first, then try again."),
@@ -2111,6 +2130,89 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         return true
     end
 
+    -- === POCKETBOOK INKVIEW PLAYFILE PATH ===
+    -- Routes audio through the PocketBook audio daemon (mpd.app) via the
+    -- InkView PlayFile FFI call.  Uses duration-based completion with
+    -- GetPlayerState polling as a cross-check.
+    if self.audio_player_type == "pb-inkview" and _inkview_audio then
+        self._concat_durations = nil
+        self.play_generation = (self.play_generation or 0) + 1
+        local my_gen = self.play_generation
+
+        -- Cancel pending callbacks from previous play()
+        if self._completion_timer_fn then
+            UIManager:unschedule(self._completion_timer_fn)
+            self._completion_timer_fn = nil
+        end
+
+        logger.warn("TTSEngine: play() pre-launch took", time.to_ms(UIManager:getTime() - t0), "ms")
+
+        -- Play via InkView audio daemon
+        local ok, err = pcall(_inkview_audio.PlayFile, self.current_audio_file)
+        if not ok then
+            logger.err("TTSEngine: InkView PlayFile failed:", err)
+            self.is_speaking = false
+            if on_fail then on_fail() end
+            return false
+        end
+
+        self._audio_launched_at = UIManager:getTime()
+        self._total_pause_ms = 0
+        self._expected_play_duration_ms = self._current_audio_duration_ms or 5000
+
+        logger.warn("TTSEngine: InkView PlayFile started, dur=",
+            self._expected_play_duration_ms, "ms, gen=", my_gen)
+
+        -- Start word-highlighting timing loop
+        self:startTimingLoop()
+
+        -- Poll GetPlayerState for completion with duration-based fallback.
+        -- Player states: MP_STOPPED=0, MP_PLAYING=2, MP_PAUSED=3, MP_TRACK_FINISHED=6
+        local dur_ms = self._expected_play_duration_ms
+        local poll_interval = 0.3
+        local engine = self
+        local function pollInkviewState()
+            if (engine.play_generation or 0) ~= my_gen then return end
+            if not engine.is_speaking then return end
+            if engine.is_paused then
+                UIManager:scheduleIn(0.5, pollInkviewState)
+                return
+            end
+            -- Check if InkView player finished
+            local gs_ok, state = pcall(_inkview_audio.GetPlayerState)
+            if gs_ok and (state == 0 or state == 6) then
+                -- MP_STOPPED or MP_TRACK_FINISHED
+                -- Only fire if enough time has passed (avoid false 0 at start)
+                local elapsed_ms = 0
+                if engine._audio_launched_at then
+                    elapsed_ms = time.to_ms(UIManager:getTime() - engine._audio_launched_at)
+                        - (engine._total_pause_ms or 0)
+                end
+                if elapsed_ms > 500 then
+                    logger.warn("TTSEngine: InkView playback finished, state=", state,
+                        "elapsed=", elapsed_ms, "ms")
+                    engine:onPlaybackComplete()
+                    return
+                end
+            end
+            -- Duration-based fallback: fire if well past expected duration
+            if engine._audio_launched_at then
+                local elapsed_ms = time.to_ms(UIManager:getTime() - engine._audio_launched_at)
+                    - (engine._total_pause_ms or 0)
+                if elapsed_ms > dur_ms + 2000 then
+                    logger.warn("TTSEngine: InkView duration-based completion at", elapsed_ms, "ms")
+                    engine:onPlaybackComplete()
+                    return
+                end
+            end
+            UIManager:scheduleIn(poll_interval, pollInkviewState)
+        end
+        engine._completion_timer_fn = pollInkviewState
+        UIManager:scheduleIn(poll_interval, pollInkviewState)
+
+        return true
+    end
+
     -- === LEGACY PATH (non-Bluetooth audio) ===
     -- Build command WITHOUT trailing &; we'll add '& echo $!' for PID capture
     local play_cmd
@@ -2608,6 +2710,41 @@ function TTSEngine:findAudioPlayer()
                 return player.cmd .. " " .. player.args
             end
             return player.cmd
+        end
+    end
+
+    -- PocketBook InkView PlayFile: routes audio through the PocketBook
+    -- audio daemon (mpd.app) instead of opening ALSA directly.  This
+    -- avoids corrupting the amplifier state on devices like PB700c where
+    -- any direct ALSA access kills the built-in speaker until reboot.
+    -- Triggered when the user selects "System player (InkView)" in the
+    -- PocketBook audio device menu.
+    if Device.isPocketBook and Device:isPocketBook() then
+        local alsa_device = self.plugin and self.plugin:getSetting("pb_alsa_device", "")
+        if alsa_device == "inkview" then
+            if not _inkview_audio then
+                local ok, lib = pcall(ffi.load, "inkview")
+                if ok then
+                    -- Verify PlayFile is exported by this firmware
+                    local pf_ok = pcall(function() local _ = lib.PlayFile end)
+                    local gs_ok = pcall(function() local _ = lib.GetPlayerState end)
+                    if pf_ok and gs_ok then
+                        _inkview_audio = lib
+                    else
+                        logger.warn("TTSEngine: InkView loaded but PlayFile/GetPlayerState not exported")
+                    end
+                else
+                    logger.warn("TTSEngine: libinkview.so not available:", lib)
+                end
+            end
+            if _inkview_audio then
+                self.audio_player_type = "pb-inkview"
+                self._pb_has_tts_sm = false  -- not relevant for InkView path
+                logger.warn("TTSEngine: Using InkView PlayFile (PB audio daemon)")
+                return "pb-inkview"
+            else
+                logger.warn("TTSEngine: InkView not available, falling through to wav-play")
+            end
         end
     end
 
@@ -3391,6 +3528,10 @@ function TTSEngine:pause()
         -- Android: pause via MediaPlayer API
         if self.audio_player_type == "android" and self._android_tts then
             self._android_tts:pausePlayback()
+        -- PocketBook InkView: no direct pause API; audio plays to natural
+        -- end but word-highlighting and sentence advance are suspended.
+        elseif self.audio_player_type == "pb-inkview" then
+            -- no-op: timing loop checks is_paused
         -- Kindle LIPC: pause via playermgr
         elseif self.audio_player_type == "kindle-lipc" then
             os.execute("lipc-set-prop com.lab126.playermgr Pause '' 2>/dev/null")
@@ -3425,6 +3566,10 @@ function TTSEngine:resume()
         -- Android: resume via MediaPlayer API
         if self.audio_player_type == "android" and self._android_tts then
             self._android_tts:resumePlayback()
+        -- PocketBook InkView: no direct resume API; timing loop resumes
+        -- automatically when is_paused is cleared above.
+        elseif self.audio_player_type == "pb-inkview" then
+            -- no-op
         -- Kindle LIPC: resume via playermgr
         elseif self.audio_player_type == "kindle-lipc" then
             os.execute("lipc-set-prop com.lab126.playermgr Play '' 2>/dev/null")
@@ -3473,6 +3618,13 @@ function TTSEngine:stop()
     -- Stop Android pipeline/MediaPlayer if active
     if self.audio_player_type == "android" and self._android_tts then
         self._android_tts:stopPipeline()
+    end
+
+    -- Stop PocketBook InkView player: play a zero-length path to halt
+    -- the current file.  The generation bump above + completion timer
+    -- cancellation prevent any further sentence advance.
+    if self.audio_player_type == "pb-inkview" and _inkview_audio then
+        pcall(_inkview_audio.PlayFile, "")
     end
 
     -- Stop Kindle LIPC playermgr if active

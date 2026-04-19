@@ -881,6 +881,24 @@ if [ "$PLATFORM" = "pocketbook" ]; then
         [ -z "$PB_SMOKE_TEST" ] && PB_SMOKE_TEST="(empty output) exit_code=$?"
     fi
 
+    # InkView audio daemon diagnostics: check if mpd.app (PocketBook media
+    # player daemon) is running and if libinkview.so exports PlayFile.
+    PB_MPD_PROCS=$(ps 2>/dev/null | grep -E 'mpd\.app|mpd_start|mediaplayer' | grep -v grep | head -5 || echo "none")
+    PB_INKVIEW_LIB="not found"
+    for _iv in /usr/lib/libinkview.so /usr/lib/libinkview.so.1 /lib/libinkview.so; do
+        if [ -f "$_iv" ]; then
+            PB_INKVIEW_LIB="$_iv ($(ls -la "$_iv" 2>/dev/null | awk '{print $5}') bytes)"
+            # Check if PlayFile symbol is exported
+            if command -v nm >/dev/null 2>&1; then
+                _pf=$(nm -D "$_iv" 2>/dev/null | grep -i PlayFile | head -3)
+                [ -n "$_pf" ] && PB_INKVIEW_LIB="$PB_INKVIEW_LIB playfile_sym=yes" || PB_INKVIEW_LIB="$PB_INKVIEW_LIB playfile_sym=no(nm)"
+            elif command -v grep >/dev/null 2>&1; then
+                grep -q PlayFile "$_iv" 2>/dev/null && PB_INKVIEW_LIB="$PB_INKVIEW_LIB playfile_str=yes" || PB_INKVIEW_LIB="$PB_INKVIEW_LIB playfile_str=no"
+            fi
+            break
+        fi
+    done
+
     POCKETBOOK_SECTION="
 ── PocketBook ──
   device_cfg:
@@ -899,7 +917,9 @@ $(echo "$PB_WAV_PLAY_LOG" | sed 's/^/    /')
   mixer_state:
 $(echo "$PB_MIXER" | sed 's/^/    /')
   wav_play_smoke_test:
-$(echo "$PB_SMOKE_TEST" | sed 's/^/    /')"
+$(echo "$PB_SMOKE_TEST" | sed 's/^/    /')
+  mpd_daemon: ${PB_MPD_PROCS}
+  inkview_lib: ${PB_INKVIEW_LIB}"
 fi
 
 # Android extras
