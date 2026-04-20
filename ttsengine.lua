@@ -1245,12 +1245,12 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         end
     end
     
-    -- PocketBook pre-flight: direct ALSA playback via wav-play is not
-    -- reliable on PocketBook devices.  On PB632 (no built-in speaker),
-    -- wav-play opens the ALSA device successfully but no audio is heard.
-    -- On PB700c, any ALSA open/drain/close sequence corrupts the amplifier
-    -- state system-wide until reboot.  Block playback unless a BT audio
-    -- device is connected, which provides a known-good output path.
+    -- PocketBook pre-flight: on devices with a Bluetooth adapter
+    -- (PB632, PB700c), direct ALSA playback via wav-play is harmful.
+    -- PB632 has no speaker; PB700c's amplifier state corrupts on any
+    -- ALSA open/drain/close.  Block playback unless BT audio is connected.
+    -- Devices without BT hardware (PB740, PB631) use wired audio through
+    -- tts_sm successfully, so skip the check for those.
     local is_pb = Device.isPocketBook and Device:isPocketBook()
     -- Fallback PB detection: some KOReader builds may not set the device
     -- type correctly.  Try multiple indicators.
@@ -1270,12 +1270,23 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         local d = io.open("/mnt/ext1/applications/koreader", "r")
         if d then d:close(); is_pb = true end
     end
+    -- Detect BT adapter via sysfs.  Devices without BT hardware
+    -- (PB740, PB631) won't have /sys/class/bluetooth/hci0.
+    local has_bt_adapter = false
+    local hci_f = io.open("/sys/class/bluetooth/hci0/address", "r")
+    if hci_f then
+        local addr = hci_f:read("*l") or ""
+        hci_f:close()
+        has_bt_adapter = #addr > 0
+    end
     logger.dbg("TTSEngine: PB pre-flight:",
         "is_pb=", is_pb,
+        "has_bt_adapter=", has_bt_adapter,
         "has_tts_sm=", self._pb_has_tts_sm,
         "no_real_audio=", self._no_real_audio_output,
         "player_type=", self.audio_player_type)
     if is_pb
+        and has_bt_adapter
         and not self._no_real_audio_output
         and (self.audio_player_type == "aplay"
              or self.audio_player_type == "pb-inkview") then
@@ -1292,13 +1303,13 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             logger.warn("TTSEngine: PB pre-flight: bt_manager is nil")
         end
         if not bt_connected then
-            logger.warn("TTSEngine: PocketBook without BT audio - refusing to play",
+            logger.warn("TTSEngine: PocketBook with BT adapter but no BT audio - refusing to play",
                 "(player_type=", self.audio_player_type,
                 "wav_play_cmd=", self._wav_play_cmd and "set" or "nil",
                 "no_real_audio=", self._no_real_audio_output, ")")
             self.is_speaking = false
             UIManager:show(InfoMessage:new{
-                text = _("No audio output available.\n\nOn PocketBook devices, direct ALSA playback is not supported. Please connect Bluetooth headphones first, then try again."),
+                text = _("No audio output available.\n\nOn this PocketBook, direct ALSA playback can damage the audio subsystem. Please connect Bluetooth headphones first, then try again."),
                 timeout = 10,
             })
             return false

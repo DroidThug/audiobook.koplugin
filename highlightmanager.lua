@@ -157,10 +157,43 @@ function HighlightManager:_highlightSentenceRolling(sentence, parsed_data, doc, 
         }
     end
 
-    -- Find the sentence in our built text
+    -- Find the sentence in our built text.
+    -- Try exact match first, then progressively shorter prefixes (the
+    -- sentence may wrap across a page boundary so only the tail is
+    -- visible), then try matching from the sentence end (only the
+    -- beginning is visible on the current page).
     local vis_start = built_text:find(sent_text, 1, true)
+    local matched_len = vis_start and #sent_text
     if not vis_start then
-        vis_start = built_text:find(sent_text:sub(1, math.min(40, #sent_text)), 1, true)
+        -- Try shorter prefixes: 40, 20, 10 chars
+        for _, plen in ipairs({40, 20, 10}) do
+            if plen < #sent_text then
+                local prefix = sent_text:sub(1, plen)
+                vis_start = built_text:find(prefix, 1, true)
+                if vis_start then
+                    matched_len = #sent_text
+                    break
+                end
+            end
+        end
+    end
+    if not vis_start then
+        -- Sentence may start on the previous page.  Try matching the
+        -- tail end of the sentence that is visible on this page.
+        for _, slen in ipairs({40, 20, 10}) do
+            if slen < #sent_text then
+                local suffix = sent_text:sub(-slen)
+                local pos = built_text:find(suffix, 1, true)
+                if pos then
+                    -- The visible portion starts at pos, but the sentence
+                    -- logically started earlier.  Highlight from built_text
+                    -- start of that line.
+                    vis_start = pos
+                    matched_len = slen
+                    break
+                end
+            end
+        end
     end
     if not vis_start then
         if not _retried and self._line_cache then
@@ -170,7 +203,7 @@ function HighlightManager:_highlightSentenceRolling(sentence, parsed_data, doc, 
         logger.dbg("HighlightManager: sentence not found:", sent_text:sub(1, 50))
         return
     end
-    local vis_end = vis_start + #sent_text - 1
+    local vis_end = vis_start + matched_len - 1
 
     -- Find start and end lines
     local start_line = 1
@@ -321,16 +354,23 @@ function HighlightManager:_highlightSentenceRolling(sentence, parsed_data, doc, 
         {x = end_x,   y = end_y},
         true)
     if final_res and final_res.pos0 and final_res.pos1 then
-        local cre_boxes = doc:getScreenBoxesFromPositions(
-            final_res.pos0, final_res.pos1, true)
-        if cre_boxes and #cre_boxes > 0 then
-            boxes = {}
-            for _, cb in ipairs(cre_boxes) do
-                if cb.w > 0 and cb.h > 0 then
-                    table.insert(boxes, {x = cb.x, y = cb.y, w = cb.w, h = cb.h})
+        -- Guard: only use CRe boxes if the selected text matches the
+        -- sentence length.  If CRe snapped to a wider word boundary
+        -- the boxes would visually overflow into the next sentence.
+        local cre_text = final_res.text and Utils.ws(final_res.text) or ""
+        local len_ok = #cre_text <= #sent_text + 3
+        if len_ok then
+            local cre_boxes = doc:getScreenBoxesFromPositions(
+                final_res.pos0, final_res.pos1, true)
+            if cre_boxes and #cre_boxes > 0 then
+                boxes = {}
+                for _, cb in ipairs(cre_boxes) do
+                    if cb.w > 0 and cb.h > 0 then
+                        table.insert(boxes, {x = cb.x, y = cb.y, w = cb.w, h = cb.h})
+                    end
                 end
+                if #boxes == 0 then boxes = nil end
             end
-            if #boxes == 0 then boxes = nil end
         end
     end
     -- Fallback: compute boxes from line map with estimated pixel coords
