@@ -1245,12 +1245,12 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         end
     end
     
-    -- PocketBook without tts_sm (e.g. PB632): the ALSA card exists
-    -- (AllWinner SoC) but there is no built-in speaker.  wav-play will
-    -- open plughw:0 successfully and play the full WAV duration into
-    -- silence, so the rapid-fail detection never fires.  Check on every
-    -- play() whether BT headphones are connected; if not, warn the user
-    -- and refuse to play.
+    -- PocketBook pre-flight: direct ALSA playback via wav-play is not
+    -- reliable on PocketBook devices.  On PB632 (no built-in speaker),
+    -- wav-play opens the ALSA device successfully but no audio is heard.
+    -- On PB700c, any ALSA open/drain/close sequence corrupts the amplifier
+    -- state system-wide until reboot.  Block playback unless a BT audio
+    -- device is connected, which provides a known-good output path.
     local is_pb = Device.isPocketBook and Device:isPocketBook()
     -- Fallback PB detection: some KOReader builds may not set the device
     -- type correctly.  Try multiple indicators.
@@ -1275,7 +1275,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         "has_tts_sm=", self._pb_has_tts_sm,
         "no_real_audio=", self._no_real_audio_output,
         "player_type=", self.audio_player_type)
-    if is_pb and not self._pb_has_tts_sm
+    if is_pb
         and not self._no_real_audio_output
         and (self.audio_player_type == "aplay"
              or self.audio_player_type == "pb-inkview") then
@@ -1292,13 +1292,13 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             logger.warn("TTSEngine: PB pre-flight: bt_manager is nil")
         end
         if not bt_connected then
-            logger.warn("TTSEngine: PocketBook without tts_sm and no BT - refusing to play",
+            logger.warn("TTSEngine: PocketBook without BT audio - refusing to play",
                 "(player_type=", self.audio_player_type,
                 "wav_play_cmd=", self._wav_play_cmd and "set" or "nil",
                 "no_real_audio=", self._no_real_audio_output, ")")
             self.is_speaking = false
             UIManager:show(InfoMessage:new{
-                text = _("No audio output available.\n\nThis PocketBook has no built-in speaker. Please connect Bluetooth headphones first, then try again."),
+                text = _("No audio output available.\n\nOn PocketBook devices, direct ALSA playback is not supported. Please connect Bluetooth headphones first, then try again."),
                 timeout = 10,
             })
             return false
@@ -2881,8 +2881,10 @@ function TTSEngine:findAudioPlayer()
         -- to load.  Treat it as "Auto" so wav-play does NOT receive "-D inkview"
         -- (an invalid ALSA device that causes the fallback chain to open hw:0
         -- and corrupt the PocketBook amplifier state).
-        if alsa_device == "inkview" then
-            logger.warn("TTSEngine: InkView unavailable, falling back to Auto for wav-play")
+        local alsa_str = tostring(alsa_device or "")
+        if alsa_str == "inkview" or alsa_str:find("inkview") then
+            logger.warn("TTSEngine: InkView unavailable, falling back to Auto for wav-play",
+                "(raw type=", type(alsa_device), "val=", alsa_device, ")")
             alsa_device = pb_default
         end
         -- When "Auto" is selected (empty string) but tts_sm exists, use

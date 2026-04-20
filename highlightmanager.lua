@@ -311,26 +311,46 @@ function HighlightManager:_highlightSentenceRolling(sentence, parsed_data, doc, 
     end
 
     -- ── Draw the final selection ─────────────────────────────────
-    -- All styles use box computation from the line map.  Previous
-    -- versions used CRe native selection for INVERT, but its visual
-    -- style varies by crengine build (can look like a dim instead of
-    -- true inversion).  Using invertRect via the view module gives
-    -- consistent pixel inversion on all devices.
-    local boxes = {}
-    for i = start_line, end_line do
-        local box = sboxes[i]
-        local bx, bw = box.x, box.w
-        if i == start_line and i == end_line then
-            bx = start_x
-            bw = end_x - start_x
-        elseif i == start_line then
-            bw = (box.x + box.w) - start_x
-            bx = start_x
-        elseif i == end_line then
-            bw = end_x - box.x
+    -- Try CRe-accurate boxes first: make a final getTextFromPositions
+    -- call with the refined coordinates, get xpointers, then use
+    -- getScreenBoxesFromPositions for pixel-perfect word-boundary-aligned
+    -- boxes.  Falls back to line-map estimation if CRe query fails.
+    local boxes
+    local final_res = doc:getTextFromPositions(
+        {x = start_x, y = start_y},
+        {x = end_x,   y = end_y},
+        true)
+    if final_res and final_res.pos0 and final_res.pos1 then
+        local cre_boxes = doc:getScreenBoxesFromPositions(
+            final_res.pos0, final_res.pos1, true)
+        if cre_boxes and #cre_boxes > 0 then
+            boxes = {}
+            for _, cb in ipairs(cre_boxes) do
+                if cb.w > 0 and cb.h > 0 then
+                    table.insert(boxes, {x = cb.x, y = cb.y, w = cb.w, h = cb.h})
+                end
+            end
+            if #boxes == 0 then boxes = nil end
         end
-        if bw > 0 and box.h > 0 then
-            table.insert(boxes, {x = bx, y = box.y, w = bw, h = box.h})
+    end
+    -- Fallback: compute boxes from line map with estimated pixel coords
+    if not boxes then
+        boxes = {}
+        for i = start_line, end_line do
+            local box = sboxes[i]
+            local bx, bw = box.x, box.w
+            if i == start_line and i == end_line then
+                bx = start_x
+                bw = end_x - start_x
+            elseif i == start_line then
+                bw = (box.x + box.w) - start_x
+                bx = start_x
+            elseif i == end_line then
+                bw = end_x - box.x
+            end
+            if bw > 0 and box.h > 0 then
+                table.insert(boxes, {x = bx, y = box.y, w = bw, h = box.h})
+            end
         end
     end
     if #boxes > 0 then
@@ -379,15 +399,14 @@ function HighlightManager:_paintOverlay(bb, _x, _y)
         local bh = math.min(box.h - (by - box.y), sh - by)
         if bw > 0 and bh > 0 then
             if style == self.STYLES.INVERT then
-                pcall(bb.invertRect, bb, bx, by, bw, bh)
+                pcall(function() bb:invertRect(bx, by, bw, bh) end)
             elseif style == self.STYLES.UNDERLINE then
                 bb:paintRect(bx, by + bh - line_w, bw, line_w,
                     Blitbuffer.COLOR_BLACK)
             elseif style == self.STYLES.BACKGROUND then
-                local ok = pcall(bb.dimRect, bb, bx, by, bw, bh)
+                local ok = pcall(function() bb:dimRect(bx, by, bw, bh) end)
                 if not ok then
-                    -- Fallback: invertRect if dimRect unavailable
-                    pcall(bb.invertRect, bb, bx, by, bw, bh)
+                    pcall(function() bb:invertRect(bx, by, bw, bh) end)
                 end
             elseif style == self.STYLES.BOX then
                 -- Top
