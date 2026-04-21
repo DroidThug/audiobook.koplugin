@@ -2404,8 +2404,15 @@ function TTSEngine:findAudioPlayer()
     -- text → PlayParameter(JSON) → ttssrc (GStreamer) → Ivona SDK →
     -- mixersink → audiomgrd → A2DP → BT headphones.
     -- Bypasses the stripped GStreamer (no wavparse) entirely.
+    -- ONLY usable when the synthesis backend is the Kindle native TTS itself,
+    -- because Ivona only knows how to synthesize from text -- it cannot play
+    -- pre-rendered WAV files produced by Piper/espeak.  When the user selected
+    -- a WAV-producing backend (Piper, espeak), skip Ivona and fall through to
+    -- a real audio player (kindle-lipc / kindle-gst-play) so the WAV can be
+    -- decoded and routed to the speaker/BT.
     if Device:isKindle() and self:commandExists("lipc-set-prop")
-        and self:commandExists("lipc-get-prop") then
+        and self:commandExists("lipc-get-prop")
+        and self.backend == self.BACKENDS.KINDLE_NATIVE then
         local h = io.popen("lipc-get-prop com.lab126.tts.orchestrator orchestratorStarted 2>/dev/null")
         if h then
             local val = h:read("*a") or ""; h:close()
@@ -3855,6 +3862,11 @@ function TTSEngine:setBackend(backend)
         return
     end
     self.backend = backend
+    -- Invalidate cached audio player: backend choice can change which player
+    -- is appropriate (e.g. switching to/from kindle-native-tts changes whether
+    -- Ivona text-synth or kindle-lipc/gst-play WAV-decode is the right path).
+    self._cached_player = nil
+    self.audio_player_type = nil
     logger.dbg("TTSEngine: Backend switched to", backend)
     -- Restore correct backend_cmd for the selected backend
     if backend == self.BACKENDS.PIPER then

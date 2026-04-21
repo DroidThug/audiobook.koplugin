@@ -444,9 +444,23 @@ function HighlightManager:_paintOverlay(bb, _x, _y)
                 bb:paintRect(bx, by + bh - line_w, bw, line_w,
                     Blitbuffer.COLOR_BLACK)
             elseif style == self.STYLES.BACKGROUND then
+                -- Prefer native dimRect (lighter, softer overlay).
+                -- BlitBuffer8 (PB632, some Kindles) lacks dimRect, so
+                -- fall back to a 2-pixel horizontal stipple of invertRect:
+                -- alternating 2px-on / 2px-off bands give a 50% coverage
+                -- pattern that reads as a softer, dimmer version of invert
+                -- on e-ink, and is visually distinct from full invert.
                 local ok = pcall(function() bb:dimRect(bx, by, bw, bh) end)
                 if not ok then
-                    pcall(function() bb:invertRect(bx, by, bw, bh) end)
+                    local band = 2
+                    local y0 = by
+                    while y0 < by + bh do
+                        local h = math.min(band, by + bh - y0)
+                        if h > 0 then
+                            pcall(function() bb:invertRect(bx, y0, bw, h) end)
+                        end
+                        y0 = y0 + band * 2
+                    end
                 end
             elseif style == self.STYLES.BOX then
                 -- Top
