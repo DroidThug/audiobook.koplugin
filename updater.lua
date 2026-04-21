@@ -276,6 +276,31 @@ function Updater._performUpdate(plugin, release)
 
     logger.warn("Updater: successfully installed v" .. release.version)
 
+    -- Ensure _meta.lua reports the installed release version, in case the
+    -- release zip shipped with a stale version string.  Without this, the
+    -- next "check for updates" comparison would keep offering the same
+    -- release because the on-disk _meta.lua still reports the older version.
+    local meta_path = plugin_dir .. "/_meta.lua"
+    local rf = io.open(meta_path, "r")
+    if rf then
+        local content = rf:read("*a") or ""
+        rf:close()
+        local new_content, n = content:gsub('version%s*=%s*"[^"]*"',
+            'version = "' .. release.version .. '"', 1)
+        if n > 0 and new_content ~= content then
+            local wf = io.open(meta_path, "w")
+            if wf then
+                wf:write(new_content)
+                wf:close()
+                logger.warn("Updater: pinned _meta.lua version to", release.version)
+            else
+                logger.warn("Updater: could not rewrite _meta.lua (open for write failed)")
+            end
+        end
+    else
+        logger.warn("Updater: _meta.lua not found at", meta_path)
+    end
+
     UIManager:show(ConfirmBox:new{
         text = T(_("Updated to v%1.\n\nRestart KOReader to apply the update."), release.version),
         ok_text = _("Restart now"),
