@@ -1112,6 +1112,34 @@ function SyncController:showPlaybackBar()
     -- Force an immediate UI refresh so the bar is painted on the very next
     -- cycle, even if another (toast) notification is still visible.
     UIManager:setDirty(self.playback_bar, "ui")
+
+    -- Honor the visibility preference.  In "paused_only" mode the bar is
+    -- created but immediately hidden so subsequent pause/resume calls can
+    -- toggle it without re-creating the widget.
+    self:_applyBarVisibility()
+end
+
+--[[--
+Apply the playback_bar_visibility setting.  Called on bar creation and on
+every pause/resume so the bar shows only while paused (or always) per the
+user preference.  The bar widget itself is kept alive across visibility
+toggles; only its on-screen presence changes.
+--]]
+function SyncController:_applyBarVisibility()
+    if not self.playback_bar then return end
+    local mode = self.plugin and self.plugin:getSetting("playback_bar_visibility", "always")
+        or "always"
+    if mode == "paused_only" and self:isPlaying() then
+        if self.playback_bar:isVisible() then
+            self.playback_bar:hide()
+            UIManager:setDirty("all", "ui")
+        end
+    else
+        if not self.playback_bar:isVisible() then
+            self.playback_bar:show()
+            UIManager:setDirty(self.playback_bar, "ui")
+        end
+    end
 end
 
 --[[--
@@ -1679,6 +1707,7 @@ function SyncController:pause(auto)
         if self.playback_bar then
             self.playback_bar:updatePlayState(false)
         end
+        self:_applyBarVisibility()
 
         logger.dbg("SyncController: Paused (auto=", auto, ", user_paused=", self._user_paused, ")")
     end
@@ -1712,6 +1741,7 @@ function SyncController:resume(auto)
         if self.playback_bar then
             self.playback_bar:updatePlayState(true)
         end
+        self:_applyBarVisibility()
 
         -- Re-apply sentence highlight — CRe's native selection is wiped
         -- whenever the page redraws (e.g. after rotation), so we must

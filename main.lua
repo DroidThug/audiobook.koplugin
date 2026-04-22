@@ -444,6 +444,27 @@ function Audiobook:addToMainMenu(menu_items)
                 end,
                 help_text = _("When enabled, play/pause/next/prev buttons on a Bluetooth headset or speaker will control TTS playback. The connected device will also show playback status."),
             },
+            {
+                text_func = function()
+                    local mode = self:getSetting("playback_bar_visibility", "always")
+                    if mode == "paused_only" then
+                        return _("Hide control bar while playing (experimental)")
+                    end
+                    return _("Show control bar while playing (default)")
+                end,
+                checked_func = function()
+                    return self:getSetting("playback_bar_visibility", "always") == "paused_only"
+                end,
+                callback = function()
+                    local cur = self:getSetting("playback_bar_visibility", "always")
+                    local new_val = (cur == "paused_only") and "always" or "paused_only"
+                    self:setSetting("playback_bar_visibility", new_val)
+                    if self.sync_controller and self.sync_controller._applyBarVisibility then
+                        self.sync_controller:_applyBarVisibility()
+                    end
+                end,
+                help_text = _("Experimental: when enabled, the playback control bar disappears while TTS is playing so the bottom of the page is fully visible for read-along. Pause playback (via tap-to-pause overlay or BT headset button) to bring the bar back."),
+            },
             -- ── Diagnostics ──
             {
                 text = _("Generate bug report"),
