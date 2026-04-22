@@ -1270,28 +1270,67 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         local d = io.open("/mnt/ext1/applications/koreader", "r")
         if d then d:close(); is_pb = true end
     end
-    -- Detect BT adapter via sysfs.  Devices without BT hardware
-    -- (PB740, PB631) won't have /sys/class/bluetooth/hci0.
+    -- Detect BT adapter via multiple signals.  /sys/class/bluetooth/hci0
+    -- only appears when the BT daemon is actively running, so it misses
+    -- PB devices that ship with BT hardware while the daemon is stopped
+    -- (PB700K3 reported has_bt_adapter=false even though Era-Color is a
+    -- BT-equipped device, then wav-play ran into the internal speaker
+    -- and damaged the amplifier).  Use any positive signal: sysfs scan
+    -- across all hci* nodes, /etc/rfkill listings, or the PocketBook
+    -- device.cfg "bluetooth_device_name=" entry which identifies BT
+    -- hardware regardless of daemon state.
     local has_bt_adapter = false
-    local hci_f = io.open("/sys/class/bluetooth/hci0/address", "r")
-    if hci_f then
-        local addr = hci_f:read("*l") or ""
-        hci_f:close()
-        has_bt_adapter = #addr > 0
+    local bt_detect_source = "none"
+    do
+        for i = 0, 3 do
+            local hci_f = io.open("/sys/class/bluetooth/hci" .. i .. "/address", "r")
+            if hci_f then
+                local addr = hci_f:read("*l") or ""
+                hci_f:close()
+                if #addr > 0 then
+                    has_bt_adapter = true
+                    bt_detect_source = "sysfs:hci" .. i
+                    break
+                end
+            end
+        end
+    end
+    if not has_bt_adapter then
+        local cfg_f = io.open("/ebrmain/config/device.cfg", "r")
+        if cfg_f then
+            local content = cfg_f:read("*a") or ""
+            cfg_f:close()
+            if content:find("bluetooth_device_name%s*=") then
+                has_bt_adapter = true
+                bt_detect_source = "device.cfg"
+            end
+        end
+    end
+    if not has_bt_adapter then
+        local rf_h = io.popen("rfkill list bluetooth 2>/dev/null")
+        if rf_h then
+            local out = rf_h:read("*a") or ""
+            rf_h:close()
+            if out:find("[Bb]luetooth") then
+                has_bt_adapter = true
+                bt_detect_source = "rfkill"
+            end
+        end
     end
     -- The pre-flight blocks every direct-ALSA / InkView wav-play attempt
-    -- on PocketBooks that have a BT adapter (PB632, PB700c).  Allow only
-    -- BT-routed player types (gst-bt, bluealsa) to bypass this gate;
-    -- everything else (aplay, pb-inkview, nil) must wait for BT audio
-    -- to be connected.  Gating on a positive allow-list (instead of
-    -- aplay/pb-inkview) prevents a stale or unset audio_player_type
-    -- from silently skipping the pre-flight, which corrupts the PB700c
-    -- amplifier system-wide.
+    -- on PocketBooks that have a BT adapter (PB632, PB700c, PB700K3).
+    -- We always require an active BT audio connection on these devices,
+    -- regardless of audio_player_type.  Earlier versions allowed pt =
+    -- gst-bt or bluealsa to bypass the BT-connected check, but a stale
+    -- selection from a previous session would let synthesis fall through
+    -- with no audio device, producing silent failures (PB632 regression
+    -- in v0.1.5.77).
     local pt = self.audio_player_type
     local pt_is_bt_routed = (pt == "gst-bt" or pt == "bluealsa")
     self._pb_pre_flight_state = {
         is_pb = is_pb,
         has_bt_adapter = has_bt_adapter,
+        bt_detect_source = bt_detect_source,
         has_tts_sm = self._pb_has_tts_sm and true or false,
         no_real_audio = self._no_real_audio_output and true or false,
         player_type = pt or "nil",
@@ -1300,14 +1339,12 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
     logger.dbg("TTSEngine: PB pre-flight:",
         "is_pb=", is_pb,
         "has_bt_adapter=", has_bt_adapter,
+        "bt_detect_source=", bt_detect_source,
         "has_tts_sm=", self._pb_has_tts_sm,
         "no_real_audio=", self._no_real_audio_output,
         "player_type=", pt,
         "pt_is_bt_routed=", pt_is_bt_routed)
-    if is_pb
-        and has_bt_adapter
-        and not self._no_real_audio_output
-        and not pt_is_bt_routed then
+    if is_pb and has_bt_adapter and not self._no_real_audio_output then
         local bt_connected = false
         local btm = self.plugin and self.plugin.bt_manager
         if btm then
@@ -1324,6 +1361,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             logger.warn("TTSEngine: PocketBook with BT adapter but no BT audio - refusing to play",
                 "(player_type=", self.audio_player_type,
                 "wav_play_cmd=", self._wav_play_cmd and "set" or "nil",
+                "bt_detect_source=", bt_detect_source,
                 "no_real_audio=", self._no_real_audio_output, ")")
             self.is_speaking = false
             UIManager:show(InfoMessage:new{
@@ -1331,6 +1369,22 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                 timeout = 10,
             })
             return false
+        end
+        -- BT is connected but selected player type isn't BT-routed.
+        -- This means audio_player_type cache is stale (e.g. user paired
+        -- BT after the first sentence).  Force a re-probe so gst-bt or
+        -- bluealsa is selected instead of the dangerous direct-ALSA path.
+        if not pt_is_bt_routed then
+            logger.warn("TTSEngine: BT connected but player_type=", pt,
+                "is not BT-routed; re-probing to switch to gst-bt/bluealsa")
+            self._cached_player = nil
+            local new_player = self:findAudioPlayer()
+            if new_player then
+                player = new_player
+                self._cached_player = new_player
+                pt = self.audio_player_type
+                logger.warn("TTSEngine: re-probe selected player_type=", pt)
+            end
         end
     end
 
@@ -1344,6 +1398,36 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
     -- only trigger TTS for named sources (VoiceView uses the C API).
     if self.audio_player_type == "kindle-native-tts" then
         local text = self._native_tts_text
+        -- Stale-cache guard: when a WAV audio file was synthesized
+        -- (e.g. by Piper) but the player_type is still "kindle-native-tts"
+        -- from an earlier session, the native Ivona path has nothing
+        -- meaningful to say.  Falling through to "no text to speak" loses
+        -- the audio entirely.  Switch to kindle-gst-play if available so
+        -- the prefetched WAV actually plays.
+        if (not text or text == "") and self.current_audio_file then
+            if not self._kindle_gst_play_bin then
+                local plugin_dir = self.plugin_dir or "."
+                local gst_play_bin = plugin_dir .. "/kindle/gst-play"
+                local gf = io.open(gst_play_bin, "r")
+                if gf then
+                    gf:close()
+                    if self.espeak_linker then
+                        self._kindle_gst_play_bin = string.format(
+                            "%s --library-path %s:/usr/lib:/lib %s",
+                            self.espeak_linker, self.espeak_lib_path, gst_play_bin)
+                    else
+                        self._kindle_gst_play_bin = gst_play_bin
+                    end
+                end
+            end
+            if self._kindle_gst_play_bin then
+                logger.warn("TTSEngine: kindle-native-tts has no text but WAV exists - switching to kindle-gst-play")
+                self.audio_player_type = "kindle-gst-play"
+                self._cached_player = nil
+                self.is_speaking = false
+                return self:play(on_word, on_complete, on_fail, concat_files)
+            end
+        end
         if not text or text == "" then
             logger.err("TTSEngine: Kindle native TTS -- no text to speak")
             self:onPlaybackComplete()

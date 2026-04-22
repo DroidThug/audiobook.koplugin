@@ -499,6 +499,28 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    /* Post-commit rate verification.  On some PocketBook ALSA stacks
+     * (PB631 with plughw:0) the plug: container accepts the requested
+     * rate via set_rate_near without actually loading the rate plugin,
+     * so audio plays at the hardware's native rate (typically 48000 Hz)
+     * regardless of the WAV file's sample rate.  Re-read the actual
+     * negotiated rate after hw_params commit and refuse if it does not
+     * match the source rate.  Without this, 22050 Hz espeak audio plays
+     * at ~2.18x speed and the user has no audible error. */
+    if (strict_device) {
+        unsigned int actual_rate = 0;
+        if (snd_pcm_hw_params_get_rate(params, &actual_rate, NULL) == 0
+            && actual_rate != hdr.sample_rate) {
+            fprintf(stderr,
+                "wav-play: post-commit rate mismatch on '%s': WAV=%u Hz, device=%u Hz (would play at %.2fx speed). Refusing.\n",
+                opened_device, hdr.sample_rate, actual_rate,
+                (double)actual_rate / hdr.sample_rate);
+            snd_pcm_close(pcm);
+            restore_mixer_switches(quiet);
+            fclose(f);
+            return 2;
+        }
+    }
     /* Signal that audio is about to flow.  The SyncController reads stderr
      * (redirected to /tmp/.gst_status) looking for "PLAYING" to anchor
      * word-highlight timing.  Without this, it falls back to a 5s timeout
