@@ -160,15 +160,20 @@ end
 function MenuBuilder.buildAlsaDeviceMenu(plugin)
     local pb_default = plugin.tts_engine._pb_has_tts_sm and "tts_sm" or ""
     local devices = {
-        { id = "tts_sm",   label = _("PocketBook pipeline - tts_sm (recommended)") },
-        { id = "plughw:0", label = _("Direct hardware with resampling - plughw:0") },
-        { id = "",         label = _("Auto (default ALSA device)") },
-        { id = "inkview",  label = _("System player (InkView) - experimental") },
+        { id = "tts_sm",   label = _("PocketBook pipeline - tts_sm (recommended)"),
+          help = _("Routes through the PocketBook audio daemon (softvol, dmix, resampling). Best compatibility on devices that expose tts_sm in /etc/asound.conf.") },
+        { id = "plughw:0", label = _("Direct hardware with resampling - plughw:0"),
+          help = _("Direct hardware access through the ALSA plug layer. On some PocketBooks (e.g. PB631) the plug layer does not actually resample; if you hear playback at 2-3x speed, switch back to tts_sm or Auto.") },
+        { id = "",         label = _("Auto (default ALSA device)"),
+          help = _("Uses the system default ALSA device, then falls back to tts_sm and plughw:0 if the default is unavailable.") },
+        { id = "inkview",  label = _("System player (InkView) - experimental"),
+          help = _("Uses the PocketBook InkView PlayFile API. Some firmwares (PB740, PB631) export PlayFile but do not actually play audio; if no sound comes out, switch back to tts_sm or Auto.") },
     }
     local menu = {}
     for _, d in ipairs(devices) do
         table.insert(menu, {
             text = d.label,
+            help_text = d.help,
             checked_func = function()
                 return plugin:getSetting("pb_alsa_device", pb_default) == d.id
             end,

@@ -1279,17 +1279,35 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         hci_f:close()
         has_bt_adapter = #addr > 0
     end
+    -- The pre-flight blocks every direct-ALSA / InkView wav-play attempt
+    -- on PocketBooks that have a BT adapter (PB632, PB700c).  Allow only
+    -- BT-routed player types (gst-bt, bluealsa) to bypass this gate;
+    -- everything else (aplay, pb-inkview, nil) must wait for BT audio
+    -- to be connected.  Gating on a positive allow-list (instead of
+    -- aplay/pb-inkview) prevents a stale or unset audio_player_type
+    -- from silently skipping the pre-flight, which corrupts the PB700c
+    -- amplifier system-wide.
+    local pt = self.audio_player_type
+    local pt_is_bt_routed = (pt == "gst-bt" or pt == "bluealsa")
+    self._pb_pre_flight_state = {
+        is_pb = is_pb,
+        has_bt_adapter = has_bt_adapter,
+        has_tts_sm = self._pb_has_tts_sm and true or false,
+        no_real_audio = self._no_real_audio_output and true or false,
+        player_type = pt or "nil",
+        pt_is_bt_routed = pt_is_bt_routed,
+    }
     logger.dbg("TTSEngine: PB pre-flight:",
         "is_pb=", is_pb,
         "has_bt_adapter=", has_bt_adapter,
         "has_tts_sm=", self._pb_has_tts_sm,
         "no_real_audio=", self._no_real_audio_output,
-        "player_type=", self.audio_player_type)
+        "player_type=", pt,
+        "pt_is_bt_routed=", pt_is_bt_routed)
     if is_pb
         and has_bt_adapter
         and not self._no_real_audio_output
-        and (self.audio_player_type == "aplay"
-             or self.audio_player_type == "pb-inkview") then
+        and not pt_is_bt_routed then
         local bt_connected = false
         local btm = self.plugin and self.plugin.bt_manager
         if btm then

@@ -404,26 +404,31 @@ int main(int argc, char **argv)
                     fprintf(stderr, "wav-play: plug: retry open failed: %s\n", snd_strerror(err));
                 }
                 if (!pcm) {
-                    /* Reopen the raw device as last resort */
-                    err = snd_pcm_open(&pcm, device, SND_PCM_STREAM_PLAYBACK, 0);
-                    if (err < 0) {
-                        restore_mixer_switches(quiet);
-                        fclose(f);
-                        return 1;
-                    }
-                    opened_device = device;
-                    snd_pcm_hw_params_any(pcm, params);
-                    snd_pcm_hw_params_set_access(pcm, params, SND_PCM_ACCESS_RW_INTERLEAVED);
-                    snd_pcm_hw_params_set_format(pcm, params, format);
-                    snd_pcm_hw_params_set_channels(pcm, params, hdr.channels);
-                    rate = hdr.sample_rate;
-                    snd_pcm_hw_params_set_rate_near(pcm, params, &rate, NULL);
-                    fprintf(stderr, "wav-play: WARNING: playing %u Hz audio at %u Hz (%.1fx speed)\n",
-                            hdr.sample_rate, rate, (double)rate / hdr.sample_rate);
+                    /* Rate conversion is not available on this device for
+                     * the requested PCM.  Refuse rather than play the
+                     * audio at the wrong speed (e.g. 22050 Hz espeak
+                     * output played at 48000 Hz on a fixed-rate codec
+                     * yields ~2.18x speed which is unintelligible).
+                     * The user can pick a different ALSA device
+                     * (e.g. tts_sm) which routes through the system
+                     * resampler. */
+                    fprintf(stderr,
+                        "wav-play: refusing to play %u Hz audio on '%s' (no rate conversion available, would play at %.1fx speed). Try a different ALSA device.\n",
+                        hdr.sample_rate, device,
+                        (double)rate / hdr.sample_rate);
+                    restore_mixer_switches(quiet);
+                    fclose(f);
+                    return 2;
                 }
             } else {
-                fprintf(stderr, "wav-play: WARNING: plug: device rate mismatch, playing %u Hz audio at %u Hz (%.1fx speed)\n",
-                        hdr.sample_rate, rate, (double)rate / hdr.sample_rate);
+                fprintf(stderr,
+                    "wav-play: refusing to play %u Hz audio on '%s' (plug device returned %u Hz, would play at %.1fx speed). Try a different ALSA device.\n",
+                    hdr.sample_rate, opened_device, rate,
+                    (double)rate / hdr.sample_rate);
+                snd_pcm_close(pcm);
+                restore_mixer_switches(quiet);
+                fclose(f);
+                return 2;
             }
         } else {
             /* Fallback chain: try remaining devices for one that accepts

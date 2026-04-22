@@ -150,6 +150,28 @@ local function collectPluginInfo(plugin)
     info.audio_player_cached = engine._cached_player or "not set"
     info.no_real_audio_output = engine._no_real_audio_output and "yes" or "no"
 
+    -- PocketBook pre-flight snapshot from the most recent play() attempt
+    -- (BT-adapter gate that prevents direct ALSA on PB632/PB700c).
+    if engine._pb_pre_flight_state then
+        local s = engine._pb_pre_flight_state
+        info.pb_pre_flight = string.format(
+            "is_pb=%s has_bt_adapter=%s has_tts_sm=%s no_real_audio=%s player_type=%s pt_is_bt_routed=%s",
+            tostring(s.is_pb), tostring(s.has_bt_adapter),
+            tostring(s.has_tts_sm), tostring(s.no_real_audio),
+            tostring(s.player_type), tostring(s.pt_is_bt_routed))
+    else
+        info.pb_pre_flight = "not yet evaluated"
+    end
+    -- Raw sysfs read used by the pre-flight to detect the BT adapter.
+    local hci_f = io.open("/sys/class/bluetooth/hci0/address", "r")
+    if hci_f then
+        info.bt_hci0_address = (hci_f:read("*l") or ""):gsub("[^%w:]+", "")
+        hci_f:close()
+        if info.bt_hci0_address == "" then info.bt_hci0_address = "empty" end
+    else
+        info.bt_hci0_address = "missing"
+    end
+
     -- Bundled binaries presence (check both original and .bin-renamed variants)
     local plugin_dir = engine.plugin_dir or _utils_dir:sub(1, -2)
     local espeak_path = plugin_dir .. "/espeak-ng/bin/espeak-ng"

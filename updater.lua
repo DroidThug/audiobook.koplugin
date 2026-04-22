@@ -237,26 +237,41 @@ function Updater._performUpdate(plugin, release)
     local extract_ok, extract_err
     if Device.unpackArchive then
         extract_ok, extract_err = Device:unpackArchive(zip_path, plugin_dir, true)
-    else
-        -- Fallback: use system unzip
+        if not extract_ok then
+            logger.warn("Updater: Device:unpackArchive failed:",
+                tostring(extract_err), "-- falling back to system unzip")
+        end
+    end
+    if not extract_ok then
+        -- Fallback: use system unzip (PocketBook PB740 ships an
+        -- unpackArchive that rejects the .zip extension; the bundled
+        -- BusyBox unzip handles it correctly).
+        local unzip_dir = tmp_dir .. "/audiobook-update-tmp"
+        os.execute('rm -rf "' .. unzip_dir .. '" 2>/dev/null')
         local ret = os.execute(
-            'unzip -o "' .. zip_path .. '" -d "' .. tmp_dir .. '/audiobook-update-tmp" 2>/dev/null')
-        if ret == 0 then
+            'unzip -o "' .. zip_path .. '" -d "' .. unzip_dir .. '" 2>/dev/null')
+        if ret == 0 or ret == true then
             -- Find the extracted subdirectory and copy contents
             local lfs = require("libs/libkoreader-lfs")
-            for entry in lfs.dir(tmp_dir .. "/audiobook-update-tmp") do
+            local copied = false
+            for entry in lfs.dir(unzip_dir) do
                 if entry ~= "." and entry ~= ".." then
-                    local src = tmp_dir .. "/audiobook-update-tmp/" .. entry
+                    local src = unzip_dir .. "/" .. entry
                     os.execute('cp -rf "' .. src .. '"/* "' .. plugin_dir .. '/" 2>/dev/null')
+                    copied = true
                     break
                 end
             end
-            extract_ok = true
+            extract_ok = copied
+            if not copied then
+                extract_err = "unzip succeeded but extracted directory was empty"
+            end
         else
             extract_ok = false
-            extract_err = "unzip returned " .. tostring(ret)
+            extract_err = (extract_err and (tostring(extract_err) .. "; ") or "")
+                .. "unzip returned " .. tostring(ret)
         end
-        os.execute('rm -rf "' .. tmp_dir .. '/audiobook-update-tmp" 2>/dev/null')
+        os.execute('rm -rf "' .. unzip_dir .. '" 2>/dev/null')
     end
 
     -- Clean up the downloaded zip and, on PocketBook, the tmp directory if
