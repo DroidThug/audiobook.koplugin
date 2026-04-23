@@ -246,30 +246,45 @@ function Updater._performUpdate(plugin, release)
         -- Fallback: use system unzip (PocketBook PB740 ships an
         -- unpackArchive that rejects the .zip extension; the bundled
         -- BusyBox unzip handles it correctly).
+        --
+        -- Issue #15 (v0.1.5.79 regression): on PB740 unzip exits with
+        -- status 1 ("warning, but extracted successfully") which os.execute
+        -- reports as 256.  We used to fail the update on that.  Now we
+        -- ignore the exit code entirely and verify success by checking
+        -- whether the destination directory was actually populated.
+        local lfs = require("libs/libkoreader-lfs")
         local unzip_dir = tmp_dir .. "/audiobook-update-tmp"
         os.execute('rm -rf "' .. unzip_dir .. '" 2>/dev/null')
+        os.execute('mkdir -p "' .. unzip_dir .. '" 2>/dev/null')
         local ret = os.execute(
-            'unzip -o "' .. zip_path .. '" -d "' .. unzip_dir .. '" 2>/dev/null')
-        if ret == 0 or ret == true then
-            -- Find the extracted subdirectory and copy contents
-            local lfs = require("libs/libkoreader-lfs")
-            local copied = false
+            'unzip -o "' .. zip_path .. '" -d "' .. unzip_dir .. '" 2>&1')
+        local copied = false
+        local copy_src
+        if lfs.attributes(unzip_dir, "mode") == "directory" then
             for entry in lfs.dir(unzip_dir) do
                 if entry ~= "." and entry ~= ".." then
-                    local src = unzip_dir .. "/" .. entry
-                    os.execute('cp -rf "' .. src .. '"/* "' .. plugin_dir .. '/" 2>/dev/null')
-                    copied = true
+                    copy_src = unzip_dir .. "/" .. entry
                     break
                 end
             end
-            extract_ok = copied
-            if not copied then
-                extract_err = "unzip succeeded but extracted directory was empty"
+        end
+        if copy_src then
+            -- Some zips have a top-level dir, others extract files directly.
+            local src_mode = lfs.attributes(copy_src, "mode")
+            if src_mode == "directory" then
+                os.execute('cp -rf "' .. copy_src .. '"/* "' .. plugin_dir .. '/" 2>/dev/null')
+            else
+                os.execute('cp -rf "' .. unzip_dir .. '"/* "' .. plugin_dir .. '/" 2>/dev/null')
             end
+            copied = true
+        end
+        if copied then
+            extract_ok = true
         else
             extract_ok = false
             extract_err = (extract_err and (tostring(extract_err) .. "; ") or "")
                 .. "unzip returned " .. tostring(ret)
+                .. " and produced no files"
         end
         os.execute('rm -rf "' .. unzip_dir .. '" 2>/dev/null')
     end

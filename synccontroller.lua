@@ -558,6 +558,10 @@ function SyncController:beginSentencePlayback(sentence)
         self.playback_bar:updatePlayState(true)
         self.playback_bar:updateProgress(self:getProgress())
     end
+    -- Apply visibility now: state has just transitioned to PLAYING and the
+    -- "paused_only" mode needs to suppress the bar on the first sentence,
+    -- not only after a manual pause/resume cycle.  Issue #15 (PB632).
+    self:_applyBarVisibility()
 
     -- Build concat pipeline with ALL remaining sentences on the page.
     -- Each extra sentence takes ~100-300 ms to synthesize on ARM — far
@@ -1120,26 +1124,32 @@ function SyncController:showPlaybackBar()
 end
 
 --[[--
-Apply the playback_bar_visibility setting.  Called on bar creation and on
-every pause/resume so the bar shows only while paused (or always) per the
-user preference.  The bar widget itself is kept alive across visibility
-toggles; only its on-screen presence changes.
+Apply the playback_bar_visibility setting.  Called on bar creation, on
+beginSentencePlayback (state -> PLAYING), and on every pause/resume so
+the bar shows only while paused (or always) per the user preference.
+
+Implementation note (issue #15, PB632 v0.1.5.79 regression):  earlier
+versions toggled the bar by adding/removing it from the UIManager window
+stack via show()/hide().  When the bar was hidden it lost its tap
+interception, so taps fell through to the reader (page turn / dictionary)
+and there was no way for the user to bring the bar back.  The overlay
+auto-pause poller also misbehaved because the widget was no longer in the
+stack.  We now keep the bar mounted at all times and only toggle painting
+via setSuppressed(), so taps anywhere still pause and the menu/overlay
+detection keeps working.
 --]]
 function SyncController:_applyBarVisibility()
     if not self.playback_bar then return end
     local mode = self.plugin and self.plugin:getSetting("playback_bar_visibility", "always")
         or "always"
-    if mode == "paused_only" and self:isPlaying() then
-        if self.playback_bar:isVisible() then
-            self.playback_bar:hide()
-            UIManager:setDirty("all", "ui")
-        end
-    else
-        if not self.playback_bar:isVisible() then
-            self.playback_bar:show()
-            UIManager:setDirty(self.playback_bar, "ui")
-        end
+    -- Make sure the bar is mounted.  showPlaybackBar() always mounts it on
+    -- creation, but we re-show defensively here in case something else
+    -- closed it.
+    if not self.playback_bar:isVisible() then
+        self.playback_bar:show()
     end
+    local should_suppress = (mode == "paused_only") and self:isPlaying()
+    self.playback_bar:setSuppressed(should_suppress)
 end
 
 --[[--

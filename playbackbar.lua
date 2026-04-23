@@ -314,6 +314,7 @@ end
 
 function PlaybackBar:show()
     self.visible = true
+    self.suppressed = false
     self.dimen.x = 0
     self.dimen.y = Screen:getHeight() - self.dimen.h
     UIManager:show(self, "ui", nil, self.dimen.x, self.dimen.y)
@@ -321,9 +322,38 @@ end
 
 function PlaybackBar:hide()
     self.visible = false
+    self.suppressed = false
     UIManager:close(self)
 end
 
+--- Suppress / un-suppress painting without removing the widget from the
+-- UIManager window stack.  Used by the "paused_only" visibility mode so
+-- that:
+--   * Taps on the reading area still toggle play/pause via handleEvent.
+--   * The overlay auto-pause poller keeps detecting menus opening.
+--   * The screen below shows through (paintTo is a no-op while suppressed).
+--
+-- This avoids the v0.1.5.79 bugs where UIManager:close()'ing the bar dropped
+-- it from the stack entirely: taps fell through to the reader (page turns,
+-- dictionary), the bar could never be restored, and the top-menu pull-down
+-- froze KOReader because the auto-pause path tried to re-show a stale widget.
+function PlaybackBar:setSuppressed(suppressed)
+    suppressed = suppressed and true or false
+    if self.suppressed == suppressed then return end
+    self.suppressed = suppressed
+    -- Repaint the bar's region: when un-suppressing draw the bar; when
+    -- suppressing redraw the area behind it (now empty paintTo).
+    UIManager:setDirty("all", "ui")
+end
+
+function PlaybackBar:isSuppressed()
+    return self.suppressed and true or false
+end
+
+--- True when the bar widget is mounted in the UIManager window stack,
+-- regardless of whether it is currently painted.  SyncController uses this
+-- to decide whether to call show()/setSuppressed() on the next visibility
+-- transition.
 function PlaybackBar:isVisible()
     return self.visible
 end
@@ -391,6 +421,13 @@ function PlaybackBar:handleEvent(event)
             end
             -- Tap during active playback
             if ges.ges == "tap" and self.visible then
+                -- When the bar is suppressed (paused_only mode while playing)
+                -- the whole screen acts as a tap-to-pause zone.  This also
+                -- restores the bar via _applyBarVisibility on pause().
+                if self.suppressed then
+                    self:onPlayPause()
+                    return true
+                end
                 -- Taps inside the bar area: dispatch to buttons
                 if ges.pos and self.dimen and ges.pos.y >= self.dimen.y then
                     return InputContainer.handleEvent(self, event)
@@ -410,6 +447,11 @@ function PlaybackBar:paintTo(bb, x, y)
     -- appear above us, skip painting when any non-toast widget besides the
     -- base reader is in the UIManager window stack.
     if self:_isOverlayActive() then
+        return
+    end
+    -- Suppressed mode: keep the widget in the stack (so taps still pause and
+    -- overlay auto-pause still works) but render nothing.
+    if self.suppressed then
         return
     end
     if self[1] and self[1].paintTo then

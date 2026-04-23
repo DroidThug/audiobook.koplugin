@@ -71,8 +71,27 @@ function TextParser:normalizeText(text)
     -- Normalize line endings to \n
     text = text:gsub("\r\n", "\n")
     text = text:gsub("\r", "\n")
-    -- Collapse multiple blank lines into one newline
-    text = text:gsub("\n%s*\n+", "\n")
+
+    -- Issue #21: PDFs (and many EPUBs converted from PDFs) wrap each line of
+    -- text with a literal newline.  parseSentences treats every newline as a
+    -- paragraph break, which inserts a TTS pause at every visual line break
+    -- and synthesises split words like "re-" + "duce" as two utterances.
+    --
+    -- Fix:
+    --   1. Preserve real paragraph breaks (any blank line) by replacing them
+    --      with a single sentinel byte before further processing.
+    --   2. Re-join hyphenated words split across a line wrap
+    --      ("word-\nrest" -> "wordrest").  We require a non-whitespace,
+    --      non-punctuation char on both sides so genuine "-" usage at line
+    --      end (e.g. an em-dash followed by a new sentence) is preserved.
+    --   3. Replace every remaining single newline with a space.
+    --   4. Restore the sentinel back to "\n" so parseSentences still gets
+    --      one paragraph per line.
+    text = text:gsub("\n[ \t]*\n+", "\0")
+    text = text:gsub("([^%s%p])%-\n([^%s%p])", "%1%2")
+    text = text:gsub("\n", " ")
+    text = text:gsub("\0", "\n")
+
     -- Replace runs of spaces/tabs (but NOT newlines) with single space
     text = text:gsub("[ \t]+", " ")
     -- Trim leading/trailing whitespace
