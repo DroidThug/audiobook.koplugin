@@ -72,40 +72,53 @@ function TextParser:normalizeText(text)
     text = text:gsub("\r\n", "\n")
     text = text:gsub("\r", "\n")
 
-    -- Issue #15 (v0.1.5.80 regression on PocketBook PB632/PB700c):
-    -- some text extractors (notably the PDF backend used on PocketBook)
-    -- emit literal NUL bytes inside the page text.  The PDF unwrap below
-    -- uses "\0" as a sentinel for paragraph breaks; if NULs already exist
-    -- in the input, the final restore step turns each one into "\n",
-    -- which makes parseSentences treat every character as its own
-    -- paragraph and TTS reads the page one character at a time.
-    -- Strip NUL bytes defensively before any sentinel work.
-    text = text:gsub("%z", "")
+    -- Issue #15: PocketBook PDF/EPUB text extractors sometimes emit control
+    -- characters (NUL, SOH, STX, etc.) between words or characters.  Left in
+    -- place they can split words, create phantom paragraphs, or collide with
+    -- the paragraph sentinel we use below.  Strip the whole C0 control range
+    -- except the whitespace we actually need (\t, \n).
+    text = text:gsub("[%z\x01-\x08\x0b\x0c\x0e-\x1f]", "")
 
-    -- Issue #21: PDFs (and many EPUBs converted from PDFs) wrap each line of
-    -- text with a literal newline.  parseSentences treats every newline as a
-    -- paragraph break, which inserts a TTS pause at every visual line break
-    -- and synthesises split words like "re-" + "duce" as two utterances.
+    -- Issue #21: PDFs (and PDF-derived EPUBs) wrap each visual line with a
+    -- literal newline.  parseSentences treats every newline as a paragraph
+    -- break, which inserts a TTS pause at every line wrap and synthesises
+    -- hyphen-split words ("re-" + "duce") as two utterances.
     --
-    -- Fix:
-    --   1. Preserve real paragraph breaks (any blank line) by replacing them
-    --      with a single sentinel byte before further processing.
-    --   2. Re-join hyphenated words split across a line wrap
-    --      ("word-\nrest" -> "wordrest").  We require a non-whitespace,
-    --      non-punctuation char on both sides so genuine "-" usage at line
-    --      end (e.g. an em-dash followed by a new sentence) is preserved.
-    --   3. Replace every remaining single newline with a space.
-    --   4. Restore the sentinel back to "\n" so parseSentences still gets
-    --      one paragraph per line.
-    text = text:gsub("\n[ \t]*\n+", "\0")
+    -- We preserve real paragraph breaks (blank lines) with a sentinel, turn
+    -- remaining single newlines into spaces, then restore the sentinels.
+    -- v0.1.5.80 used a single NUL byte ("\0") as the sentinel; v0.1.5.81
+    -- stripped NULs from the input but PB632/PB700c still reported char-by-char
+    -- reading, so we now use a multi-byte sentinel that can never collide.
+    local PARA_SENTINEL = "\x01\x02\x03"
+    text = text:gsub("\n[ \t]*\n+", PARA_SENTINEL)
     text = text:gsub("([^%s%p])%-\n([^%s%p])", "%1%2")
     text = text:gsub("\n", " ")
-    text = text:gsub("\0", "\n")
+    text = text:gsub(PARA_SENTINEL, "\n")
 
     -- Replace runs of spaces/tabs (but NOT newlines) with single space
     text = text:gsub("[ \t]+", " ")
     -- Trim leading/trailing whitespace
     text = text:match("^%s*(.-)%s*$")
+
+    -- Defensive guard: if the extractor emits paragraph breaks between every
+    -- character or word, parseSentences will create one-sentence-per-character
+    -- and TTS reads the page one letter at a time.  Detect an abnormally high
+    -- proportion of very short lines and join them into a single paragraph.
+    local line_count = 0
+    local short_line_count = 0
+    for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+        if line ~= "" then
+            line_count = line_count + 1
+            if #line <= 2 then
+                short_line_count = short_line_count + 1
+            end
+        end
+    end
+    if line_count > 5 and short_line_count / line_count > 0.5 then
+        text = text:gsub("\n", " ")
+        text = text:gsub("[ \t]+", " ")
+    end
+
     return text
 end
 
