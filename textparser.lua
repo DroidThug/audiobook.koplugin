@@ -72,6 +72,16 @@ function TextParser:normalizeText(text)
     text = text:gsub("\r\n", "\n")
     text = text:gsub("\r", "\n")
 
+    -- Issue #15 (v0.1.5.80 regression on PocketBook PB632/PB700c):
+    -- some text extractors (notably the PDF backend used on PocketBook)
+    -- emit literal NUL bytes inside the page text.  The PDF unwrap below
+    -- uses "\0" as a sentinel for paragraph breaks; if NULs already exist
+    -- in the input, the final restore step turns each one into "\n",
+    -- which makes parseSentences treat every character as its own
+    -- paragraph and TTS reads the page one character at a time.
+    -- Strip NUL bytes defensively before any sentinel work.
+    text = text:gsub("%z", "")
+
     -- Issue #21: PDFs (and many EPUBs converted from PDFs) wrap each line of
     -- text with a literal newline.  parseSentences treats every newline as a
     -- paragraph break, which inserts a TTS pause at every visual line break
