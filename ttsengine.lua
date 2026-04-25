@@ -442,10 +442,6 @@ Synthesize using command-line TTS.
 @return boolean Success
 --]]
 function TTSEngine:synthesizeCommand(text, callback)
-    -- Store text for kindle-native-tts playback (hybrid mode: espeak for
-    -- timing, native TTS for audio when tts.orchestrator is available)
-    self._native_tts_text = text
-
     -- Use Android cache dir when running on Android (no /tmp); otherwise /tmp
     local temp_dir = self._android_tts and self._android_tts:getTempDir() or "/tmp"
     self.file_counter = (self.file_counter or 0) + 1
@@ -946,6 +942,7 @@ function TTSEngine:espeakSynthesizeFallback(text)
         -- Generate timing estimates for the espeak audio
         self:generateTimingEstimates(text)
         self.current_audio_file = audio_file
+        self._native_tts_text = nil
         return audio_file
     end
     return nil
@@ -1032,6 +1029,7 @@ function TTSEngine:usePrefetched(text)
         self._prefetch_file = nil
         self._prefetch_timing = nil
         self._prefetch_text = nil
+        self._native_tts_text = nil
         logger.dbg("TTSEngine: Using prefetched audio")
         return true
     end
@@ -1043,6 +1041,7 @@ function TTSEngine:usePrefetched(text)
         end
         self.current_audio_file = piper_file
         self.timing_data = piper_timing
+        self._native_tts_text = nil
         return true
     end
     return false
@@ -1399,12 +1398,15 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
     if self.audio_player_type == "kindle-native-tts" then
         local text = self._native_tts_text
         -- Stale-cache guard: when a WAV audio file was synthesized
-        -- (e.g. by Piper) but the player_type is still "kindle-native-tts"
-        -- from an earlier session, the native Ivona path has nothing
-        -- meaningful to say.  Falling through to "no text to speak" loses
-        -- the audio entirely.  Switch to kindle-gst-play if available so
-        -- the prefetched WAV actually plays.
-        if (not text or text == "") and self.current_audio_file then
+        -- (e.g. by Piper or espeak) but the player_type is still
+        -- "kindle-native-tts" from an earlier session or backend mismatch,
+        -- the native Ivona path cannot play WAVs.  Falling through to
+        -- "no text to speak" loses the audio entirely.  Switch to
+        -- kindle-gst-play (or kindle-lipc) if available so the WAV plays.
+        local is_real_wav = self.current_audio_file
+            and self.current_audio_file ~= "/tmp/.kindle_native_tts"
+            and self.current_audio_file:match("%.wav$")
+        if is_real_wav then
             if not self._kindle_gst_play_bin then
                 local plugin_dir = self.plugin_dir or "."
                 local gst_play_bin = plugin_dir .. "/kindle/gst-play"
@@ -1421,12 +1423,18 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                 end
             end
             if self._kindle_gst_play_bin then
-                logger.warn("TTSEngine: kindle-native-tts has no text but WAV exists - switching to kindle-gst-play")
+                logger.warn("TTSEngine: kindle-native-tts cannot play WAV, switching to kindle-gst-play:", self.current_audio_file)
                 self.audio_player_type = "kindle-gst-play"
                 self._cached_player = nil
                 self.is_speaking = false
                 return self:play(on_word, on_complete, on_fail, concat_files)
             end
+            -- No gst-play available -- try kindle-lipc re-probe
+            logger.warn("TTSEngine: kindle-native-tts cannot play WAV and gst-play missing, clearing player cache")
+            self.audio_player_type = nil
+            self._cached_player = nil
+            self.is_speaking = false
+            return self:play(on_word, on_complete, on_fail, concat_files)
         end
         if not text or text == "" then
             logger.err("TTSEngine: Kindle native TTS -- no text to speak")
@@ -3969,6 +3977,7 @@ function TTSEngine:setBackend(backend)
     -- Ivona text-synth or kindle-lipc/gst-play WAV-decode is the right path).
     self._cached_player = nil
     self.audio_player_type = nil
+    self._native_tts_text = nil
     logger.dbg("TTSEngine: Backend switched to", backend)
     -- Restore correct backend_cmd for the selected backend
     if backend == self.BACKENDS.PIPER then
