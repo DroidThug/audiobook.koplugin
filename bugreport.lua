@@ -318,19 +318,51 @@ local function collectAudioInfo(plugin)
     -- Paired / connected BT devices (bluetoothctl)
     -- Older BlueZ (< 5.65) doesn't support "devices Paired" subcommand
     -- and outputs "Too many arguments" to stdout.
+    -- NOTE: bluetoothctl + pipe inside io.popen hangs on Kobo MTK devices
+    -- because spawned D-Bus threads keep the stdout pipe open.  Capture
+    -- full output and filter in Lua instead.
     if Utils.commandExists("bluetoothctl") then
         local paired = shellCapture("bluetoothctl paired-devices 2>/dev/null", 3)
             or shellCapture("bluetoothctl devices Paired 2>/dev/null", 3)
         if not paired or paired:match("[Tt]oo many") or paired:match("[Ii]nvalid") then
-            paired = shellCapture("bluetoothctl devices 2>/dev/null | head -10", 3)
+            paired = shellCapture("bluetoothctl devices 2>/dev/null", 3)
+            if paired then
+                local lines = {}
+                for line in paired:gmatch("[^\n]+") do
+                    table.insert(lines, line)
+                    if #lines >= 10 then break end
+                end
+                paired = table.concat(lines, "\n")
+            end
         end
         info.bt_paired_devices = paired or "none"
 
-        local connected = shellCapture("bluetoothctl info 2>/dev/null | grep -E 'Device|Name|Connected|Paired'", 3)
+        local connected = shellCapture("bluetoothctl info 2>/dev/null", 3)
+        if connected then
+            local filtered = {}
+            for line in connected:gmatch("[^\n]+") do
+                if line:match("Device") or line:match("Name")
+                    or line:match("Connected") or line:match("Paired") then
+                    table.insert(filtered, line)
+                end
+            end
+            connected = table.concat(filtered, "\n")
+        end
         info.bt_connected_devices = connected or "none"
 
         -- Adapter state: powered/pairable/discoverable
-        info.bt_adapter_info = shellCapture("bluetoothctl show 2>/dev/null | grep -E 'Powered|Pairable|Discoverable|Controller'", 3) or "unavailable"
+        local adapter = shellCapture("bluetoothctl show 2>/dev/null", 3)
+        if adapter then
+            local filtered = {}
+            for line in adapter:gmatch("[^\n]+") do
+                if line:match("Powered") or line:match("Pairable")
+                    or line:match("Discoverable") or line:match("Controller") then
+                    table.insert(filtered, line)
+                end
+            end
+            adapter = table.concat(filtered, "\n")
+        end
+        info.bt_adapter_info = adapter ~= "" and adapter or "unavailable"
     end
 
     -- Shell printf portability (Kobo busybox ash needs printf, not echo -e)
