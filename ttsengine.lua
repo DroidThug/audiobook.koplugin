@@ -2130,8 +2130,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                     engine.is_speaking = false
                     engine.play_generation = (engine.play_generation or 0) + 1
                     engine:cleanup()
-                    local err_hint = log_text:match("[Ee]rror%s*:?%s*([^
-]+)") or ""
+                    local err_hint = log_text:match("[Ee]rror%s*:?%s*(.+)") or ""
                     if #err_hint > 80 then
                         err_hint = err_hint:sub(1, 80) .. "..."
                     end
