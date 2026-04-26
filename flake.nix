@@ -91,7 +91,19 @@
     {
       packages = forAllSystems (system:
         let
-          pkgs = import nixpkgs { inherit system; };
+          pkgs = import nixpkgs {
+            inherit system;
+            overlays = [
+              # libadwaita's test-preferences-group test crashes with SIGTRAP in
+              # headless CI environments (no display server). It is pulled in
+              # transitively via alsa-plugins -> ffmpeg -> sdl3 -> zenity.
+              (self: super: {
+                libadwaita = super.libadwaita.overrideAttrs (old: {
+                  doCheck = false;
+                });
+              })
+            ];
+          };
           espeakKobo = mkEspeakKobo pkgs;
           bluealsaKobo = mkBluealsaKobo pkgs;
           kindleGstPlay = mkKindleGstPlay pkgs;

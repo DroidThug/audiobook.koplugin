@@ -5,7 +5,18 @@ let
   # Pin nixpkgs to a known-good commit (nixpkgs-unstable, 2026-03-22)
   # to avoid CI breakage from channel updates
   nixpkgsSrc = fetchTarball "https://github.com/NixOS/nixpkgs/archive/255a186666b6130ddddf8ad749887102a0820914.tar.gz";
-  pkgs = import nixpkgsSrc {};
+  pkgs = import nixpkgsSrc {
+    overlays = [
+      # libadwaita's test-preferences-group test crashes with SIGTRAP in
+      # headless CI environments (no display server). It is pulled in
+      # transitively via alsa-plugins -> ffmpeg -> sdl3 -> zenity.
+      (self: super: {
+        libadwaita = super.libadwaita.overrideAttrs (old: {
+          doCheck = false;
+        });
+      })
+    ];
+  };
   crossPkgs = pkgs.pkgsCross.armv7l-hf-multiplatform;
 in
 (crossPkgs.espeak-ng.override {
