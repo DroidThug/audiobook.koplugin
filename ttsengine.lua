@@ -2103,16 +2103,55 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                     UIManager:scheduleIn(0.1, pollGstPlayDone)
                 end
             else
-                -- Process exited -- playback complete.
+                -- Process exited -- check for early failure before treating as completion.
+                local elapsed_ms = time.to_ms(UIManager:getTime() - engine._audio_launched_at)
+                local expected_ms = engine._expected_play_duration_ms or 5000
+                local is_early_exit = elapsed_ms < math.min(1000, expected_ms * 0.2)
+
                 -- Read the stderr log for diagnostics (helps debug silent failures).
+                local log_text = ""
                 local log_fh = io.open("/tmp/.gst_play_last.log", "r")
                 if log_fh then
-                    local log_text = log_fh:read("*a") or ""
+                    log_text = log_fh:read("*a") or ""
                     log_fh:close()
                     if log_text ~= "" then
                         logger.warn("TTSEngine: kindle-gst-play stderr:", log_text:sub(1, 500))
                     end
                 end
+
+                local has_error = log_text:match("Failed to load plugin")
+                    or log_text:match("undefined symbol")
+                    or log_text:match("[Ee]rror")
+
+                if is_early_exit and has_error then
+                    logger.err("TTSEngine: kindle-gst-play exited early (", elapsed_ms,
+                        "ms) with error, expected ~", expected_ms, "ms")
+                    engine._gst_play_pid = nil
+                    engine.is_speaking = false
+                    engine.play_generation = (engine.play_generation or 0) + 1
+                    engine:cleanup()
+                    local err_hint = log_text:match("[Ee]rror%s*:?%s*([^
+]+)") or ""
+                    if #err_hint > 80 then
+                        err_hint = err_hint:sub(1, 80) .. "..."
+                    end
+                    local msg = _("Audio playback failed on this Kindle model.\n\nThe GStreamer audio pipeline could not start")
+                    if err_hint ~= "" then
+                        msg = msg .. " (" .. err_hint .. ")."
+                    else
+                        msg = msg .. "."
+                    end
+                    msg = msg .. _("\n\nThis is often a system library compatibility issue. Try connecting Bluetooth headphones via Kindle Settings, or generate a bug report (Audiobook > Report a bug) and share it on the GitHub issue.")
+                    UIManager:show(InfoMessage:new{
+                        text = msg,
+                        timeout = 12,
+                    })
+                    if engine.on_fail_callback then
+                        engine.on_fail_callback()
+                    end
+                    return
+                end
+
                 logger.warn("TTSEngine: kindle-gst-play finished, polls=", poll_count)
                 engine._gst_play_pid = nil
                 engine:onPlaybackComplete()
@@ -2596,12 +2635,18 @@ function TTSEngine:findAudioPlayer()
                             "%s --library-path %s:/usr/lib:/lib %s",
                             self.espeak_linker, self.espeak_lib_path, gst_play_bin)
                     end
-                    -- Run --probe to verify GStreamer loads and mixersink exists
-                    local ph = io.popen(gst_play_cmd .. " --probe 2>/dev/null")
+                    -- Run --probe to verify GStreamer loads and mixersink exists.
+                    -- Capture stderr (2>&1) so plugin load failures are visible.
+                    local ph = io.popen(gst_play_cmd .. " --probe 2>&1")
                     if ph then
                         local probe = ph:read("*a") or ""
                         ph:close()
-                        if probe:match("mixersink=found") then
+                        local has_plugin_error = probe:match("Failed to load plugin")
+                            or probe:match("undefined symbol")
+                            or probe:match("GStreamer%-WARNING")
+                        if has_plugin_error then
+                            logger.warn("TTSEngine: kindle-gst-play probe found plugin load error:", probe:gsub("\n", " "))
+                        elseif probe:match("mixersink=found") then
                             self.audio_player_type = "kindle-gst-play"
                             self._kindle_gst_play_bin = gst_play_cmd
                             self._no_real_audio_output = false
