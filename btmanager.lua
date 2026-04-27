@@ -492,6 +492,7 @@ function BTManager:powerOn()
             -- bluetooth before starting the daemon.
             self:_rfkillUnblock()
 
+            local had_to_restart_btd = false
             if not is_bluetoothd_running() then
                 local daemon = bluetoothd_path or "bluetoothd"
                 logger.warn("BTManager: starting bluetoothd from:", daemon)
@@ -501,7 +502,17 @@ function BTManager:powerOn()
                     logger.warn("BTManager: bluetoothd failed to start from", daemon)
                 end
             else
-                logger.warn("BTManager: bluetoothd already running")
+                -- bluetoothd caches the adapter list at startup.  If the
+                -- adapter appears after bluetoothd started (e.g. because
+                -- sdio_bt_pwr was just reloaded), it may never see hci0.
+                -- Restarting bluetoothd forces a fresh adapter scan.
+                -- Issue #14 (Kobo Libra 2 hci0 not found after 6s).
+                logger.warn("BTManager: bluetoothd already running, restarting to pick up new adapter")
+                os.execute("killall bluetoothd 2>/dev/null; sleep 1")
+                local daemon = bluetoothd_path or "bluetoothd"
+                os.execute(daemon .. " 2>/dev/null &")
+                os.execute("sleep 1")
+                had_to_restart_btd = true
             end
             -- Reset the HCI adapter.  Use ";" instead of "&&" so that
             -- "hci0 up" still runs even when "hci0 down" fails (which
@@ -510,8 +521,10 @@ function BTManager:powerOn()
             os.execute("hciconfig hci0 down 2>/dev/null; hciconfig hci0 up 2>/dev/null")
             -- Wait for the HCI device to appear.  Use integer sleep
             -- because PocketBook's BusyBox sleep rejects fractions.
+            -- Increase timeout from 6s to 12s: some devices need the
+            -- extra time after a bluetoothd restart (issue #14).
             local hci_ready = false
-            for attempt = 1, 6 do
+            for attempt = 1, 12 do
                 os.execute("sleep 1")
                 local h = io.popen("hciconfig hci0 2>/dev/null")
                 local r = h and h:read("*a") or ""
@@ -523,7 +536,26 @@ function BTManager:powerOn()
                 end
             end
             if not hci_ready then
-                logger.warn("BTManager: hci0 not found after 6s")
+                logger.warn("BTManager: hci0 not found after 12s")
+                -- Fallback: try bluetoothctl power-on, which uses D-Bus
+                -- and sometimes succeeds where hciconfig fails.
+                local bc = io.popen("bluetoothctl power on 2>&1")
+                if bc then
+                    local out = bc:read("*a") or ""
+                    bc:close()
+                    logger.warn("BTManager: bluetoothctl power on result:", out:gsub("\n", " "))
+                    os.execute("sleep 2")
+                    local h2 = io.popen("hciconfig hci0 2>/dev/null")
+                    local r2 = h2 and h2:read("*a") or ""
+                    if h2 then h2:close() end
+                    if r2:match("hci0") then
+                        hci_ready = true
+                        logger.warn("BTManager: hci0 appeared after bluetoothctl power on")
+                    end
+                end
+            end
+            if not hci_ready then
+                logger.err("BTManager: hci0 could not be brought up. Firmware may need initialization by the stock OS (Nickel).")
             end
         end
     end
