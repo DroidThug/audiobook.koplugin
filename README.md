@@ -195,49 +195,10 @@ The **Voice settings** menu only lists English accents, but espeak-ng supports [
 },
 ```
 
-Common voice codes:
-
-| Language | Code |
-|----------|------|
-| Portuguese (Brazil) | `pt-br` |
-| Portuguese (Portugal) | `pt` |
-| Spanish | `es` |
-| French | `fr` |
-| German | `de` |
-| Italian | `it` |
-| Dutch | `nl` |
-| Russian | `ru` |
-| Polish | `pl` |
-| Turkish | `tr` |
-| Arabic | `ar` |
-| Mandarin | `zhy` |
-| Japanese | `ja` |
-| Korean | `ko` |
-
 Restart KOReader and start reading. The plugin will use the new voice immediately.
 
 > **Tip:** You can also add a variant (e.g. `pt-br+f2` for female voice 2). See the [espeak-ng voice documentation](https://github.com/espeak-ng/espeak-ng/blob/master/docs/voices.md) for the full list.
 
-### Performance tuning
-
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| Playback stutters or stops | Too many plugins loaded | Close other heavy plugins (KOAssistant, Gemini integrations, etc.) before reading |
-| Piper never produces audio | Device has < 512 MB RAM or single-core CPU | Switch to **espeak-ng** backend. Piper neural TTS needs ~100 MB RAM just for the model |
-| "Running low on memory" warnings | KOReader + plugins + Piper competing for RAM | Use espeak-ng, or close other apps. The plugin now auto-detects low memory and warns before launching Piper |
-| Slow page turns while reading | Highlight calculation on complex pages | Disable **Highlight words** and keep only **Highlight sentences** |
-| First sentence takes 3+ seconds to start | Piper model cold-start | Enable **Quick start with espeak** in settings -- plays the first sentence via espeak-ng instantly while Piper loads in the background |
-
-### Bluetooth troubleshooting (Kobo)
-
-| Problem | Cause | Fix |
-|---------|-------|-----|
-| "Failed to power on Bluetooth" / hci0 not found | BT firmware not initialized | **Exit KOReader to Nickel** (Kobo's stock software), pair your headphones in Nickel's settings, then re-launch KOReader. The firmware stays loaded across reboots. |
-| "No Bluetooth audio sink was detected" | bluealsa not running or BT device not paired | Make sure headphones are **paired AND connected** (not just paired). Check in **Tools > Audiobook Read-Along > Bluetooth settings**. |
-| BT connects then drops quickly | Connection timeout or interference | Keep headphones within 1 meter during pairing. Restart KOReader after pairing. |
-| Audio plays through speaker instead of BT | Wrong audio player selected | The plugin auto-detects the best player. If it picks `aplay` instead of `gst-bt`, disconnect and reconnect BT headphones while KOReader is running to force re-detection. |
-
-> **Note for Kobo Libra 2 / Io users:** These devices use the BlueZ stack. If `bluetoothd` is already running but `hci0` never appears, the SDIO BT power module (`sdio_bt_pwr`) may need a firmware load that only Nickel performs. The Nickel workaround above is the most reliable fix.
 
 ## Architecture
 
