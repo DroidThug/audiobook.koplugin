@@ -268,6 +268,7 @@ function SyncController:readNextSentence()
         local poll_count = 0
         local max_polls = 600  -- 150 s hard timeout (buffer wait can add time)
         local target_ready_at = nil  -- timestamp when target first became ready
+        local _toast_shown = {}  -- track slow-synthesis toasts per sentence
 
         -- Count how many consecutive sentences AFTER the target are ready.
         local function countReadyAhead()
@@ -291,6 +292,24 @@ function SyncController:readNextSentence()
                 return
             end
             poll_count = poll_count + 1
+
+            -- Slow-synthesis warning: on underpowered devices Piper can take
+            -- 30-75s per sentence.  Warn the user so they don't think it's frozen.
+            if poll_count == 20 and not _toast_shown.slow then
+                _toast_shown.slow = true
+                local InfoMessage = require("ui/widget/infomessage")
+                UIManager:show(InfoMessage:new{
+                    text = _("Neural synthesis in progress...\nPlease wait (this may take 20-40 seconds on your device)."),
+                    timeout = 4,
+                })
+            elseif poll_count == 60 and not _toast_shown.veryslow then
+                _toast_shown.veryslow = true
+                local InfoMessage = require("ui/widget/infomessage")
+                UIManager:show(InfoMessage:new{
+                    text = _("Piper is still synthesizing.\nFor faster playback, switch to the espeak backend in Tools → Audiobook → TTS Engine."),
+                    timeout = 6,
+                })
+            end
 
             -- Use non-consuming peek so we can delay playback for buffering
             local pf_file = controller.tts_engine:peekPrefetch(sentence.text)

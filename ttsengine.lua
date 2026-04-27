@@ -1316,6 +1316,41 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             end
         end
     end
+    -- ── Kindle BT prerequisite check ─────────────────────────────────
+    -- Kindles have no internal speaker; audio only routes through BT
+    -- headphones via audiomgrd.  Warn once per session if BT is not
+    -- connected and there are no ALSA soundcards (no built-in speaker).
+    if Device:isKindle() and not self._kindle_bt_warned then
+        local has_soundcard = false
+        local sc = io.popen("aplay -l 2>/dev/null")
+        if sc then
+            local sout = sc:read("*a") or ""
+            sc:close()
+            -- aplay -l on Kindle with no soundcards prints:
+            -- "aplay: device_list:223: no soundcards found..."
+            if not sout:find("no soundcards") then
+                has_soundcard = true
+            end
+        end
+        if not has_soundcard then
+            local am_h = io.popen("lipc-get-prop com.lab126.audiomgrd audioOutputConnected 2>/dev/null")
+            local am_out = ""
+            if am_h then
+                am_out = am_h:read("*a") or ""
+                am_h:close()
+            end
+            local connected = am_out:match("1")
+            if not connected then
+                self._kindle_bt_warned = true
+                logger.warn("TTSEngine: Kindle has no soundcards and BT not connected")
+                UIManager:show(InfoMessage:new{
+                    text = _("No Bluetooth headphones detected.\n\nThis Kindle has no built-in speaker. Connect Bluetooth headphones in Settings → Wi-Fi & Bluetooth before playing."),
+                    timeout = 8,
+                })
+            end
+        end
+    end
+
     -- The pre-flight blocks every direct-ALSA / InkView wav-play attempt
     -- on PocketBooks that have a BT adapter (PB632, PB700c, PB700K3).
     -- We always require an active BT audio connection on these devices,
@@ -2140,7 +2175,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                     else
                         msg = msg .. "."
                     end
-                    msg = msg .. _("\n\nThis is often a system library compatibility issue. Try connecting Bluetooth headphones via Kindle Settings, or generate a bug report (Audiobook > Report a bug) and share it on the GitHub issue.")
+                    msg = msg .. _("\n\nThis is often a system library compatibility issue. Try connecting Bluetooth headphones via Kindle Settings, switch to the espeak backend (Tools → Audiobook → TTS Engine), or generate a bug report (Audiobook > Report a bug) and share it on the GitHub issue.")
                     UIManager:show(InfoMessage:new{
                         text = msg,
                         timeout = 12,

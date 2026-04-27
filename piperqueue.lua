@@ -398,6 +398,32 @@ function PiperQueue:startServers()
         return
     end
 
+    -- Low-memory guard: Piper neural TTS loads a ~100MB ONNX model into RAM.
+    -- On devices with < 80MB free, launching Piper risks OOM-killing KOReader.
+    local mem_available_kb = 0
+    local mf = io.open("/proc/meminfo", "r")
+    if mf then
+        for line in mf:lines() do
+            local kb = line:match("MemAvailable:%s+(%d+)%s+kB")
+            if kb then
+                mem_available_kb = tonumber(kb) or 0
+                break
+            end
+        end
+        mf:close()
+    end
+    if mem_available_kb > 0 and mem_available_kb < 80 * 1024 then
+        local mem_mb = math.floor(mem_available_kb / 1024)
+        logger.err("PiperQueue: Low memory (", mem_mb, "MB free). Aborting Piper server launch.")
+        local InfoMessage = require("ui/widget/infomessage")
+        UIManager:show(InfoMessage:new{
+            text = _("Low memory detected (~" .. mem_mb .. " MB free).\nPiper neural TTS requires more RAM.\nSwitch to the espeak backend for reliable playback."),
+            timeout = 6,
+        })
+        self._servers_starting = false
+        return
+    end
+
     logger.warn("PiperQueue: CPU cores:", _cpu_cores,
                 "→ SERVER_COUNT:", SERVER_COUNT,
                 "BATCH_SIZE:", BATCH_SIZE)
@@ -538,6 +564,11 @@ rm -f "$FIFO" "${FIFO}.pid" "${FIFO}.piper_pid"
         elseif time.to_ms(UIManager:getTime() - start_time) > 60000 then
             pq._servers_starting = false
             logger.err("PiperQueue: Server startup timed out (60s), per-process fallback")
+            local InfoMessage = require("ui/widget/infomessage")
+            UIManager:show(InfoMessage:new{
+                text = _("Piper server failed to start (timeout).\nNeural TTS may be too heavy for this device.\nSwitch to the espeak backend for reliable playback."),
+                timeout = 6,
+            })
             pq:launchNext()
         else
             UIManager:scheduleIn(0.3, checkServersReady)
@@ -688,6 +719,11 @@ function PiperQueue:launchNext()
 
         if not ok then
             logger.err("PiperQueue: All server FIFOs failed, per-process fallback")
+            local InfoMessage = require("ui/widget/infomessage")
+            UIManager:show(InfoMessage:new{
+                text = _("Piper neural TTS servers stopped responding.\nThis often happens on devices with limited RAM or CPU.\nSwitch to the espeak backend for reliable playback."),
+                timeout = 6,
+            })
             for _, e in ipairs(batch_entries) do e.status = "queued" end
             self._servers_running = false
             self:stopServers()
