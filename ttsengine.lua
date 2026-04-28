@@ -374,50 +374,11 @@ function TTSEngine:setVoice(voice)
 end
 
 --[[--
-Resolve the correct ESPEAK_DATA_PATH for the current voice.
-Checks, in order:
-  1. Bundled espeak-ng data (English-only by default)
-  2. User-downloaded language packs in <plugin>/espeak-ng-lang/
-  3. Piper's bundled espeak-ng-data (if Piper is installed)
+Return the ESPEAK_DATA_PATH. All languages are bundled with the plugin,
+so this is just the bundled data directory.
 @return string  Directory to use as ESPEAK_DATA_PATH
 --]]
 function TTSEngine:_resolveEspeakDataPath()
-    local voice = self.voice or "en"
-    local base = voice:match("^([^+]+)") or voice
-    local bare = base:gsub("%-.*", "")
-
-    local function hasDict(path)
-        if not path then return false end
-        local f = io.open(path .. "/espeak-ng-data/" .. base .. "_dict", "r")
-        if f then f:close(); return true end
-        if bare ~= base then
-            f = io.open(path .. "/espeak-ng-data/" .. bare .. "_dict", "r")
-            if f then f:close(); return true end
-        end
-        return false
-    end
-
-    -- 1. Bundled espeak-ng data
-    if hasDict(self.espeak_data_path) then
-        return self.espeak_data_path
-    end
-
-    -- 2. User-downloaded language packs
-    local plugin_dir = self.plugin_dir or "."
-    local downloaded = plugin_dir .. "/espeak-ng-lang"
-    if hasDict(downloaded) then
-        logger.dbg("TTSEngine: Using downloaded lang pack for", base)
-        return downloaded
-    end
-
-    -- 3. Piper's bundled espeak-ng-data (fallback)
-    if self.piper_model_dir and hasDict(self.piper_model_dir) then
-        logger.warn("TTSEngine: Voice", base,
-            "not in espeak-ng bundle, using Piper's espeak-ng-data")
-        return self.piper_model_dir
-    end
-
-    -- Nothing found — return primary anyway and let espeak-ng report the error
     return self.espeak_data_path or "/usr/share"
 end
 

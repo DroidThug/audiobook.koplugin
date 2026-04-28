@@ -13,28 +13,6 @@ local time = require("ui/time")
 
 local Downloader = {}
 
--- GitHub release base URL for language packs
-Downloader.LANG_PACK_BASE_URL =
-    "https://github.com/stradichenko/audiobook.koplugin/releases/download/lang-packs-v1"
-
--- Known espeak-ng language packs (language code → display name)
-Downloader.ESPEAK_LANGS = {
-    { id = "pt",     label = "Portuguese",          label_pt = "Português" },
-    { id = "pt-br",  label = "Portuguese (Brazil)", label_pt = "Português (Brasil)" },
-    { id = "es",     label = "Spanish",             label_pt = "Español" },
-    { id = "fr",     label = "French",              label_pt = "Français" },
-    { id = "de",     label = "German",              label_pt = "Deutsch" },
-    { id = "it",     label = "Italian",             label_pt = "Italiano" },
-    { id = "nl",     label = "Dutch",               label_pt = "Nederlands" },
-    { id = "ru",     label = "Russian",             label_pt = "Русский" },
-    { id = "pl",     label = "Polish",              label_pt = "Polski" },
-    { id = "tr",     label = "Turkish",             label_pt = "Türkçe" },
-    { id = "ar",     label = "Arabic",              label_pt = "العربية" },
-    { id = "zhy",    label = "Mandarin",            label_pt = "中文" },
-    { id = "ja",     label = "Japanese",            label_pt = "日本語" },
-    { id = "ko",     label = "Korean",              label_pt = "한국어" },
-}
-
 -- Known Piper voices (voice id → {name, url, size_mb})
 Downloader.PIPER_VOICES = {
     { id = "en_US-danny-low",     name = "Danny (US English, low)",      size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/danny/low/en_US-danny-low.onnx" },
@@ -209,33 +187,6 @@ function Downloader:extract(archive, dest_dir, on_complete)
 end
 
 --[[--
-Download and extract an espeak-ng language pack.
-@param lang_id string  e.g. "pt" or "pt-br"
-@param plugin_dir string  Plugin installation directory
-@param on_complete function(success, err_msg)
---]]
-function Downloader:downloadEspeakLang(lang_id, plugin_dir, on_complete)
-    -- Normalize language code for filename
-    local file_lang = lang_id:gsub("-", "_")
-    local url = string.format("%s/%s.tar.gz", self.LANG_PACK_BASE_URL, file_lang)
-    local dest = plugin_dir .. "/.downloads/" .. file_lang .. ".tar.gz"
-    local extract_dir = plugin_dir .. "/espeak-ng-lang"
-
-    self:download(url, dest, nil, function(ok, err)
-        if not ok then
-            if on_complete then on_complete(false, err) end
-            return
-        end
-        self:extract(dest, extract_dir, function(ok2, err2)
-            if ok2 then
-                logger.warn("Downloader: espeak lang", lang_id, "installed to", extract_dir)
-            end
-            if on_complete then on_complete(ok2, err2) end
-        end)
-    end)
-end
-
---[[--
 Download a Piper voice model (.onnx + .json).
 @param voice_id string  e.g. "en_US-danny-low"
 @param plugin_dir string
@@ -278,24 +229,6 @@ function Downloader:downloadPiperVoice(voice_id, plugin_dir, on_progress, on_com
         logger.warn("Downloader: Piper voice", voice_id, "installed")
         if on_complete then on_complete(true, nil) end
     end)
-end
-
---[[--
-Check whether an espeak-ng language pack is already installed.
-@param lang_id string
-@param plugin_dir string
-@return boolean
---]]
-function Downloader:hasEspeakLang(lang_id, plugin_dir)
-    local base = lang_id:match("^([^+]+)") or lang_id
-    local dir = plugin_dir .. "/espeak-ng-lang"
-    -- Check for dict file or lang directory
-    local f = io.open(dir .. "/espeak-ng-data/" .. base .. "_dict", "r")
-    if f then f:close(); return true end
-    local bare = base:gsub("%-.*", "")
-    f = io.open(dir .. "/espeak-ng-data/" .. bare .. "_dict", "r")
-    if f then f:close(); return true end
-    return false
 end
 
 --[[--

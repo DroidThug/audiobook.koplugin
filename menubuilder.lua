@@ -156,11 +156,13 @@ function MenuBuilder.buildVoiceSettingsMenu(plugin)
         })
     end
 
-    -- Downloadable voice packs
+    -- Downloadable Piper voices (from HuggingFace upstream)
     table.insert(menu, {
-        text = _("Download voices…"),
+        text = _("Download Piper voice…"),
         sub_item_table_func = function()
-            return MenuBuilder.buildDownloadMenu(plugin)
+            local _dir = debug.getinfo(1, "S").source:match("^@(.*/)[^/]*$") or "./"
+            local Downloader = dofile(_dir .. "downloader.lua")
+            return MenuBuilder.buildPiperDownloadMenu(plugin, Downloader)
         end,
     })
 
@@ -660,67 +662,6 @@ function MenuBuilder.buildPiperVoiceMenu(plugin)
                     label = label .. " (" .. voice.quality .. ")"
                 end
                 plugin:setSetting("piper_model_label", label)
-            end,
-        })
-    end
-
-    return menu
-end
-
-function MenuBuilder.buildDownloadMenu(plugin)
-    local _dir = debug.getinfo(1, "S").source:match("^@(.*/)[^/]*$") or "./"
-    local Downloader = dofile(_dir .. "downloader.lua")
-    local menu = {}
-
-    table.insert(menu, {
-        text = _("Download espeak-ng language"),
-        sub_item_table_func = function()
-            return MenuBuilder.buildEspeakDownloadMenu(plugin, Downloader)
-        end,
-    })
-
-    table.insert(menu, {
-        text = _("Download Piper voice"),
-        sub_item_table_func = function()
-            return MenuBuilder.buildPiperDownloadMenu(plugin, Downloader)
-        end,
-    })
-
-    return menu
-end
-
-function MenuBuilder.buildEspeakDownloadMenu(plugin, Downloader)
-    local menu = {}
-    local plugin_dir = plugin.plugin_dir or "."
-
-    for _, lang in ipairs(Downloader.ESPEAK_LANGS) do
-        local installed = Downloader:hasEspeakLang(lang.id, plugin_dir)
-        local status = installed and _(" ✓ installed") or _("")
-        table.insert(menu, {
-            text = lang.label .. status,
-            help_text = lang.label_pt,
-            enabled_func = function() return not installed end,
-            callback = function()
-                if installed then return end
-                local info = InfoMessage:new{
-                    text = _("Downloading ") .. lang.label .. _("…"),
-                    timeout = 0,  -- modal, dismissed on completion
-                }
-                UIManager:show(info)
-                Downloader:downloadEspeakLang(lang.id, plugin_dir, function(ok, err)
-                    UIManager:close(info)
-                    if ok then
-                        UIManager:show(InfoMessage:new{
-                            text = _("Language pack installed:\n") .. lang.label,
-                            timeout = 3,
-                        })
-                    else
-                        UIManager:show(InfoMessage:new{
-                            text = _("Download failed:\n") .. (err or _("unknown error")),
-                            timeout = 5,
-                        })
-                    end
-                end)
             end,
         })
     end
