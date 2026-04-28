@@ -673,7 +673,7 @@ function MenuBuilder.buildPiperDownloadMenu(plugin, Downloader)
     local menu = {}
     local plugin_dir = plugin.plugin_dir or "."
 
-    for _, voice in ipairs(Downloader.PIPER_VOICES) do
+    for __idx, voice in ipairs(Downloader.PIPER_VOICES) do
         local installed = Downloader:hasPiperVoice(voice.id, plugin_dir)
         local status = installed and _(" ✓ installed") or _("")
         local size_str = string.format(" · %d MB", voice.size_mb)
