@@ -374,6 +374,54 @@ function TTSEngine:setVoice(voice)
 end
 
 --[[--
+Resolve the correct ESPEAK_DATA_PATH for the current voice.
+Checks, in order:
+  1. Bundled espeak-ng data (English-only by default)
+  2. User-downloaded language packs in <plugin>/espeak-ng-lang/
+  3. Piper's bundled espeak-ng-data (if Piper is installed)
+@return string  Directory to use as ESPEAK_DATA_PATH
+--]]
+function TTSEngine:_resolveEspeakDataPath()
+    local voice = self.voice or "en"
+    local base = voice:match("^([^+]+)") or voice
+    local bare = base:gsub("%-.*", "")
+
+    local function hasDict(path)
+        if not path then return false end
+        local f = io.open(path .. "/espeak-ng-data/" .. base .. "_dict", "r")
+        if f then f:close(); return true end
+        if bare ~= base then
+            f = io.open(path .. "/espeak-ng-data/" .. bare .. "_dict", "r")
+            if f then f:close(); return true end
+        end
+        return false
+    end
+
+    -- 1. Bundled espeak-ng data
+    if hasDict(self.espeak_data_path) then
+        return self.espeak_data_path
+    end
+
+    -- 2. User-downloaded language packs
+    local plugin_dir = self.plugin_dir or "."
+    local downloaded = plugin_dir .. "/espeak-ng-lang"
+    if hasDict(downloaded) then
+        logger.dbg("TTSEngine: Using downloaded lang pack for", base)
+        return downloaded
+    end
+
+    -- 3. Piper's bundled espeak-ng-data (fallback)
+    if self.piper_model_dir and hasDict(self.piper_model_dir) then
+        logger.warn("TTSEngine: Voice", base,
+            "not in espeak-ng bundle, using Piper's espeak-ng-data")
+        return self.piper_model_dir
+    end
+
+    -- Nothing found — return primary anyway and let espeak-ng report the error
+    return self.espeak_data_path or "/usr/share"
+end
+
+--[[--
 Set the espeak-ng word gap (extra silence between words).
 @param gap number Gap in units of 10ms (0 = default)
 --]]
@@ -467,15 +515,16 @@ function TTSEngine:synthesizeCommand(text, callback)
         -- Build invocation for bundled espeak-ng on Kobo:
         -- Use the bundled ld-linux to bypass the ancient system glibc (2.11)
         local exec_prefix = ""
+        local esp_data = self:_resolveEspeakDataPath()
         if self.espeak_linker then
             exec_prefix = string.format(
                 "ESPEAK_DATA_PATH=%s %s --library-path %s ",
-                self.espeak_data_path, self.espeak_linker, self.espeak_lib_path
+                esp_data, self.espeak_linker, self.espeak_lib_path
             )
         elseif self.espeak_lib_path then
             exec_prefix = string.format(
                 "LD_LIBRARY_PATH=%s ESPEAK_DATA_PATH=%s ",
-                self.espeak_lib_path, self.espeak_data_path
+                self.espeak_lib_path, esp_data
             )
         end
         -- Build word-gap flag only if non-zero
@@ -906,15 +955,16 @@ function TTSEngine:espeakSynthesizeFallback(text)
     self.file_counter = (self.file_counter or 0) + 1
     local audio_file = temp_dir .. "/audiobook_espeak_fb_" .. os.time() .. "_" .. self.file_counter .. ".wav"
     local exec_prefix = ""
+    local esp_data = self:_resolveEspeakDataPath()
     if self.espeak_linker then
         exec_prefix = string.format(
             "ESPEAK_DATA_PATH=%s %s --library-path %s ",
-            self.espeak_data_path, self.espeak_linker, self.espeak_lib_path
+            esp_data, self.espeak_linker, self.espeak_lib_path
         )
     elseif self.espeak_lib_path then
         exec_prefix = string.format(
             "LD_LIBRARY_PATH=%s ESPEAK_DATA_PATH=%s ",
-            self.espeak_lib_path, self.espeak_data_path
+            self.espeak_lib_path, esp_data
         )
     end
     local speed = math.floor(175 * (self.rate or 1.0))
@@ -1724,34 +1774,37 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                         engine._lipc_consec_fails = (engine._lipc_consec_fails or 0) + 1
                         logger.err("TTSEngine: Kindle native TTS never started, elapsed=",
                             elapsed_ms, "ms, fails=", engine._lipc_consec_fails)
-                        if engine._lipc_consec_fails >= 2 then
-                            -- Try falling back to kindle-gst-play if the binary is present.
-                            -- This bypasses the native TTS pipeline entirely and plays
-                            -- the espeak-synthesized WAV via GStreamer mixersink directly.
-                            if not engine._kindle_gst_play_bin then
-                                local plugin_dir = engine.plugin_dir or "."
-                                local gst_play_bin = plugin_dir .. "/kindle/gst-play"
-                                local gf = io.open(gst_play_bin, "r")
-                                if gf then
-                                    gf:close()
-                                    if engine.espeak_linker then
-                                        engine._kindle_gst_play_bin = string.format(
-                                            "%s --library-path %s:/usr/lib:/lib %s",
-                                            engine.espeak_linker, engine.espeak_lib_path, gst_play_bin)
-                                    else
-                                        engine._kindle_gst_play_bin = gst_play_bin
-                                    end
+                        -- Try falling back to kindle-gst-play on the first
+                        -- failure.  Some Kindle devices have the Ivona SDK
+                        -- service running (orchestratorStarted=1) but the
+                        -- playermgr never transitions TTS_State out of 0.
+                        -- Waiting for a second failure wastes ~10s of silence.
+                        -- Issue #18.
+                        if not engine._kindle_gst_play_bin then
+                            local plugin_dir = engine.plugin_dir or "."
+                            local gst_play_bin = plugin_dir .. "/kindle/gst-play"
+                            local gf = io.open(gst_play_bin, "r")
+                            if gf then
+                                gf:close()
+                                if engine.espeak_linker then
+                                    engine._kindle_gst_play_bin = string.format(
+                                        "%s --library-path %s:/usr/lib:/lib %s",
+                                        engine.espeak_linker, engine.espeak_lib_path, gst_play_bin)
+                                else
+                                    engine._kindle_gst_play_bin = gst_play_bin
                                 end
                             end
-                            if engine._kindle_gst_play_bin and engine.current_audio_file then
-                                logger.warn("TTSEngine: native TTS failed twice, falling back to kindle-gst-play")
-                                engine.audio_player_type = "kindle-gst-play"
-                                engine._no_real_audio_output = false
-                                -- Replay the current audio file via gst-play
-                                engine.is_speaking = false
-                                engine:play()
-                                return
-                            end
+                        end
+                        if engine._kindle_gst_play_bin and engine.current_audio_file then
+                            logger.warn("TTSEngine: native TTS failed, falling back to kindle-gst-play (issue #18)")
+                            engine.audio_player_type = "kindle-gst-play"
+                            engine._no_real_audio_output = false
+                            -- Replay the current audio file via gst-play
+                            engine.is_speaking = false
+                            engine:play()
+                            return
+                        end
+                        if engine._lipc_consec_fails >= 2 then
                             engine.is_speaking = false
                             engine.play_generation = (engine.play_generation or 0) + 1
                             engine:cleanup()

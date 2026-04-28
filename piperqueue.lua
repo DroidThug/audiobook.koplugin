@@ -473,10 +473,13 @@ function PiperQueue:startServers()
             fifo, pid_file, script_path, log_file))
 
         local script = string.format([=[#!/bin/sh
+set -e
 FIFO="%s"
 LOG="%s"
 rm -f "$FIFO" "${FIFO}.pid" "${FIFO}.piper_pid"
-mkfifo "$FIFO"
+mkfifo "$FIFO" || { echo "mkfifo failed" >> "$LOG"; exit 1; }
+# Verify the FIFO actually exists before declaring readiness.
+if [ ! -p "$FIFO" ]; then echo "FIFO missing after mkfifo" >> "$LOG"; exit 1; fi
 exec 3<>"$FIFO"
 # Launch piper piped to the done-marker writer, as a single background
 # pipeline.  $! gives the PID of the rightmost (while-read) subshell.
@@ -535,20 +538,36 @@ rm -f "$FIFO" "${FIFO}.pid" "${FIFO}.piper_pid"
                 if pf then
                     local pid = pf:read("*a"):gsub("%s+", "")
                     pf:close()
-                    -- Also read piper's own PID for direct kill capability
-                    local piper_pid = nil
-                    local ppf = io.open(SERVER_PREFIX .. i .. ".piper_pid", "r")
-                    if ppf then
-                        local raw = ppf:read("*a"):gsub("%s+", "")
-                        piper_pid = tonumber(raw)
-                        ppf:close()
+                    -- Verify the FIFO actually exists before declaring ready.
+                    -- Under memory pressure mkfifo can fail silently; the .pid
+                    -- file gets written but the FIFO is missing (issue #18).
+                    local fifo = SERVER_PREFIX .. i
+                    local fifo_ok = false
+                    local ff = io.open(fifo, "r")
+                    if ff then
+                        ff:close()
+                        fifo_ok = true
                     end
-                    pq._servers[i] = {
-                        fifo = SERVER_PREFIX .. i,
-                        pid = tonumber(pid),
-                        piper_pid = piper_pid,
-                    }
-                    logger.warn("PiperQueue: Server", i, "ready, PID:", pid, "piper_pid:", piper_pid)
+                    if not fifo_ok then
+                        logger.warn("PiperQueue: Server", i,
+                            "has .pid but FIFO missing — not ready yet")
+                        all_ready = false
+                    else
+                        -- Also read piper's own PID for direct kill capability
+                        local piper_pid = nil
+                        local ppf = io.open(SERVER_PREFIX .. i .. ".piper_pid", "r")
+                        if ppf then
+                            local raw = ppf:read("*a"):gsub("%s+", "")
+                            piper_pid = tonumber(raw)
+                            ppf:close()
+                        end
+                        pq._servers[i] = {
+                            fifo = fifo,
+                            pid = tonumber(pid),
+                            piper_pid = piper_pid,
+                        }
+                        logger.warn("PiperQueue: Server", i, "ready, PID:", pid, "piper_pid:", piper_pid)
+                    end
                 else
                     all_ready = false
                 end

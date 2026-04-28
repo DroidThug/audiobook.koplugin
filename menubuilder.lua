@@ -10,6 +10,8 @@ as their first parameter to access settings and engine state.
 
 local _ = require("gettext")
 local T = require("ffi/util").template
+local UIManager = require("ui/uimanager")
+local InfoMessage = require("ui/widget/infomessage")
 
 -- Shared utility module
 local _dir = debug.getinfo(1, "S").source:match("^@(.*/)[^/]*$") or "./"
@@ -153,6 +155,14 @@ function MenuBuilder.buildVoiceSettingsMenu(plugin)
             sub_item_table = MenuBuilder.buildVoiceMenu(plugin),
         })
     end
+
+    -- Downloadable voice packs
+    table.insert(menu, {
+        text = _("Download voices…"),
+        sub_item_table_func = function()
+            return MenuBuilder.buildDownloadMenu(plugin)
+        end,
+    })
 
     return menu
 end
@@ -650,6 +660,112 @@ function MenuBuilder.buildPiperVoiceMenu(plugin)
                     label = label .. " (" .. voice.quality .. ")"
                 end
                 plugin:setSetting("piper_model_label", label)
+            end,
+        })
+    end
+
+    return menu
+end
+
+function MenuBuilder.buildDownloadMenu(plugin)
+    local _dir = debug.getinfo(1, "S").source:match("^@(.*/)[^/]*$") or "./"
+    local Downloader = dofile(_dir .. "downloader.lua")
+    local menu = {}
+
+    table.insert(menu, {
+        text = _("Download espeak-ng language"),
+        sub_item_table_func = function()
+            return MenuBuilder.buildEspeakDownloadMenu(plugin, Downloader)
+        end,
+    })
+
+    table.insert(menu, {
+        text = _("Download Piper voice"),
+        sub_item_table_func = function()
+            return MenuBuilder.buildPiperDownloadMenu(plugin, Downloader)
+        end,
+    })
+
+    return menu
+end
+
+function MenuBuilder.buildEspeakDownloadMenu(plugin, Downloader)
+    local menu = {}
+    local plugin_dir = plugin.plugin_dir or "."
+
+    for _, lang in ipairs(Downloader.ESPEAK_LANGS) do
+        local installed = Downloader:hasEspeakLang(lang.id, plugin_dir)
+        local status = installed and _(" ✓ installed") or _("")
+        table.insert(menu, {
+            text = lang.label .. status,
+            help_text = lang.label_pt,
+            enabled_func = function() return not installed end,
+            callback = function()
+                if installed then return end
+                local info = InfoMessage:new{
+                    text = _("Downloading ") .. lang.label .. _("…"),
+                    timeout = 0,  -- modal, dismissed on completion
+                }
+                UIManager:show(info)
+                Downloader:downloadEspeakLang(lang.id, plugin_dir, function(ok, err)
+                    UIManager:close(info)
+                    if ok then
+                        UIManager:show(InfoMessage:new{
+                            text = _("Language pack installed:\n") .. lang.label,
+                            timeout = 3,
+                        })
+                    else
+                        UIManager:show(InfoMessage:new{
+                            text = _("Download failed:\n") .. (err or _("unknown error")),
+                            timeout = 5,
+                        })
+                    end
+                end)
+            end,
+        })
+    end
+
+    return menu
+end
+
+function MenuBuilder.buildPiperDownloadMenu(plugin, Downloader)
+    local menu = {}
+    local plugin_dir = plugin.plugin_dir or "."
+
+    for _, voice in ipairs(Downloader.PIPER_VOICES) do
+        local installed = Downloader:hasPiperVoice(voice.id, plugin_dir)
+        local status = installed and _(" ✓ installed") or _("")
+        local size_str = string.format(" · %d MB", voice.size_mb)
+        table.insert(menu, {
+            text = voice.name .. size_str .. status,
+            enabled_func = function() return not installed end,
+            callback = function()
+                if installed then return end
+                local info = InfoMessage:new{
+                    text = _("Downloading ") .. voice.name .. _("…\n(~")
+                        .. voice.size_mb .. _(" MB)"),
+                    timeout = 0,
+                }
+                UIManager:show(info)
+                Downloader:downloadPiperVoice(voice.id, plugin_dir,
+                    function(done, total)
+                        -- progress callback (optional)
+                    end,
+                    function(ok, err)
+                        UIManager:close(info)
+                        if ok then
+                            UIManager:show(InfoMessage:new{
+                                text = _("Voice installed:\n") .. voice.name,
+                                timeout = 3,
+                            })
+                        else
+                            UIManager:show(InfoMessage:new{
+                                text = _("Download failed:\n") .. (err or _("unknown error")),
+                                timeout = 5,
+                            })
+                        end
+                    end
+                )
             end,
         })
     end

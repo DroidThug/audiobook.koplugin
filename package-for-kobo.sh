@@ -47,7 +47,7 @@ rm -rf "$BUNDLE_DIR"
 mkdir -p "$ESPEAK_DEST/bin" "$ESPEAK_DEST/lib" "$ESPEAK_DEST/share/espeak-ng-data/lang/gmw" "$ESPEAK_DEST/share/espeak-ng-data/voices"
 
 # Plugin Lua files first
-for f in main.lua textparser.lua ttsengine.lua highlightmanager.lua synccontroller.lua playbackbar.lua menubuilder.lua btmanager.lua btui.lua btmediacontrol.lua utils.lua wavutils.lua piperqueue.lua bugreport.lua androidtts.lua benchmarkrunner.lua updater.lua _meta.lua; do
+for f in main.lua textparser.lua ttsengine.lua highlightmanager.lua synccontroller.lua playbackbar.lua menubuilder.lua btmanager.lua btui.lua btmediacontrol.lua utils.lua wavutils.lua piperqueue.lua bugreport.lua androidtts.lua benchmarkrunner.lua updater.lua downloader.lua _meta.lua; do
     if [ -f "$SCRIPT_DIR/$f" ]; then
         cp "$SCRIPT_DIR/$f" "$PLUGIN_DEST/"
     fi
@@ -314,6 +314,68 @@ if [ "$WITH_PIPER" = true ]; then
     echo "=== Piper TTS bundled ==="
     du -sh "$PIPER_DEST"
     echo "Voice model: $PIPER_VOICE"
+fi
+
+# ── Build per-language packs for in-app download ──────────────────────
+# The base espeak-ng bundle only ships English to keep size small.
+# Users download additional languages on demand.
+echo ""
+echo "=== Building per-language packs ==="
+LANG_PACK_DIR="$SCRIPT_DIR/lang-packs"
+mkdir -p "$LANG_PACK_DIR"
+rm -f "$LANG_PACK_DIR"/*.tar.gz
+
+if [ -d "$ESPEAK_OUT/share/espeak-ng-data" ]; then
+    # Core files required by every language pack
+    core_files=(phondata phonindex phontab intonations)
+
+    # Build a pack for each supported language
+    for lang in pt es fr de it nl ru pl tr ar zhy ja ko; do
+        pack_dir="$LANG_PACK_DIR/.tmp_$lang"
+        rm -rf "$pack_dir"
+        mkdir -p "$pack_dir/espeak-ng-data"
+
+        # Copy core phoneme data
+        for f in "${core_files[@]}"; do
+            cp "$ESPEAK_OUT/share/espeak-ng-data/$f" "$pack_dir/espeak-ng-data/"
+        done
+
+        # Copy language dictionary (try exact match then bare code)
+        dict_found=false
+        if [ -f "$ESPEAK_OUT/share/espeak-ng-data/${lang}_dict" ]; then
+            cp "$ESPEAK_OUT/share/espeak-ng-data/${lang}_dict" "$pack_dir/espeak-ng-data/"
+            dict_found=true
+        fi
+        bare_lang=$(echo "$lang" | sed 's/-.*//')
+        if [ "$bare_lang" != "$lang" ] && [ -f "$ESPEAK_OUT/share/espeak-ng-data/${bare_lang}_dict" ]; then
+            cp "$ESPEAK_OUT/share/espeak-ng-data/${bare_lang}_dict" "$pack_dir/espeak-ng-data/"
+            dict_found=true
+        fi
+
+        # Copy language voice definitions
+        if [ -d "$ESPEAK_OUT/share/espeak-ng-data/lang" ]; then
+            # Find all subdirectories containing this language
+            find "$ESPEAK_OUT/share/espeak-ng-data/lang" -mindepth 2 -maxdepth 2 \
+                -name "$lang" -o -name "$lang-*" 2>/dev/null | while read src; do
+                rel=$(echo "$src" | sed "s|$ESPEAK_OUT/share/espeak-ng-data/lang/||")
+                mkdir -p "$pack_dir/espeak-ng-data/lang/$(dirname "$rel")"
+                cp -r "$src" "$pack_dir/espeak-ng-data/lang/$rel/"
+            done
+        fi
+
+        if [ "$dict_found" = true ]; then
+            # Create tar.gz
+            tar czf "$LANG_PACK_DIR/${lang}.tar.gz" -C "$pack_dir" espeak-ng-data
+            size=$(du -sh "$LANG_PACK_DIR/${lang}.tar.gz" | cut -f1)
+            echo "  $lang.tar.gz ($size)"
+        else
+            echo "  WARNING: no dict found for $lang, skipping"
+        fi
+
+        rm -rf "$pack_dir"
+    done
+else
+    echo "WARNING: espeak-ng-data not found in Nix output, skipping language packs"
 fi
 
 echo ""
