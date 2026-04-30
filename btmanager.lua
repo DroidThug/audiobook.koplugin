@@ -469,6 +469,56 @@ function BTManager:_rfkillBlock()
     self._rfkill_sysfs = nil
 end
 
+--- Check for MTK firmware file before powering on.
+-- The MTK Bluetooth stack needs /data/misc/bluedroid/bt_fw_fatures
+-- (created by Nickel).  Without it, FifoManager init fails and the
+-- repeated recovery attempts can corrupt the flash filesystem.
+-- @treturn bool true if firmware file exists
+function BTManager:_checkMtkFirmware()
+    local fw_candidates = {
+        "/data/misc/bluedroid/bt_fw_fatures",
+        "/data/misc/bluedroid/bt_fw_features",
+        "/data/misc/bluedroid/bt_firmware.conf",
+    }
+    for _, fw_path in ipairs(fw_candidates) do
+        local f = io.open(fw_path, "r")
+        if f then
+            f:close()
+            logger.warn("BTManager: MTK firmware file found at", fw_path)
+            return true
+        end
+    end
+    logger.warn("BTManager: No MTK firmware file found in /data/misc/bluedroid/")
+    return false
+end
+
+--- Show a modal error informing the user that BT firmware
+-- initialization requires booting into Nickel first.
+function BTManager:_showFirmwareError()
+    local InfoMessage = require("ui/widget/infomessage")
+    local UIManager = require("ui/uimanager")
+    UIManager:show(InfoMessage:new{
+        text = _(
+            "Bluetooth firmware files are missing.\n\n"
+            .. "Your Kobo's Bluetooth chip needs to be initialized by "
+            .. "the stock Kobo OS (Nickel) before it can be used in "
+            .. "KOReader.\n\n"
+            .. "To fix this:\n"
+            .. "1. Fully power off your Kobo\n"
+            .. "2. Turn it on and boot normally into Nickel\n"
+            .. "3. Go to Settings → Bluetooth and turn it ON\n"
+            .. "4. If you have Bluetooth headphones, pair them now\n"
+            .. "5. Once Bluetooth is working in Nickel, reboot into "
+            .. "KOReader\n\n"
+            .. "This one-time setup is needed because the Bluetooth "
+            .. "firmware configuration is written by Nickel's startup "
+            .. "process and is not preserved across KOReader-only "
+            .. "reboots."
+        ),
+        timeout = 15,
+    })
+end
+
 --- Power on the Bluetooth adapter.
 -- For BlueZ devices, starts the bluetoothd daemon and resets the HCI
 -- adapter first (required on Kobo Libra 2 and similar).
@@ -501,6 +551,20 @@ function BTManager:powerOn()
         end
         logger.warn("BTManager: Kindle has no working lipc BT service -- cannot manage BT")
         return false
+    end
+
+    -- ── MTK firmware file check ─────────────────────────────────────
+    -- The MTK Bluetooth stack requires /data/misc/bluedroid/bt_fw_fatures
+    -- to be present (created by Nickel).  Without it, FifoManager init
+    -- fails and the repeated recovery attempts can corrupt flash storage.
+    -- Check early so we can show a clear error before any damage occurs.
+    if bt_stack == "mtk" then
+        local fw_found = self:_checkMtkFirmware()
+        if not fw_found then
+            logger.err("BTManager: MTK firmware file not found — need to boot into Nickel first")
+            self:_showFirmwareError()
+            return false
+        end
     end
 
     if bt_stack == "bluez" then

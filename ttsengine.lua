@@ -1035,6 +1035,25 @@ function TTSEngine:_cleanPrefetch()
     -- Clean Piper async queue
     self._piper:cleanQueue()
 end
+-- Persistent BT pipeline retry and error handling.
+-- These limit how often we retry the pipeline, prevent rapid retry loops
+-- from corrupting flash storage, and detect fatal firmware errors.
+local MAX_PIPELINE_RETRIES = 3
+local PIPELINE_RETRY_COOLDOWN_S = 30  -- minimum seconds between retry attempts
+
+-- MTK firmware-specific error patterns in gst-launch stderr that indicate
+-- a permanent hardware/firmware issue (not a transient failure).
+-- On Kobo MTK devices these errors occur when the stock OS (Nickel) has
+-- not initialized the Bluetooth firmware, leaving required configuration
+-- files missing or kernel FIFO channels uninitialized.
+local MTK_FATAL_ERRORS = {
+    "init mtx error",
+    "bt_fw_fatures",
+    "bt_fw_features",
+    "FifoManager:initMtx",
+    "init mtx error No such file or directory",
+}
+
 -- === Persistent BT Pipeline Constants ===
 -- Instead of launching a new gst-launch for each sentence (which crashes
 -- when BT A2DP disconnects during gaps), maintain a single persistent
@@ -1053,6 +1072,36 @@ end
 local PIPELINE_CTRL_DIR = "/tmp/audiobook_ctrl"
 local PIPELINE_FIFO = "/tmp/audiobook_fifo"
 local PIPELINE_SCRIPT = "/tmp/audiobook_pipeline.sh"
+
+--- Show a modal error informing the user that the MTK Bluetooth firmware
+-- file is missing and they need to boot into Nickel to initialize it.
+-- This is shown when the pipeline fails with a fatal firmware error so
+-- the user has a clear, actionable message instead of a silent failure.
+function TTSEngine:_showMtkFirmwareError()
+    local InfoMessage = require("ui/widget/infomessage")
+    local UIManager = require("ui/uimanager")
+    UIManager:show(InfoMessage:new{
+        text = _(
+            "Bluetooth audio pipeline failed.\n\n"
+            .. "Your Kobo's Bluetooth firmware is not initialized. "
+            .. "This happens when KOReader is used without first "
+            .. "running the stock Kobo OS (Nickel).\n\n"
+            .. "To fix this:\n"
+            .. "1. Fully power off your Kobo\n"
+            .. "2. Turn it on and boot normally into Nickel\n"
+            .. "3. Go to Settings → Bluetooth and turn it ON\n"
+            .. "4. If you have Bluetooth headphones, pair them now\n"
+            .. "5. Once Bluetooth is working in Nickel, reboot into "
+            .. "KOReader\n\n"
+            .. "Read-along audio playback has been stopped."
+        ),
+        timeout = 15,
+    })
+    -- Also flag player_error so the sync controller / playback bar
+    -- can show a persistent status indicator.
+    self.player_error = "bt_firmware_missing"
+end
+
 --[[--
 Play the synthesized audio.
 @param on_word function Callback for word timing updates
@@ -3176,7 +3225,7 @@ gst-launch-1.0 filesrc location="$FIFO" \
   ! rawaudioparse use-sink-caps=false format=pcm pcm-format=s16le sample-rate=%d num-channels=1 \
   ! audioconvert ! audioresample \
   ! "audio/x-raw,format=S16LE,rate=48000,channels=2" \
-  ! mtkbtmwrpcaudiosink sync=false >/dev/null 2>/dev/null &
+  ! mtkbtmwrpcaudiosink sync=false >/dev/null 2>"$CTRL/pipeline_stderr" &
 GST_PID=$!
 # Open FIFO write end — keeps it alive between individual writes.
 # This BLOCKS until gst-launch opens the read end (filesrc start).
@@ -3185,7 +3234,7 @@ exec 3>"$FIFO"
 # Lua uses the gst_pid file as a "ready" indicator before trying to
 # open(O_WRONLY|O_NONBLOCK) on the FIFO for pipe buffer resize.
 echo $GST_PID > "$CTRL/gst_pid"
-cleanup() { exec 3>&- 2>/dev/null; kill $GST_PID 2>/dev/null; rm -f "$FIFO" "$CTRL/s.raw" "$CTRL/gst_pid"; }
+cleanup() { exec 3>&- 2>/dev/null; kill $GST_PID 2>/dev/null; rm -f "$FIFO" "$CTRL/s.raw" "$CTRL/gst_pid" "$CTRL/pipeline_stderr"; }
 trap cleanup EXIT TERM
 # Track total bytes written to detect/fix alignment
 TOTAL_BYTES=0
@@ -3224,12 +3273,75 @@ done
 end
 
 --[[--
+Check stderr output from a failed MTK pipeline for fatal firmware errors
+that indicate a permanent (not transient) failure.  When a fatal error is
+detected, the retry count is set to MAX so no further attempts are made.
+@param stderr string  Stderr output from gst-launch or the pipeline script
+--]]
+function TTSEngine:_checkMtkPipelineError(stderr)
+    if not stderr or stderr == "" then return false end
+    for _, pattern in ipairs(MTK_FATAL_ERRORS) do
+        if stderr:find(pattern, 1, true) then  -- plain string match (no regex)
+            logger.err("TTSEngine: FATAL MTK firmware error detected:", pattern)
+            self._pipeline_retry_count = MAX_PIPELINE_RETRIES  -- skip remaining retries
+            self.player_error = "bt_firmware_missing"
+            -- Also set a persistent flag so the sync controller can check it
+            -- and stop playback gracefully instead of re-triggering the error
+            -- on every page turn.
+            self._bt_fw_fatal_error = true
+            return true
+        end
+    end
+    return false
+end
+
+--[[--
+Get a diagnostic time-based string for the pipeline stderr file.
+The pipeline script writes its stderr to a file; this method reads it.
+@return string  Stderr content, empty string on error
+--]]
+function TTSEngine:_readPipelineStderr()
+    local log_file = PIPELINE_CTRL_DIR .. "/pipeline_stderr"
+    local f = io.open(log_file, "r")
+    if not f then return "" end
+    local content = f:read("*a") or ""
+    f:close()
+    return content
+end
+
+--[[--
 Start the persistent BT audio pipeline.
 Creates the feeder script, launches it (piping silence/audio to gst-launch
 via a named FIFO), and waits for gst-launch to initialise.
 @return boolean true if pipeline started successfully
 --]]
 function TTSEngine:_startPersistentPipeline()
+    -- ── Retry cooldown and limit check ─────────────────────────
+    -- Avoid rapid retry loops that can corrupt the flash filesystem
+    -- on Kobo MTK devices when the Bluetooth firmware is missing.
+    if self._bt_fw_fatal_error then
+        logger.err("TTSEngine: Persistent pipeline blocked — fatal MTK firmware error detected in a previous attempt")
+        self:_showMtkFirmwareError()
+        self.player_error = "bt_firmware_missing"
+        return false
+    end
+
+    if self._pipeline_last_fail_time then
+        local elapsed = os.time() - self._pipeline_last_fail_time
+        if elapsed < PIPELINE_RETRY_COOLDOWN_S then
+            logger.warn("TTSEngine: Pipeline retry cooldown active,",
+                        "wait", PIPELINE_RETRY_COOLDOWN_S - elapsed, "more seconds (elapsed=", elapsed, ")")
+            return false
+        end
+    end
+
+    if (self._pipeline_retry_count or 0) >= MAX_PIPELINE_RETRIES then
+        logger.err("TTSEngine: Max pipeline retries reached (",
+                    MAX_PIPELINE_RETRIES, "), giving up")
+        self.player_error = "bt_firmware_missing"
+        return false
+    end
+
     self:_stopPersistentPipeline("restart")
 
     -- Verify the mtkbtmwrpc socket is actually free before starting.
@@ -3322,9 +3434,34 @@ function TTSEngine:_startPersistentPipeline()
         end
     end
 
-    logger.warn("TTSEngine: Persistent pipeline started, wrapper=",
-        self._pipeline_wrapper_pid, "gst=", self._pipeline_gst_pid)
-    return gst_pid ~= nil
+    if gst_pid then
+        logger.warn("TTSEngine: Persistent pipeline started, wrapper=",
+            self._pipeline_wrapper_pid, "gst=", self._pipeline_gst_pid)
+        -- Pipeline started successfully — reset retry count
+        self._pipeline_retry_count = 0
+        self._pipeline_last_fail_time = nil
+        return true
+    end
+
+    -- Pipeline failed to start — increment retry count and check for
+    -- fatal MTK firmware errors in the pipeline stderr log.
+    self._pipeline_retry_count = (self._pipeline_retry_count or 0) + 1
+    self._pipeline_last_fail_time = os.time()
+    logger.warn("TTSEngine: Pipeline failed to start (retry",
+                self._pipeline_retry_count, "/", MAX_PIPELINE_RETRIES, ")")
+
+    -- Check stderr for fatal MTK firmware errors
+    local stderr = self:_readPipelineStderr()
+    if stderr ~= "" then
+        logger.warn("TTSEngine: Pipeline stderr:", stderr:sub(1, 500))
+        self:_checkMtkPipelineError(stderr)
+    end
+
+    if self._bt_fw_fatal_error then
+        self:_showMtkFirmwareError()
+    end
+
+    return false
 end
 
 --[[--
@@ -3376,7 +3513,7 @@ function TTSEngine:_stopPersistentPipeline(reason)
         os.execute("usleep 200000")
     end
     -- Clean up
-    os.execute("rm -f " .. PIPELINE_FIFO .. " " .. PIPELINE_CTRL_DIR .. "/gst_pid")
+    os.execute("rm -f " .. PIPELINE_FIFO .. " " .. PIPELINE_CTRL_DIR .. "/gst_pid" .. " " .. PIPELINE_CTRL_DIR .. "/pipeline_stderr")
     self._pipeline_gst_pid = nil
     self._pipeline_wrapper_pid = nil
     self._persistent_pipeline = false

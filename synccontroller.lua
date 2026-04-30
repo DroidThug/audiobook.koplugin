@@ -556,6 +556,30 @@ page into a single BT stream, eliminating every A2DP re-negotiation gap.
 @param sentence table Sentence object
 --]]
 function SyncController:beginSentencePlayback(sentence)
+    -- ── Fatal firmware error guard ──────────────────────────────
+    -- If the TTS engine detected a permanent MTK firmware error,
+    -- stop playback gracefully instead of retrying and risking
+    -- flash filesystem corruption (observed on Kobo MTK devices).
+    if self.tts_engine.player_error == "bt_firmware_missing"
+        or self.tts_engine._bt_fw_fatal_error then
+        logger.warn("SyncController: Stopping playback due to fatal BT firmware error")
+        self.state = self.STATE.STOPPED
+        -- Show the error notification once per session
+        if not self._bt_fw_error_shown then
+            self._bt_fw_error_shown = true
+            if self.plugin and self.plugin.bt_manager then
+                self.plugin.bt_manager:_showFirmwareError()
+            elseif self.tts_engine._showMtkFirmwareError then
+                self.tts_engine:_showMtkFirmwareError()
+            end
+        end
+        -- Emit stop event so the playback bar reflects the stopped state
+        UIManager:sendEvent(Event:new("AudiobookSync", self, "stopped"))
+        -- Also clear any scheduled readNextSentence callbacks
+        self._chain_generation = (self._chain_generation or 0) + 1
+        return
+    end
+
     logger.warn("SyncController: beginSentencePlayback sentence", sentence.index,
         "has_audio=", self.tts_engine.current_audio_file ~= nil)
     self.state = self.STATE.PLAYING
