@@ -3796,6 +3796,20 @@ function TTSEngine:onPlaybackComplete()
 end
 
 --[[--
+Send a signal to a tracked pipeline PID, but only if the process is
+still alive.  Prevents signalling a stale PID after a crash or restart.
+--]]
+function TTSEngine:_pipelineSignal(pid, sig)
+    if not pid then return false end
+    local ok = os.execute("kill -0 " .. pid .. " 2>/dev/null")
+    if ok == 0 or ok == true then
+        os.execute("kill -" .. sig .. " " .. pid .. " 2>/dev/null")
+        return true
+    end
+    return false
+end
+
+--[[--
 Pause playback.
 --]]
 function TTSEngine:pause()
@@ -3812,18 +3826,24 @@ function TTSEngine:pause()
         -- Kindle LIPC: pause via playermgr
         elseif self.audio_player_type == "kindle-lipc" then
             os.execute("lipc-set-prop com.lab126.playermgr Pause '' 2>/dev/null")
-        -- Freeze the audio pipeline/process (SIGSTOP) so it can resume in place
+        -- Freeze only gst-launch (SIGSTOP).  The wrapper shell script is
+        -- left running so it stays blocked on the FIFO; this prevents the
+        -- MTK BT sink from seeing a full underrun, which causes stutter
+        -- on resume.  With the wrapper alive the FIFO stays primed with
+        -- data and the MTK A2DP connection remains in a stable state.
         elseif self._persistent_pipeline then
-            if self._pipeline_gst_pid then
-                os.execute("kill -STOP " .. self._pipeline_gst_pid .. " 2>/dev/null")
-            end
-            if self._pipeline_wrapper_pid then
-                os.execute("kill -STOP " .. self._pipeline_wrapper_pid .. " 2>/dev/null")
+            if self:_pipelineSignal(self._pipeline_gst_pid, "STOP") then
+                logger.warn("TTSEngine: Paused persistent pipeline, gst=",
+                    self._pipeline_gst_pid)
+            else
+                logger.warn("TTSEngine: Pause failed — gst-launch dead, clearing pipeline")
+                self._persistent_pipeline = false
+                self._pipeline_gst_pid = nil
+                self._pipeline_wrapper_pid = nil
             end
         elseif self.audio_pid then
             os.execute("kill -STOP " .. self.audio_pid .. " 2>/dev/null")
         end
-        logger.dbg("TTSEngine: Paused")
     end
 end
 
@@ -3850,20 +3870,24 @@ function TTSEngine:resume()
         -- Kindle LIPC: resume via playermgr
         elseif self.audio_player_type == "kindle-lipc" then
             os.execute("lipc-set-prop com.lab126.playermgr Play '' 2>/dev/null")
-        -- Unfreeze the audio pipeline/process (SIGCONT)
+        -- Unfreeze only gst-launch (SIGCONT).  The wrapper was never
+        -- frozen, so it is already blocked on the FIFO; as soon as
+        -- gst-launch resumes reading the audio flows again seamlessly.
         elseif self._persistent_pipeline then
-            if self._pipeline_gst_pid then
-                os.execute("kill -CONT " .. self._pipeline_gst_pid .. " 2>/dev/null")
-            end
-            if self._pipeline_wrapper_pid then
-                os.execute("kill -CONT " .. self._pipeline_wrapper_pid .. " 2>/dev/null")
+            if self:_pipelineSignal(self._pipeline_gst_pid, "CONT") then
+                logger.warn("TTSEngine: Resumed persistent pipeline, pause was",
+                    pause_ms, "ms, total_pause=", self._total_pause_ms, "ms")
+            else
+                logger.warn("TTSEngine: Resume failed — gst-launch dead, will restart on next play()")
+                self._persistent_pipeline = false
+                self._pipeline_gst_pid = nil
+                self._pipeline_wrapper_pid = nil
             end
         elseif self.audio_pid then
             os.execute("kill -CONT " .. self.audio_pid .. " 2>/dev/null")
         end
         -- Restart the timing loop (it exited when is_paused was true)
         self:_runTimingLoop()
-        logger.dbg("TTSEngine: Resumed, pause was", pause_ms, "ms, total_pause=", self._total_pause_ms, "ms")
     end
 end
 

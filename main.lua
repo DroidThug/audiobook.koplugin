@@ -412,13 +412,7 @@ function Audiobook:addToMainMenu(menu_items)
                 help_text = _("When enabled, play/pause/next/prev buttons on a Bluetooth headset or speaker will control TTS playback. The connected device will also show playback status."),
             },
             {
-                text_func = function()
-                    local mode = self:getSetting("playback_bar_visibility", "always")
-                    if mode == "paused_only" then
-                        return _("Hide control bar while playing (experimental)")
-                    end
-                    return _("Show control bar while playing (default)")
-                end,
+                text = _("Hide control bar while playing (experimental)"),
                 checked_func = function()
                     return self:getSetting("playback_bar_visibility", "always") == "paused_only"
                 end,
@@ -1013,6 +1007,9 @@ function Audiobook:onSuspend()
         self.sync_controller._user_paused = false
         if self.sync_controller.playback_bar then
             self.sync_controller.playback_bar:updatePlayState(false)
+            if self.sync_controller._applyBarVisibility then
+                self.sync_controller:_applyBarVisibility()
+            end
         end
 
         self._paused_by_suspend = true
@@ -1048,6 +1045,11 @@ function Audiobook:onResume()
                 logger.warn("Audiobook: Resume — restarting from sentence", sentence_idx)
                 self.sync_controller:readNextSentence()
             end)
+        else
+            -- Not resuming playback; ensure bar visibility matches the paused state
+            if self.sync_controller and self.sync_controller._applyBarVisibility then
+                self.sync_controller:_applyBarVisibility()
+            end
         end
     end
 end

@@ -1815,12 +1815,21 @@ function SyncController:resume(auto)
         -- Restart the sync loop for the current sentence.
         -- Set _resuming_sync so startSentenceSyncLoop doesn't reset
         -- the timing anchor that we just adjusted for pause duration.
+        -- For the persistent BT pipeline add a short delay so gst-launch
+        -- has time to drain the FIFO and the MTK sink stabilises before
+        -- we start advancing word highlights.
         if self.current_sentence then
             self._resuming_sync = true
-            self:startSentenceSyncLoop(self.current_sentence)
+            local delay = (self.tts_engine and self.tts_engine._persistent_pipeline)
+                and 0.25 or 0
+            UIManager:scheduleIn(delay, function()
+                if self.state == self.STATE.PLAYING then
+                    self:startSentenceSyncLoop(self.current_sentence)
+                end
+            end)
         end
 
-        logger.dbg("SyncController: Resumed")
+        logger.warn("SyncController: Resumed")
     end
 end
 
