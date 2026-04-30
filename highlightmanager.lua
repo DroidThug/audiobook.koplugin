@@ -103,8 +103,21 @@ function HighlightManager:_highlightSentenceRolling(sentence, parsed_data, doc, 
     -- Clear any existing selection
     pcall(function() doc:clearSelection() end)
 
+    -- Normalize sentence text for matching: collapse whitespace and
+    -- normalize common Unicode punctuation that getTextFromPositions()
+    -- may return differently (curly quotes → straight, em-dash → hyphen,
+    -- non-breaking spaces → regular spaces, zero-width chars removed).
     local sent_text = Utils.ws(sentence.text)
     if sent_text == "" then return end
+    -- Unicode punctuation normalization for reliable matching
+    sent_text = sent_text
+        :gsub("[\226\128\152-\226\128\155]", "'")    -- curly quotes → straight '
+        :gsub("[\226\128\156-\226\128\159]", '"')    -- curly double quotes → straight "
+        :gsub("\226\128\147", "-")                    -- en-dash → hyphen
+        :gsub("\226\128\148", "-")                    -- em-dash → hyphen
+        :gsub("\194\160", " ")                        -- non-breaking space → space
+        :gsub("[\226\128\139\226\128\169]", "")       -- zero-width chars removed
+        :gsub("\239\187\191", "")                     -- BOM removed
 
     -- ── Cached line map ──────────────────────────────────────────
     local cur_w, cur_h = Screen:getWidth(), Screen:getHeight()
@@ -140,6 +153,17 @@ function HighlightManager:_highlightSentenceRolling(sentence, parsed_data, doc, 
                 {x = box.x + box.w - 1, y = box.y + math.floor(box.h / 2)},
                 true)
             local lt = (r and r.text) and Utils.ws(r.text) or ""
+            -- Normalize Unicode punctuation to match sentence text
+            if lt ~= "" then
+                lt = lt
+                    :gsub("[\226\128\152-\226\128\155]", "'")
+                    :gsub("[\226\128\156-\226\128\159]", '"')
+                    :gsub("\226\128\147", "-")
+                    :gsub("\226\128\148", "-")
+                    :gsub("\194\160", " ")
+                    :gsub("[\226\128\139\226\128\169]", "")
+                    :gsub("\239\187\191", "")
+            end
             if i > 1 and lt ~= "" then
                 built_text = built_text .. " "
             end
@@ -196,11 +220,62 @@ function HighlightManager:_highlightSentenceRolling(sentence, parsed_data, doc, 
         end
     end
     if not vis_start then
+        -- Last resort: word-by-word matching with tolerance.
+        -- On some e-ink readers (especially PW5 at 300dpi), the text
+        -- from getTextFromPositions() may differ from parsed sentence
+        -- text due to hyphenation, font ligatures, or spacing peculiarities.
+        -- Try to find the sentence by matching its first few words.
+        local words = {}
+        for w in sent_text:gmatch("%S+") do
+            table.insert(words, w)
+        end
+        if #words >= 3 then
+            -- Try matching first 3, then 2 words
+            for _, nwords in ipairs({3, 2}) do
+                local prefix = table.concat(words, " ", 1, nwords)
+                local pp = built_text:find(prefix, 1, true)
+                if pp then
+                    vis_start = pp
+                    matched_len = #sent_text
+                    logger.dbg("HighlightManager: found by word prefix (", nwords, "words)")
+                    break
+                end
+            end
+        end
+        if not vis_start and #words >= 3 then
+            -- Try matching last 3, then 2 words
+            for _, nwords in ipairs({3, 2}) do
+                local suffix = table.concat(words, " ", #words - nwords + 1, #words)
+                local pp = built_text:find(suffix, 1, true)
+                if pp then
+                    vis_start = pp
+                    matched_len = nwords > 0 and #built_text - pp + 1 or #sent_text
+                    -- But we need to bound it. Since we only matched the tail,
+                    -- set vis_start to beginning of that line.
+                    if vis_start then
+                        local found_line = 1
+                        for i = 1, n do
+                            if cum[i] >= vis_start then
+                                found_line = i
+                                break
+                            end
+                        end
+                        -- Highlight from start of found line
+                        vis_start = cum[found_line - 1] + 1
+                        matched_len = cum[found_line] - cum[found_line - 1]
+                        logger.dbg("HighlightManager: found by word suffix (", nwords, "words), line", found_line)
+                    end
+                    break
+                end
+            end
+        end
+    end
+    if not vis_start then
         if not _retried and self._line_cache then
             self._line_cache = nil
             return self:_highlightSentenceRolling(sentence, parsed_data, doc, true)
         end
-        logger.dbg("HighlightManager: sentence not found:", sent_text:sub(1, 50))
+        logger.dbg("HighlightManager: sentence not found:", sent_text:sub(1, 80))
         return
     end
     local vis_end = vis_start + matched_len - 1

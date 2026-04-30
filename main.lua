@@ -263,30 +263,6 @@ function Audiobook:addToMainMenu(menu_items)
                     self:startReadAlong()
                 end,
             },
-            {
-                text = _("Stop reading"),
-                callback = function()
-                    if not self._init_ok then return end
-                    self:stopReadAlong()
-                end,
-                enabled_func = function()
-                    return self._init_ok and (self.sync_controller:isPlaying() or self.sync_controller:isPaused())
-                end,
-            },
-            {
-                text = _("Pause/Resume"),
-                callback = function()
-                    if not self._init_ok then return end
-                    if self.sync_controller:isPlaying() then
-                        self:pauseReadAlong()
-                    elseif self.sync_controller:isPaused() then
-                        self:resumeReadAlong()
-                    end
-                end,
-                enabled_func = function()
-                    return self._init_ok and (self.sync_controller:isPlaying() or self.sync_controller:isPaused())
-                end,
-            },
             -- ── Bluetooth (high priority - needed before first playback) ──
             {
                 text_func = function()
@@ -370,15 +346,6 @@ function Audiobook:addToMainMenu(menu_items)
                 end,
                 callback = function()
                     self:toggleSetting("auto_advance", true)
-                end,
-            },
-            {
-                text = _("Highlight words"),
-                checked_func = function()
-                    return self:getSetting("highlight_words", true)
-                end,
-                callback = function()
-                    self:toggleSetting("highlight_words", true)
                 end,
             },
             {

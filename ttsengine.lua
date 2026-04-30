@@ -1,15 +1,12 @@
 --[[--
 TTS Engine Module
 Handles text-to-speech synthesis with timing metadata.
-
 @module ttsengine
 --]]
-
 local Device = require("device")
 local InfoMessage = require("ui/widget/infomessage")
 local UIManager = require("ui/uimanager")
 local ffi = require("ffi")
-
 -- Declare C functions needed for pipe buffer resize and Piper server FIFO I/O.
 -- Each declaration is wrapped separately so a duplicate from another module
 -- doesn't prevent the remaining declarations from being registered.
@@ -21,7 +18,6 @@ pcall(function() ffi.cdef[[ int open(const char *pathname, int flags); ]] end)
 pcall(function() ffi.cdef[[ int close(int fd); ]] end)
 pcall(function() ffi.cdef[[ int fcntl(int fd, int cmd, ...); ]] end)
 pcall(function() ffi.cdef[[ long write(int fd, const void *buf, unsigned long count); ]] end)
-
 -- LIPC FFI: direct binding to Kindle's liblipc.so for native TTS playback.
 -- CLI tools (lipc-set-prop) use anonymous, transient LIPC connections.
 -- VoiceView uses named, persistent connections via the C API.
@@ -37,7 +33,6 @@ pcall(function() ffi.cdef[[
     void LipcFreeString(char *str);
 ]] end)
 local _lipc_lib  -- loaded lazily on first Kindle native TTS use
-
 -- InkView audio FFI: PocketBook audio daemon integration.
 -- PlayFile routes through mpd.app instead of opening ALSA directly,
 -- avoiding the amplifier corruption that kills PB700c speakers.
@@ -48,14 +43,12 @@ local _inkview_audio  -- loaded lazily on first PB InkView use
 local logger = require("logger")
 local time = require("ui/time")
 local _ = require("gettext")
-
 -- Shared utility modules (DRY: extracted from ttsengine, synccontroller, main)
 local _utils_dir = debug.getinfo(1, "S").source:match("^@(.*/)[^/]*$") or "./"
 local Utils = dofile(_utils_dir .. "utils.lua")
 local WavUtils = dofile(_utils_dir .. "wavutils.lua")
 local PiperQueue = dofile(_utils_dir .. "piperqueue.lua")
 local AndroidTts = dofile(_utils_dir .. "androidtts.lua")
-
 local TTSEngine = {
     -- Supported TTS backends
     BACKENDS = {
@@ -67,22 +60,18 @@ local TTSEngine = {
         PIPER = "piper",
         KINDLE_NATIVE = "kindle-native",
     },
-    
     -- Default settings
     DEFAULT_RATE = 1.0,
     DEFAULT_PITCH = 1.0,
     DEFAULT_VOLUME = 1.0,
-    
     -- Status flags
     backend_error = nil,
     player_error = nil,
 }
-
 function TTSEngine:new(o)
     o = o or {}
     setmetatable(o, self)
     self.__index = self
-    
     o.rate = o.rate or self.DEFAULT_RATE
     o.pitch = o.pitch or 50  -- espeak-ng default pitch
     o.volume = o.volume or self.DEFAULT_VOLUME
@@ -108,18 +97,14 @@ function TTSEngine:new(o)
     o._piper = PiperQueue:new{engine = o}
     -- Android TTS wrapper (initialized lazily in detectBackend)
     o._android_tts = nil
-    
     o:detectBackend()
-    
     return o
 end
-
 --[[--
 Detect available TTS backend.
 --]]
 function TTSEngine:detectBackend()
     local is_android = Device:isAndroid()
-
     --- Check if a file exists, with shell fallback for devices where
     --- io.open may fail on binary files (observed on some Kindle models).
     local function fileAccessible(path)
@@ -136,7 +121,6 @@ function TTSEngine:detectBackend()
         end
         return false
     end
-
     --- Rename a .bin-suffixed file back to its original name.
     -- The release zip ships ELF binaries with a .bin extension so they
     -- survive Windows extraction / antivirus.  On first run we rename
@@ -162,7 +146,6 @@ function TTSEngine:detectBackend()
         end
         return false
     end
-
     -- On Android, the bundled espeak-ng/Piper binaries are compiled for Linux
     -- (glibc) and won't run on Android's Bionic libc.  Skip bundled binaries
     -- and go straight to system PATH detection.
@@ -170,7 +153,6 @@ function TTSEngine:detectBackend()
         -- Detect all available bundled engines first, then pick the best default.
         local plugin_dir = self.plugin_dir or "/mnt/onboard/.adds/koreader/plugins/audiobook.koplugin"
         logger.warn("TTSEngine: detectBackend plugin_dir =", plugin_dir)
-
         -- Check for bundled espeak-ng (rename .bin -> original if needed)
         local bundled_base = plugin_dir .. "/espeak-ng"
         local bundled_bin = bundled_base .. "/bin/espeak-ng"
@@ -186,7 +168,6 @@ function TTSEngine:detectBackend()
         else
             logger.warn("TTSEngine: bundled espeak-ng not found at", bundled_bin)
         end
-
         -- Check for bundled Piper TTS binary (rename .bin -> original if needed)
         local piper_dir = plugin_dir .. "/piper"
         local bundled_piper_bin = piper_dir .. "/piper"
@@ -202,7 +183,6 @@ function TTSEngine:detectBackend()
         else
             logger.warn("TTSEngine: bundled Piper not found at", bundled_piper_bin)
         end
-
         -- Check for bundled wav-play (ALSA player for devices without aplay)
         local wav_play_bin = plugin_dir .. "/wav-play/wav-play"
         if ensureBinary(wav_play_bin) then
@@ -210,7 +190,6 @@ function TTSEngine:detectBackend()
             self._wav_play_lib = plugin_dir .. "/wav-play/lib"
             logger.dbg("TTSEngine: Found bundled wav-play at", wav_play_bin)
         end
-
         -- Pick default backend: espeak-ng first (lighter), then Piper
         if found_espeak then
             self.backend = self.BACKENDS.ESPEAK
@@ -221,7 +200,6 @@ function TTSEngine:detectBackend()
             return
         end
     end
-
     -- Fall back to system PATH (also the primary path on Android)
     local backends_to_try = {
         {name = self.BACKENDS.ESPEAK, cmd = "espeak-ng"},
@@ -231,7 +209,6 @@ function TTSEngine:detectBackend()
         {name = self.BACKENDS.FLITE, cmd = "flite"},
         {name = self.BACKENDS.FESTIVAL, cmd = "festival"},
     }
-    
     for _, backend in ipairs(backends_to_try) do
         if self:commandExists(backend.cmd) then
             self.backend = backend.name
@@ -240,10 +217,8 @@ function TTSEngine:detectBackend()
             return
         end
     end
-    
     -- Log what we searched for
     logger.warn("TTSEngine: No TTS backend found. Searched for: espeak-ng, espeak, pico2wave, flite, festival")
-
     -- On Android, try the native TextToSpeech API via JNI
     if is_android then
         local atts = AndroidTts:new{
@@ -264,7 +239,6 @@ function TTSEngine:detectBackend()
             logger.warn("TTSEngine: Android TTS helper .dex not available")
         end
     end
-
     -- Kindle native TTS: Amazon's Ivona SDK via tts.orchestrator/playermgr.
     -- Last resort when no bundled or system TTS binaries are found.
     -- The Kindle's built-in TTS handles both synthesis and audio output.
@@ -279,7 +253,6 @@ function TTSEngine:detectBackend()
             end
         end
     end
-
     self.backend = nil
     if is_android then
         self.backend_error = _("No TTS engine available on this device.\n\nThe plugin needs the Android TTS helper (.dex) which is not yet included.\n\nAs a workaround, install espeak-ng via Termux:\n  pkg install espeak-ng\n\nThen add Termux to your PATH before launching KOReader.")
@@ -301,7 +274,6 @@ function TTSEngine:detectBackend()
         end
     end
 end
-
 --[[--
 Check if a command exists in PATH.
 Delegates to shared Utils module.
@@ -311,14 +283,12 @@ Delegates to shared Utils module.
 function TTSEngine:commandExists(cmd)
     return Utils.commandExists(cmd)
 end
-
 --[[--
 Get menu items for engine selection.
 @return table Menu items
 --]]
 function TTSEngine:getEngineMenu()
     local menu = {}
-    
     for name, backend in pairs(self.BACKENDS) do
         table.insert(menu, {
             text = name,
@@ -333,10 +303,8 @@ function TTSEngine:getEngineMenu()
             end,
         })
     end
-    
     return menu
 end
-
 --[[--
 Set speech rate.
 @param rate number Rate multiplier (0.5 to 2.0)
@@ -345,7 +313,6 @@ function TTSEngine:setRate(rate)
     self.rate = math.max(0.25, math.min(2.0, rate))
     logger.dbg("TTSEngine: Rate set to", self.rate)
 end
-
 --[[--
 Set speech pitch.
 @param pitch number Pitch value (0 to 99, espeak-ng native range)
@@ -354,7 +321,6 @@ function TTSEngine:setPitch(pitch)
     self.pitch = math.max(0, math.min(99, pitch))
     logger.dbg("TTSEngine: Pitch set to", self.pitch)
 end
-
 --[[--
 Set speech volume.
 @param volume number Volume level (0.0 to 1.0)
@@ -363,7 +329,6 @@ function TTSEngine:setVolume(volume)
     self.volume = math.max(0.0, math.min(1.0, volume))
     logger.dbg("TTSEngine: Volume set to", self.volume)
 end
-
 --[[--
 Set the espeak-ng voice/language.
 @param voice string espeak-ng voice identifier (e.g. "en", "en-us")
@@ -372,7 +337,6 @@ function TTSEngine:setVoice(voice)
     self.voice = voice
     logger.dbg("TTSEngine: Voice set to", self.voice)
 end
-
 --[[--
 Return the ESPEAK_DATA_PATH. All languages are bundled with the plugin,
 so this is just the bundled data directory.
@@ -381,7 +345,6 @@ so this is just the bundled data directory.
 function TTSEngine:_resolveEspeakDataPath()
     return self.espeak_data_path or "/usr/share"
 end
-
 --[[--
 Set the espeak-ng word gap (extra silence between words).
 @param gap number Gap in units of 10ms (0 = default)
@@ -390,7 +353,6 @@ function TTSEngine:setWordGap(gap)
     self.word_gap = gap or 0
     logger.dbg("TTSEngine: Word gap set to", self.word_gap)
 end
-
 --[[
 Set the extra pause at clause punctuation (commas, semicolons, etc.).
 @param pause number Pause in seconds (0 = off)
@@ -399,7 +361,6 @@ function TTSEngine:setClausePause(pause)
     self.clause_pause = pause or 0
     logger.dbg("TTSEngine: Clause pause set to", self.clause_pause)
 end
-
 --[[--
 Synthesize text and return timing metadata.
 @param text string Text to synthesize
@@ -419,9 +380,7 @@ function TTSEngine:synthesize(text, callback)
         end
         return false
     end
-    
     self.timing_data = {}
-
     -- Kindle native TTS: text goes directly to playermgr (no WAV synthesis).
     -- The Kindle's Ivona SDK handles both synthesis and audio output.
     if self.backend == self.BACKENDS.KINDLE_NATIVE then
@@ -438,12 +397,9 @@ function TTSEngine:synthesize(text, callback)
         if callback then callback(true, self.timing_data) end
         return true
     end
-    
     logger.dbg("TTSEngine: Starting synthesis with backend:", self.backend)
-    
     return self:synthesizeCommand(text, callback)
 end
-
 --[[--
 Synthesize using command-line TTS.
 @param text string Text to synthesize
@@ -456,16 +412,13 @@ function TTSEngine:synthesizeCommand(text, callback)
     self.file_counter = (self.file_counter or 0) + 1
     local audio_file = temp_dir .. "/audiobook_tts_" .. os.time() .. "_" .. self.file_counter .. ".wav"
     local timing_file = temp_dir .. "/audiobook_timing_" .. os.time() .. ".txt"
-    
     local cmd
-    
     -- Limit text length to avoid command line issues
     local max_text_len = 1000
     if #text > max_text_len then
         text = text:sub(1, max_text_len)
         logger.dbg("TTSEngine: Truncated text to", max_text_len, "chars")
     end
-    
     if self.backend == self.BACKENDS.ESPEAK then
         -- espeak-ng supports word timing output
         local speed = math.floor(175 * self.rate) -- Default is 175 wpm
@@ -558,7 +511,6 @@ function TTSEngine:synthesizeCommand(text, callback)
         -- Android TTS via JNI: synthesize to WAV file asynchronously
         return self:synthesizeAndroid(text, audio_file, callback)
     end
-    
     if not cmd then
         logger.err("TTSEngine: Cannot create command for backend:", self.backend)
         UIManager:show(InfoMessage:new{
@@ -570,9 +522,7 @@ function TTSEngine:synthesizeCommand(text, callback)
         end
         return false
     end
-    
     logger.dbg("TTSEngine: Running:", cmd)
-    
     -- Piper TTS is slow (~8-11s per sentence on Kobo ARM).
     -- Run it asynchronously so the UI stays responsive.
     if self.backend == self.BACKENDS.PIPER then
@@ -646,10 +596,8 @@ function TTSEngine:synthesizeCommand(text, callback)
         -- treat this as an immediate failure.
         return nil
     end
-
     -- Non-Piper backends: run synchronously (espeak-ng is fast ~100ms)
     local result = os.execute(cmd)
-
     -- Clean up SSML temp file if one was created
     if self._ssml_temp_file then
         os.remove(self._ssml_temp_file)
@@ -661,14 +609,12 @@ function TTSEngine:synthesizeCommand(text, callback)
         self._piper_text_file = nil
     end
     logger.dbg("TTSEngine: Command result:", result)
-    
     -- Check if file was created
     local file = io.open(audio_file, "r")
     if file then
         file:close()
         local size = self:getFileSize(audio_file)
         logger.dbg("TTSEngine: Audio file created, size:", size)
-        
         if size and size > 0 then
             self.current_audio_file = audio_file
             -- Generate timing estimates since most engines don't provide timing
@@ -683,7 +629,6 @@ function TTSEngine:synthesizeCommand(text, callback)
     else
         logger.err("TTSEngine: Failed to create audio file at:", audio_file)
     end
-    
     -- Show error to user
     UIManager:show(InfoMessage:new{
         text = _("TTS synthesis failed.\n\nCould not generate audio file.\nCheck that espeak-ng is installed."),
@@ -694,7 +639,6 @@ function TTSEngine:synthesizeCommand(text, callback)
     end
     return false
 end
-
 --[[--
 Get file size.
 Delegates to WavUtils.
@@ -704,7 +648,6 @@ Delegates to WavUtils.
 function TTSEngine:getFileSize(path)
     return WavUtils.getFileSize(path)
 end
-
 --[[--
 Synthesize using Android TTS via JNI.
 Dispatches synthesis to the TtsHelper, then polls for completion.
@@ -721,16 +664,13 @@ function TTSEngine:synthesizeAndroid(text, audio_file, callback)
         if callback then callback(false, nil) end
         return false
     end
-
     -- Forward rate/pitch settings to the Android engine
     atts:setRate(self.rate or 1.0)
     -- espeak-ng pitch is 0-99 (default 50); Android pitch is a multiplier
     -- around 1.0.  Map 0-99 to 0.5-2.0 range.
     local android_pitch = 0.5 + ((self.pitch or 50) / 99) * 1.5
     atts:setPitch(android_pitch)
-
     logger.dbg("TTSEngine: Android TTS pipeline for:", text:sub(1, 60))
-
     -- Dispatch synth-then-play pipeline.  The Java side synthesizes the
     -- WAV and starts MediaPlayer automatically, without needing a Lua
     -- round-trip between synthesis and playback.  This keeps audio going
@@ -741,7 +681,6 @@ function TTSEngine:synthesizeAndroid(text, audio_file, callback)
         if callback then callback(false, nil) end
         return false
     end
-
     -- Poll for the pipeline to reach "playing" status.
     -- The synth-to-play transition happens in Java, so even if these polls
     -- are delayed (backgrounded), playback will have started on its own.
@@ -781,7 +720,6 @@ function TTSEngine:synthesizeAndroid(text, audio_file, callback)
     -- Return nil to signal async (same convention as Piper)
     return nil
 end
-
 --[[--
 Generate timing estimates for words in text.
 @param text string The text being spoken
@@ -791,26 +729,21 @@ function TTSEngine:generateTimingEstimates(text)
     local current_time = 0
     local pos = 1
     local is_piper = self.backend == self.BACKENDS.PIPER
-    
     while pos <= #text do
         -- Skip whitespace
         while pos <= #text and text:sub(pos, pos):match("%s") do
             pos = pos + 1
         end
-        
         if pos > #text then
             break
         end
-        
         -- Find word
         local word_start = pos
         while pos <= #text and not text:sub(pos, pos):match("%s") do
             pos = pos + 1
         end
-        
         local word = text:sub(word_start, pos - 1)
         local clean_word = word:gsub("[%p]", "")
-        
         if clean_word ~= "" then
             local duration
             if is_piper then
@@ -831,7 +764,6 @@ function TTSEngine:generateTimingEstimates(text)
                 local syllables = self:countSyllables(clean_word)
                 duration = math.floor((syllables * 200) / self.rate)
             end
-            
             table.insert(self.timing_data, {
                 word = word,
                 start_pos = word_start,
@@ -839,14 +771,11 @@ function TTSEngine:generateTimingEstimates(text)
                 start_time = current_time,
                 end_time = current_time + duration,
             })
-            
             current_time = current_time + duration + (is_piper and 30 or 50)
         end
     end
-    
     logger.dbg("TTSEngine: Generated timing for", #self.timing_data, "words")
 end
-
 --[[--
 Count syllables in a word.
 Delegates to shared Utils module.
@@ -856,7 +785,6 @@ Delegates to shared Utils module.
 function TTSEngine:countSyllables(word)
     return Utils.countSyllables(word)
 end
-
 --[[--
 Escape text for shell command.
 @param text string Text to escape
@@ -870,7 +798,6 @@ function TTSEngine:escapeText(text)
     text = text:gsub("%$", "\\$")
     return text
 end
-
 --[[--
 Append silence (zero samples) to the end of an existing WAV file.
 Delegates to WavUtils.
@@ -881,7 +808,6 @@ Delegates to WavUtils.
 function TTSEngine:appendSilenceToWav(path, duration_ms)
     return WavUtils.appendSilence(path, duration_ms)
 end
-
 --[[--
 Append a gap (silence or audible tone) to a WAV file.
 When "gap_test_mode" is enabled, writes a low tone instead of silence
@@ -901,7 +827,6 @@ function TTSEngine:appendGapToWav(path, duration_ms, gap_type)
     end
     return WavUtils.appendSilence(path, duration_ms)
 end
-
 --[[--
 Quick espeak-ng synthesis for cold-start fallback.
 Synthesizes text with the bundled espeak-ng binary (typically <300ms on ARM)
@@ -958,7 +883,6 @@ function TTSEngine:espeakSynthesizeFallback(text)
     end
     return nil
 end
-
 --[[--
 Merge multiple WAV files into the current audio file.
 Delegates to WavUtils.
@@ -971,7 +895,6 @@ function TTSEngine:mergeWavFiles(concat_files)
     end
     return WavUtils.mergeFiles(self.current_audio_file, concat_files)
 end
-
 --[[--
 Pre-synthesize audio for the next sentence while the current one plays.
 This runs espeak-ng to generate the WAV file and timing data in advance,
@@ -1002,11 +925,9 @@ function TTSEngine:prefetch(text)
     end
     -- Clean up any previous prefetch
     self:_cleanPrefetch()
-
     -- Save current audio file/timing so synthesizeCommand doesn't overwrite them
     local saved_file = self.current_audio_file
     local saved_timing = self.timing_data
-
     local ok = self:synthesizeCommand(text, function(success, timing)
         if success then
             -- Move the generated file into the prefetch slot
@@ -1016,14 +937,11 @@ function TTSEngine:prefetch(text)
             logger.dbg("TTSEngine: Prefetched audio for:", text:sub(1, 40))
         end
     end)
-
     -- Restore the current audio state (the playing sentence's file)
     self.current_audio_file = saved_file
     self.timing_data = saved_timing
-
     return ok
 end
-
 --[[--
 Check if prefetched audio matches the given text and swap it in.
 @param text string The sentence text to check
@@ -1057,7 +975,6 @@ function TTSEngine:usePrefetched(text)
     end
     return false
 end
-
 --[[--
 Peek at the prefetched audio without consuming it.
 Returns file path, timing data and WAV duration if the prefetch matches the
@@ -1077,7 +994,6 @@ function TTSEngine:peekPrefetch(text)
     -- Check Piper async queue for ready entries
     return self._piper:peek(text)
 end
-
 --[[--
 Diagnostic: return a summary string of the Piper prefetch queue state.
 @return string  e.g. "queued=3 pending=2 ready=1 failed=0"
@@ -1085,7 +1001,6 @@ Diagnostic: return a summary string of the Piper prefetch queue state.
 function TTSEngine:getPiperQueueSnapshot()
     return self._piper:getSnapshot()
 end
-
 --[[--
 Get WAV duration from an arbitrary file path.
 Delegates to WavUtils.
@@ -1095,7 +1010,6 @@ Delegates to WavUtils.
 function TTSEngine:getWavDurationMs(path)
     return WavUtils.getDurationMs(path)
 end
-
 --[[--
 Generate a WAV file containing silence of the given duration.
 Delegates to WavUtils.
@@ -1105,7 +1019,6 @@ Delegates to WavUtils.
 function TTSEngine:generateSilenceWav(duration_ms)
     return WavUtils.generateSilence(nil, duration_ms)
 end
-
 --[[--
 Clean up prefetch state.
 --]]
@@ -1122,7 +1035,6 @@ function TTSEngine:_cleanPrefetch()
     -- Clean Piper async queue
     self._piper:cleanQueue()
 end
-
 -- === Persistent BT Pipeline Constants ===
 -- Instead of launching a new gst-launch for each sentence (which crashes
 -- when BT A2DP disconnects during gaps), maintain a single persistent
@@ -1130,7 +1042,6 @@ end
 -- switches to real audio on demand.  gst-launch never stops.
 local PIPE_BUFFER_DELAY_64KB = 1500 -- 64KB pipe buffer at 44100 B/s ≈ 1.45s
 local PIPE_BUFFER_DELAY_16KB = 370  -- 16KB pipe buffer at 44100 B/s ≈ 370ms
-
 --- Compute pipe buffer delay for a given sample rate and buffer size.
 -- @param sample_rate number  Audio sample rate (default 22050)
 -- @param buf_kb number  Pipe buffer size in KB (16 or 64)
@@ -1142,7 +1053,6 @@ end
 local PIPELINE_CTRL_DIR = "/tmp/audiobook_ctrl"
 local PIPELINE_FIFO = "/tmp/audiobook_fifo"
 local PIPELINE_SCRIPT = "/tmp/audiobook_pipeline.sh"
-
 --[[--
 Play the synthesized audio.
 @param on_word function Callback for word timing updates
@@ -1163,13 +1073,11 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         })
         return false
     end
-    
     self.on_word_callback = on_word
     self.on_complete_callback = on_complete
     self.on_fail_callback = on_fail
     self.is_speaking = true
     self.is_paused = false
-    
     -- Start playback using system player (cached after first probe)
     local player = self._cached_player or self:findAudioPlayer()
     if player then
@@ -1203,11 +1111,9 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         -- calls stop(), so the scheduled timer finds state==STOPPED.
         return false
     end
-    
     logger.dbg("TTSEngine: Using player:", player)
     logger.dbg("TTSEngine: Audio file:", self.current_audio_file)
     logger.warn("TTSEngine: play() findPlayer took", time.to_ms(UIManager:getTime() - t0), "ms")
-
     -- Block playback when no real audio output exists and no BT device is
     -- connected.  On single-core Kobos (no speaker), silently looping
     -- through aplay for every sentence wastes CPU and can crash the device.
@@ -1254,7 +1160,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             return false
         end
     end
-    
     -- PocketBook pre-flight: on devices with a Bluetooth adapter
     -- (PB632, PB700c), direct ALSA playback via wav-play is harmful.
     -- PB632 has no speaker; PB700c's amplifier state corrupts on any
@@ -1361,7 +1266,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             end
         end
     end
-
     -- The pre-flight blocks every direct-ALSA / InkView wav-play attempt
     -- on PocketBooks that have a BT adapter (PB632, PB700c, PB700K3).
     -- We always require an active BT audio connection on these devices,
@@ -1432,7 +1336,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             end
         end
     end
-
     -- === KINDLE NATIVE TTS PLAYBACK PATH ===
     -- Send text directly to Amazon's Ivona SDK via playermgr PlayParameter.
     -- Protocol discovered from VoiceView LIPC event capture:
@@ -1487,7 +1390,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             self:onPlaybackComplete()
             return true
         end
-
         self._concat_durations = nil
         -- Duration was already estimated during synthesis
         local dur_ms = self._current_audio_duration_ms or 5000
@@ -1495,10 +1397,8 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         self.play_generation = (self.play_generation or 0) + 1
         local my_gen = self.play_generation
         self.playback_latency_ms = 500
-
         logger.warn("TTSEngine: Kindle native TTS play:", text:sub(1, 60),
             "est_dur=", dur_ms, "ms")
-
         -- Check /var free space -- Ivona TTS needs temp space for synthesis.
         -- A full /var causes playermgr to silently ignore PlayParameter.
         if not self._var_space_checked then
@@ -1527,7 +1427,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                 end
             end
         end
-
         -- Skip native TTS entirely when /var is full and gst-play is available.
         -- Ivona SDK cannot synthesize without temp space, so going through the
         -- 10s strategy+timeout loop is pointless.  Fall back immediately.
@@ -1556,15 +1455,12 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                 return true
             end
         end
-
         -- JSON-escape the text for the PlayParameter payload
         local json_text = text:gsub('\\', '\\\\'):gsub('"', '\\"')
                               :gsub('\n', '\\n'):gsub('\r', '\\r'):gsub('\t', '\\t')
-
         -- Build VoiceView-compatible PlayParameter payload
         local payload = '{"type":"TTS","data":{"paramName":"textsource","paramValue":"'
             .. json_text .. '"}}'
-
         -- --- LIPC FFI helpers (persistent named connection) ---
         -- Lazy-load liblipc.so on first use
         if _lipc_lib == nil then
@@ -1572,7 +1468,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             local ok, lib = pcall(ffi.load, "lipc")
             if ok then _lipc_lib = lib; logger.warn("TTSEngine: loaded liblipc.so via FFI") end
         end
-
         -- Get or create a persistent named LIPC handle
         local lipc_h = self._lipc_handle
         if not lipc_h and _lipc_lib then
@@ -1600,7 +1495,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                 _lipc_lib = false
             end
         end
-
         local function ffiSetProp(service, prop, value)
             if lipc_h and _lipc_lib then
                 local ok, rc = pcall(_lipc_lib.LipcSetStringProperty, lipc_h, service, prop, value)
@@ -1610,7 +1504,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             end
             return nil  -- signal: use shell fallback
         end
-
         local function ffiGetInt(service, prop)
             if lipc_h and _lipc_lib then
                 local ok, result = pcall(function()
@@ -1624,7 +1517,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             end
             return nil  -- signal: use shell fallback
         end
-
         local function getTtsState()
             local st = ffiGetInt("com.lab126.playermgr", "TTS_State")
             if st ~= nil then return st end
@@ -1636,7 +1528,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             end
             return 0
         end
-
         -- Stop previous playback + request audio focus
         if ffiSetProp("com.lab126.playermgr", "Stop", "") == nil then
             os.execute("lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null")
@@ -1644,12 +1535,10 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         if ffiSetProp("com.lab126.audiomgrd", "setFocus", "tts") == nil then
             os.execute("lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>/dev/null")
         end
-
         -- Strategy A: PlayParameter only (VoiceView's steady-state protocol)
         local using_ffi = lipc_h ~= nil
         logger.warn("TTSEngine: Kindle native TTS strategy A: PlayParameter",
             using_ffi and "(FFI)" or "(shell)")
-
         if using_ffi then
             ffiSetProp("com.lab126.playermgr", "PlayParameter", payload)
         else
@@ -1664,7 +1553,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             lipc_cmd("lipc-set-prop com.lab126.playermgr PlayParameter " .. shellEsc(payload))
         end
         local tts_state = getTtsState()
-
         -- Strategy B: Open TTS session + PlayParameter + Play (shell fallback only)
         if tts_state == 0 and not using_ffi then
             local function shellEsc(s) return "'" .. s:gsub("'", "'\\''") .. "'" end
@@ -1682,7 +1570,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             lipc_cmd("lipc-set-prop com.lab126.playermgr Play ''")
             tts_state = getTtsState()
         end
-
         -- Strategy C (FFI): Open + PlayParameter + Play via FFI
         if tts_state == 0 and using_ffi then
             logger.warn("TTSEngine: Kindle native TTS strategy C: Open+PlayParam+Play (FFI)")
@@ -1691,20 +1578,16 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             ffiSetProp("com.lab126.playermgr", "Play", "")
             tts_state = getTtsState()
         end
-
         logger.warn("TTSEngine: Kindle native TTS after strategies, TTS_State=", tts_state,
             using_ffi and "(FFI)" or "(shell)")
-
         self._audio_launched_at = UIManager:getTime()
         self:startTimingLoop()
-
         -- Poll TTS_State for completion
         local engine = self
         local poll_count = 0
         local max_polls = math.max(300, math.floor(dur_ms * 3 / 100))
         local startup_polls = 15  -- 1.5s for native TTS to start
         local ever_speaking = false
-
         local function pollNativeTtsDone()
             if (engine.play_generation or 0) ~= my_gen then return end
             if not engine.is_speaking then return end
@@ -1713,7 +1596,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                 return
             end
             poll_count = poll_count + 1
-
             if poll_count > startup_polls then
                 local state = getTtsState()
                 if state > 0 then
@@ -1780,7 +1662,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                     end
                 end
             end
-
             if poll_count >= max_polls then
                 logger.warn("TTSEngine: Kindle native TTS timed out after",
                     poll_count * 0.1, "s")
@@ -1794,7 +1675,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         UIManager:scheduleIn(0.1, pollNativeTtsDone)
         return true
     end
-
     -- Calculate real audio duration from WAV file.
     -- If _unpadded_duration_ms is set, the WAV was padded with trailing
     -- silence by SyncController.  Use the original (speech-only) duration
@@ -1803,7 +1683,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
     self._unpadded_duration_ms = nil
     self._current_audio_duration_ms = real_duration_ms
     logger.dbg("TTSEngine: Real WAV duration:", real_duration_ms, "ms (unpadded)")
-    
     -- BT audio has significant startup latency (A2DP negotiation).
     -- On chained sentences the socket is still warm, so latency is lower.
     if self.audio_player_type == "gst-bt" then
@@ -1811,7 +1690,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
     else
         self.playback_latency_ms = 0
     end
-    
     -- Scale timing data to match real audio duration
     if real_duration_ms > 0 and #self.timing_data > 0 then
         local estimated_total = self.timing_data[#self.timing_data].end_time
@@ -1824,7 +1702,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             logger.dbg("TTSEngine: Scaled timing by", scale, "(estimated", estimated_total, "-> real", real_duration_ms, ")")
         end
     end
-    
     -- === ANDROID MEDIAPLAYER PATH ===
     -- Audio is already playing via the synthesizeAndPlay pipeline.
     -- We just need to set up word-timing and poll for completion.
@@ -1834,13 +1711,11 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         self.play_generation = (self.play_generation or 0) + 1
         local my_gen = self.play_generation
         self.playback_latency_ms = 0
-
         -- Use the pipeline's real duration for timing; fall back to WAV estimate
         local dur_ms = self._android_pipeline_duration_ms
             or self._current_audio_duration_ms or 5000
         self._expected_play_duration_ms = dur_ms
         self._android_pipeline_duration_ms = nil
-
         -- Check if playback already finished (Lua was slow to call play())
         local pipeline_status = atts:getPipelineStatus()
         if pipeline_status == 2 or pipeline_status == 3 then
@@ -1849,13 +1724,10 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             self:onPlaybackComplete()
             return true
         end
-
         self._audio_launched_at = UIManager:getTime()
         logger.dbg("TTSEngine: Android pipeline playback in progress, duration:", dur_ms, "ms")
-
         -- Start timing loop for word highlighting
         self:startTimingLoop()
-
         -- Poll for pipeline completion
         local engine = self
         local poll_count = 0
@@ -1887,7 +1759,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         UIManager:scheduleIn(0.1, pollPipelineDone)
         return true
     end
-
     -- === KINDLE LIPC PLAYBACK PATH ===
     -- Use Amazon's playermgr LIPC service (GStreamer-based) to play WAV
     -- files through the Kindle audio stack → audiomgrd → BT headphones.
@@ -1897,10 +1768,8 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         self.play_generation = (self.play_generation or 0) + 1
         local my_gen = self.play_generation
         self.playback_latency_ms = 300  -- LIPC + GStreamer startup
-
         logger.warn("TTSEngine: Kindle LIPC play:", self.current_audio_file,
             "dur=", self._expected_play_duration_ms, "ms")
-
         -- Verify the WAV file exists and log its size (helps debug smoke test)
         local file_path = self.current_audio_file
         local fh = io.open(file_path, "rb")
@@ -1911,23 +1780,18 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         else
             logger.err("TTSEngine: Kindle LIPC WAV file does not exist:", file_path)
         end
-
         -- Stop any previous playback first
         os.execute("lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null")
-
         -- Request audio focus from audiomgrd.  playermgr may refuse to
         -- play unless its client has audio focus granted by the system
         -- mixer.  The setFocus property takes a client name string.
         os.execute("lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>/dev/null")
-
         -- Enable GStreamer debug logging so errors appear in crash.log
         -- (gstLogLevel: 0=none, 1=error, 2=warning, 3=info, 4=debug)
         os.execute("lipc-set-prop com.lab126.playermgr gstLogLevel 2 2>/dev/null")
-
         -- playermgr uses GStreamer internally, which handles WAV decoding.
         -- Use io.popen to capture output for diagnostics.
         local file_uri = "file://" .. file_path
-
         -- Strategy 1: Open with file:// URI + Play (GStreamer prefers URIs)
         local function lipc_cmd(cmd)
             local h = io.popen(cmd .. " 2>&1")
@@ -1935,18 +1799,15 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             if h then out = h:read("*a") or ""; h:close() end
             return out
         end
-
         logger.warn("TTSEngine: Kindle LIPC trying URI:", file_uri)
         local open_out = lipc_cmd(string.format(
             "lipc-set-prop com.lab126.playermgr Open '%s'", file_uri))
         local play_out = lipc_cmd("lipc-set-prop com.lab126.playermgr Play ''")
         logger.warn("TTSEngine: Kindle LIPC Open(URI):", open_out, "Play:", play_out)
-
         -- Check if playback started
         local in_play = lipc_cmd("lipc-get-prop com.lab126.playermgr InPlayback")
         local started = in_play:match("^%s*(%d+)") == "1"
         logger.warn("TTSEngine: Kindle LIPC InPlayback after URI:", in_play)
-
         -- Strategy 2: Open with bare path + Play
         if not started then
             logger.warn("TTSEngine: Kindle LIPC trying bare path:", file_path)
@@ -1955,12 +1816,10 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                 "lipc-set-prop com.lab126.playermgr Open '%s'", file_path))
             play_out = lipc_cmd("lipc-set-prop com.lab126.playermgr Play ''")
             logger.warn("TTSEngine: Kindle LIPC Open(path):", open_out, "Play:", play_out)
-
             in_play = lipc_cmd("lipc-get-prop com.lab126.playermgr InPlayback")
             started = in_play:match("^%s*(%d+)") == "1"
             logger.warn("TTSEngine: Kindle LIPC InPlayback after path:", in_play)
         end
-
         -- Strategy 3: Play with URI directly (no Open)
         if not started then
             logger.warn("TTSEngine: Kindle LIPC trying Play(URI) directly")
@@ -1968,12 +1827,10 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             play_out = lipc_cmd(string.format(
                 "lipc-set-prop com.lab126.playermgr Play '%s'", file_uri))
             logger.warn("TTSEngine: Kindle LIPC Play(URI):", play_out)
-
             in_play = lipc_cmd("lipc-get-prop com.lab126.playermgr InPlayback")
             started = in_play:match("^%s*(%d+)") == "1"
             logger.warn("TTSEngine: Kindle LIPC InPlayback after Play(URI):", in_play)
         end
-
         -- Strategy 4: Play with bare path directly (no Open)
         if not started then
             logger.warn("TTSEngine: Kindle LIPC trying Play(path) directly")
@@ -1981,24 +1838,62 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             play_out = lipc_cmd(string.format(
                 "lipc-set-prop com.lab126.playermgr Play '%s'", file_path))
             logger.warn("TTSEngine: Kindle LIPC Play(path):", play_out)
-
             in_play = lipc_cmd("lipc-get-prop com.lab126.playermgr InPlayback")
             started = in_play:match("^%s*(%d+)") == "1"
             logger.warn("TTSEngine: Kindle LIPC InPlayback after Play(path):", in_play)
         end
-
         if not started then
             logger.warn("TTSEngine: Kindle LIPC — none of 4 strategies got InPlayback=1")
+            -- Diagnose: check if audiomgrd denied the focus request.
+            local focus_out = lipc_cmd("lipc-get-prop com.lab126.audiomgrd getFocus 2>/dev/null")
+            logger.warn("TTSEngine: Kindle LIPC audiomgrd focus:", focus_out)
+            -- None of the 4 strategies worked.  This is an immediate failure:
+            -- there is no point starting the polling loop because InPlayback
+            -- will never become 1.  Treat as consecutive failure so we show an
+            -- error after 2 attempts instead of silently advancing sentences.
+            self._lipc_consec_fails = (self._lipc_consec_fails or 0) + 1
+            if self._lipc_consec_fails >= 2 then
+                -- Try auto-fallback to kindle-gst-play once
+                if engine._kindle_gst_play_bin and not engine._lipc_gst_fallback_tried then
+                    engine._lipc_gst_fallback_tried = true
+                    logger.warn("TTSEngine: kindle-lipc failed twice (no InPlayback), falling back to kindle-gst-play")
+                    engine.audio_player_type = "kindle-gst-play"
+                    engine._cached_player = nil
+                    engine._no_real_audio_output = false
+                    engine._lipc_consec_fails = 0
+                    engine.is_speaking = false
+                    engine:play(engine.word_callback, engine.completion_callback,
+                        engine.on_fail_callback, engine._concat_files)
+                    return true
+                end
+                engine.is_speaking = false
+                engine.play_generation = (engine.play_generation or 0) + 1
+                engine:cleanup()
+                local msg = _("Kindle audio playback failed.\n\nThe playermgr service accepted commands but audio never started.\n\nPossible causes:\n1. GStreamer cannot find the wavparse plugin on this firmware\n2. audiomgrd denied audio focus to the plugin\n3. No audio sink is configured (built-in speaker absent, BT not connected)\n\nTry: Connect Bluetooth headphones via Kindle Settings first, then start read-along.\n\nIf this persists, please generate a bug report (Audiobook > Report a bug) and share it on GitHub.")
+                -- If we have kindle-gst-play available, suggest falling back
+                if engine._kindle_gst_play_bin then
+                    msg = msg .. "\n\nAlternatively, try switching to 'gst-play' audio player in Audiobook settings (if available)."
+                end
+                UIManager:show(InfoMessage:new{
+                    text = msg,
+                    timeout = 10,
+                })
+                if engine.on_fail_callback then
+                    engine.on_fail_callback()
+                end
+                return true  -- return true so play() doesn't continue to polling
+            end
+            -- First failure: advance to next sentence (may work on next call
+            -- if the state machine was in a transient state)
+            self:onPlaybackComplete()
+            return true
         else
             -- At least one strategy worked -- reset consecutive failure counter
             self._lipc_consec_fails = 0
         end
-
         self._audio_launched_at = UIManager:getTime()
-
         -- Start timing loop for word highlighting
         self:startTimingLoop()
-
         -- Poll InPlayback property for completion detection.
         -- Also use a safety timeout based on WAV duration.
         local engine = self
@@ -2009,7 +1904,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         -- Allow a brief startup period before checking InPlayback
         local startup_polls = 5  -- 500ms for LIPC + GStreamer to open file
         local ever_playing = false  -- track if InPlayback was ever 1
-
         local function pollLipcDone()
             if (engine.play_generation or 0) ~= my_gen then return end
             if not engine.is_speaking then return end
@@ -2018,7 +1912,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                 return
             end
             poll_count = poll_count + 1
-
             -- Check InPlayback: 1 = playing, 0 = idle/completed/failed
             if poll_count > startup_polls then
                 local h = io.popen("lipc-get-prop com.lab126.playermgr InPlayback 2>/dev/null")
@@ -2047,20 +1940,42 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                             logger.err("TTSEngine: Kindle LIPC playback never started, elapsed=",
                                 elapsed_ms, "ms, consec_fails=", engine._lipc_consec_fails)
                             if engine._lipc_consec_fails >= 2 then
+                                -- 2 consecutive failures.  Try auto-fallback to
+                                -- kindle-gst-play once (issue #2 / #22: PW4/PW5 where
+                                -- playermgr accepts commands but has no audio sink).
+                                if engine._kindle_gst_play_bin and not engine._lipc_gst_fallback_tried then
+                                    engine._lipc_gst_fallback_tried = true
+                                    logger.warn("TTSEngine: kindle-lipc failed twice, falling back to kindle-gst-play")
+                                    engine.audio_player_type = "kindle-gst-play"
+                                    engine._cached_player = nil
+                                    engine._no_real_audio_output = false
+                                    engine._lipc_consec_fails = 0
+                                    engine.is_speaking = false
+                                    -- Replay current audio via gst-play
+                                    engine:play(engine.word_callback, engine.completion_callback,
+                                        engine.on_fail_callback, engine._concat_files)
+                                    return
+                                end
                                 -- Stop after 2 consecutive failures
                                 engine.is_speaking = false
                                 engine.play_generation = (engine.play_generation or 0) + 1
                                 engine:cleanup()
                                 local msg
                                 if engine._no_real_audio_output then
-                                    msg = _("Kindle audio playback failed.\n\nThis Kindle model's GStreamer installation cannot decode audio files (no wavparse plugin). If your device has VoiceView (Settings > Accessibility), native TTS may work in a future update.\n\nPlease generate a bug report and share it on GitHub.")
+                                    msg = _("Kindle audio playback failed.\n\nThis Kindle model's GStreamer installation cannot decode audio files (no wavparse plugin). Audio may work if:\n\n1. You have connected Bluetooth headphones via Kindle Settings\n2. VoiceView is enabled (Settings > Accessibility > VoiceView)\n3. You switch to espeak TTS backend (Audiobook > TTS Engine)\n\nPlease generate a bug report (Audiobook > Report a bug) and share it on GitHub.")
                                 else
-                                    msg = _("Kindle audio playback failed.\n\nThe playermgr service accepted commands but audio never started.\n\nPlease generate a bug report (Audiobook > Report a bug) and share it on GitHub.")
+                                    msg = _("Kindle audio playback failed.\n\nThe playermgr service accepted commands but audio never started.\n\nPossible causes:\n1. GStreamer cannot find the wavparse plugin on this firmware\n2. audiomgrd denied audio focus to the plugin\n3. No audio sink is configured (built-in speaker absent, BT not connected)\n\nTry: Connect Bluetooth headphones via Kindle Settings first, then start read-along.\n\nIf this persists, please generate a bug report (Audiobook > Report a bug) and share it on GitHub.")
+                                end
+                                if engine._kindle_gst_play_bin then
+                                    msg = msg .. "\n\nTry: Switch to gst-play in Audiobook settings if available."
                                 end
                                 UIManager:show(InfoMessage:new{
                                     text = msg,
                                     timeout = 10,
                                 })
+                                if engine.on_fail_callback then
+                                    engine.on_fail_callback()
+                                end
                                 return
                             end
                             -- First failure -- try advancing to next sentence
@@ -2070,7 +1985,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                     end
                 end
             end
-
             if poll_count >= max_polls then
                 logger.warn("TTSEngine: Kindle LIPC playback timed out after",
                     poll_count * 0.1, "s -- forcing completion")
@@ -2083,7 +1997,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         UIManager:scheduleIn(0.1, pollLipcDone)
         return true
     end
-
     -- === KINDLE GST-PLAY PATH ===
     -- Bundled C helper that feeds raw PCM to GStreamer mixersink via dlopen.
     -- Used on Kindle devices that have GStreamer + mixersink but no wavparse.
@@ -2094,14 +2007,11 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         self.play_generation = (self.play_generation or 0) + 1
         local my_gen = self.play_generation
         self.playback_latency_ms = 300
-
         local file_path = self.current_audio_file
         logger.warn("TTSEngine: kindle-gst-play:", file_path,
             "dur=", self._expected_play_duration_ms, "ms")
-
         -- Request audio focus from audiomgrd (same as kindle-lipc path)
         os.execute("lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>/dev/null")
-
         -- Launch gst-play in background, capture PID.
         -- Capture stderr to a log file for diagnostics (was previously
         -- discarded, making it impossible to debug silent failures).
@@ -2114,12 +2024,9 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         if h then h:close() end
         local pid = tonumber(pid_str:match("(%d+)"))
         self._gst_play_pid = pid
-
         logger.warn("TTSEngine: kindle-gst-play launched, PID=", pid)
-
         self._audio_launched_at = UIManager:getTime()
         self:startTimingLoop()
-
         -- Poll /proc/<pid> for process completion.
         -- When the process exits, check its status to distinguish
         -- success (exit 0 = EOS) from failure (exit 3/4).
@@ -2127,7 +2034,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         local poll_count = 0
         local dur_ms = self._expected_play_duration_ms or 5000
         local max_polls = math.max(300, math.floor(dur_ms * 3 / 100))
-
         local function pollGstPlayDone()
             if (engine.play_generation or 0) ~= my_gen then return end
             if not engine.is_speaking then return end
@@ -2136,7 +2042,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                 return
             end
             poll_count = poll_count + 1
-
             -- Check if process still running via /proc
             local proc_fh = pid and io.open("/proc/" .. pid .. "/status", "r")
             if proc_fh then
@@ -2156,7 +2061,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                 local elapsed_ms = time.to_ms(UIManager:getTime() - engine._audio_launched_at)
                 local expected_ms = engine._expected_play_duration_ms or 5000
                 local is_early_exit = elapsed_ms < math.min(1000, expected_ms * 0.2)
-
                 -- Read the stderr log for diagnostics (helps debug silent failures).
                 local log_text = ""
                 local log_fh = io.open("/tmp/.gst_play_last.log", "r")
@@ -2167,11 +2071,9 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                         logger.warn("TTSEngine: kindle-gst-play stderr:", log_text:sub(1, 500))
                     end
                 end
-
                 local has_error = log_text:match("Failed to load plugin")
                     or log_text:match("undefined symbol")
                     or log_text:match("[Ee]rror")
-
                 if is_early_exit and has_error then
                     logger.err("TTSEngine: kindle-gst-play exited early (", elapsed_ms,
                         "ms) with error, expected ~", expected_ms, "ms")
@@ -2199,7 +2101,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                     end
                     return
                 end
-
                 logger.warn("TTSEngine: kindle-gst-play finished, polls=", poll_count)
                 engine._gst_play_pid = nil
                 engine:onPlaybackComplete()
@@ -2208,7 +2109,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         UIManager:scheduleIn(0.2, pollGstPlayDone)
         return true
     end
-
     -- === PERSISTENT BT PIPELINE PATH ===
     -- For Bluetooth: use a single persistent gst-launch that never stops.
     -- A feeder script writes silence between sentences to keep BT A2DP alive,
@@ -2226,14 +2126,12 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         else
             self._concat_durations = nil
         end
-
         -- Calculate expected audio duration from actual WAV file.
         -- After mergeWavFiles(), the main WAV includes all silence padding
         -- (inter-sentence gaps, first-sentence padding, trailing gap).
         -- Reading the WAV header gives the true total duration, avoiding
         -- the bug where first-sentence padding was excluded from the sum.
         self._expected_play_duration_ms = self:getAudioDurationMs()
-
         -- Cancel any pending callbacks from previous play()
         if self._completion_timer_fn then
             UIManager:unschedule(self._completion_timer_fn)
@@ -2243,7 +2141,6 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             UIManager:unschedule(self._pending_launch_fn)
             self._pending_launch_fn = nil
         end
-
         -- Ensure the persistent pipeline is running
         if not self:_ensurePersistentPipeline() then
             logger.err("TTSEngine: Failed to start persistent pipeline")
@@ -2251,16 +2148,12 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             if on_fail then on_fail() end
             return false
         end
-
         -- Bump generation to invalidate stale callbacks
         self.play_generation = (self.play_generation or 0) + 1
         local my_gen = self.play_generation
-
         -- BT latency: pipe buffer + ring buffer (~200ms)
         self.playback_latency_ms = (self._pipe_buffer_delay_ms or PIPE_BUFFER_DELAY_64KB) + 200
-
         logger.warn("TTSEngine: play() pre-launch took", time.to_ms(UIManager:getTime() - t0), "ms")
-
         -- Feed audio to the persistent pipeline
         os.remove(PIPELINE_CTRL_DIR .. "/done")
         local ctrl_f = io.open(PIPELINE_CTRL_DIR .. "/play", "w")
@@ -2268,13 +2161,11 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             ctrl_f:write(self.current_audio_file)
             ctrl_f:close()
         end
-
         self._audio_launched_at = UIManager:getTime()
         self._total_pause_ms = 0  -- reset accumulated pause time for this sentence
         logger.warn("TTSEngine: play() fed to pipeline, dur=",
             self._expected_play_duration_ms, "ms, gen=", my_gen,
             "piper_q=", self:getPiperQueueSnapshot())
-
         -- Poll for feeder 'done' file — logs when feeder finished writing
         -- PCM to the FIFO.  This tells us the real latency from play() to
         -- audio-data-in-pipeline.  Does NOT affect completion timing.
@@ -4097,5 +3988,4 @@ function TTSEngine:piperPrefetchAsync(text)     self._piper:enqueue(text) end
 function TTSEngine:_launchNextPiperPrefetch()    self._piper:launchNext() end
 function TTSEngine:consumePiperQueueEntry(text)  return self._piper:consume(text) end
 function TTSEngine:getPiperPrefetchStatus(text)  return self._piper:getStatus(text) end
-
 return TTSEngine

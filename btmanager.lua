@@ -61,8 +61,13 @@ local function detectStack()
         --   com.lab126.btService  btEnabled   (PW11 and others)
         --   com.lab126.cmd        btEnabled   (older Kindles, some PW4)
         --   com.lab126.acsbt      btEnabled   (some models)
+        --   com.lab126.kaf        wifiBTProp   (PW4, some PW5 firmware)
         -- Some models use btPowerState instead of btEnabled.
         -- Kindle Basic 2022 (11th Gen) uses BTstate (read) + BTenable (write).
+        -- On PW4 and some PW5 firmware, none of the above may respond.
+        -- KAF (Kindle Application Framework) with wifiBTProp or btPowerState
+        -- is the correct API for newer firmware.
+        -- Also try KAF file-based: /var/local/kaf/bt/power
         local lh = io.popen("which lipc-get-prop 2>/dev/null")
         local lr = lh and lh:read("*a") or ""
         if lh then lh:close() end
@@ -73,8 +78,9 @@ local function detectStack()
                 "com.lab126.btService",
                 "com.lab126.cmd",
                 "com.lab126.acsbt",
+                "com.lab126.kaf",
             }
-            local properties = { "btEnabled", "btPowerState", "BTstate" }
+            local properties = { "btEnabled", "btPowerState", "BTstate", "wifiBTProp" }
             for _, svc in ipairs(services) do
                 for _, prop in ipairs(properties) do
                     local ph = io.popen("lipc-get-prop " .. svc .. " " .. prop .. " 2>/dev/null")
@@ -90,6 +96,14 @@ local function detectStack()
                             -- BTstate is read-only; BTenable on same service is write-only (String)
                             lipc_bt_write_prop = "BTenable"
                             lipc_bt_write_is_str = true
+                        elseif prop == "wifiBTProp" and svc == "com.lab126.kaf" then
+                            -- KAF wifiBTProp uses string "1"/"0" or "true"/"false"
+                            lipc_bt_write_prop = "wifiBTProp"
+                            lipc_bt_write_is_str = true
+                        elseif prop == "btPowerState" and svc == "com.lab126.kaf" then
+                            -- KAF btPowerState uses string "true"/"false" on some firmware
+                            lipc_bt_write_prop = "btPowerState"
+                            lipc_bt_write_is_str = true
                         else
                             lipc_bt_write_prop = prop
                             lipc_bt_write_is_str = false
@@ -102,8 +116,37 @@ local function detectStack()
                 if has_lipc then break end
             end
             if not has_lipc then
-                has_lipc = false
-                logger.warn("BTManager: Kindle lipc available but no BT service responded")
+                -- Try KAF file-based API as last resort on PW4/PW5.
+                -- Some Kindle firmware exposes BT power state through files in
+                -- /var/local/kaf/ instead of (or in addition to) LIPC properties.
+                local kaf_candidates = {
+                    "/var/local/kaf/bt/power",
+                    "/var/local/kaf/bt/enabled",
+                    "/var/local/kaf/wifiBt/power",
+                }
+                for _, kf_path in ipairs(kaf_candidates) do
+                    local kf = io.open(kf_path, "r")
+                    if kf then
+                        local val = kf:read("*a") or ""
+                        kf:close()
+                        val = val:gsub("%s+$", "")
+                        if val ~= "" then
+                            has_lipc = true  -- reuse same flag for KAF file API
+                            lipc_bt_service = "kaf_file"
+                            lipc_bt_prop = kf_path:match("([^/]+)$")
+                            lipc_bt_write_prop = kf_path  -- store full path for write
+                            lipc_bt_write_is_str = true     -- write "true"/"false" strings
+                            logger.warn("BTManager: Kindle KAF file BT control:", kf_path, "=", val)
+                            break
+                        end
+                    end
+                end
+                if not has_lipc then
+                    has_lipc = false
+                    logger.warn("BTManager: Kindle lipc available but no BT service responded")
+                    logger.warn("BTManager: Diagnostic tip: try 'lipc-get-prop com.lab126.kaf wifiBTProp'")
+                    logger.warn("BTManager: Diagnostic tip: try 'lipc-set-prop com.lab126.kaf wifiBTProp 1'")
+                end
             end
         else
             has_lipc = false
@@ -261,11 +304,25 @@ function BTManager:isPowered()
     detectStack()
     if bt_stack == "kindle" then
         if has_lipc and lipc_bt_service and lipc_bt_prop then
-            local h = io.popen("lipc-get-prop " .. lipc_bt_service .. " " .. lipc_bt_prop .. " 2>/dev/null")
-            local r = h and h:read("*a") or ""
-            if h then h:close() end
-            -- BTstate returns an Int (0=off, non-zero=on); btEnabled returns 0/1 or "true"/"false"
-            return r:match("[1-9]") ~= nil or r:lower():match("true") ~= nil
+            local r
+            if lipc_bt_service == "kaf_file" then
+                -- KAF file-based API: read from the power file
+                local kf = io.open(lipc_bt_write_prop or "/var/local/kaf/bt/power", "r")
+                if kf then
+                    r = kf:read("*a") or ""
+                    kf:close()
+                else
+                    r = ""
+                end
+            else
+                local h = io.popen("lipc-get-prop " .. lipc_bt_service .. " " .. lipc_bt_prop .. " 2>/dev/null")
+                r = h and h:read("*a") or ""
+                if h then h:close() end
+            end
+            r = r:gsub("%s+$", "")
+            -- BTstate returns an Int (0=off, non-zero=on); btEnabled returns 0/1;
+            -- wifiBTProp returns "1"/"0" strings; some return "true"/"false"
+            return r:match("[1-9]") ~= nil or r:lower() == "true"
         end
         -- No working lipc: assume BT may be on (externally managed)
         return true
@@ -423,11 +480,23 @@ function BTManager:powerOn()
 
     if bt_stack == "kindle" then
         if has_lipc and lipc_bt_service and lipc_bt_write_prop then
-            local val = lipc_bt_write_is_str and "true" or "1"
-            os.execute("lipc-set-prop " .. lipc_bt_service .. " " .. lipc_bt_write_prop .. " " .. val .. " 2>/dev/null")
-            os.execute("sleep 2")
+            if lipc_bt_service == "kaf_file" then
+                -- KAF file-based API: write "true"/"false" to the power file
+                local wf = io.open(lipc_bt_write_prop, "w")
+                if wf then
+                    wf:write("true\n")
+                    wf:close()
+                    os.execute("sleep 2")
+                end
+            else
+                -- Regular LIPC property-based control
+                local val = lipc_bt_write_is_str and "true" or "1"
+                os.execute("lipc-set-prop " .. lipc_bt_service .. " " .. lipc_bt_write_prop .. " " .. val .. " 2>/dev/null")
+                os.execute("sleep 2")
+            end
             local powered = self:isPowered()
-            logger.warn("BTManager: Kindle powerOn result:", powered)
+            logger.warn("BTManager: Kindle powerOn result:", powered,
+                "service:", lipc_bt_service, "prop:", lipc_bt_write_prop)
             return powered
         end
         logger.warn("BTManager: Kindle has no working lipc BT service -- cannot manage BT")
@@ -579,9 +648,18 @@ function BTManager:powerOff()
 
     if bt_stack == "kindle" then
         if has_lipc and lipc_bt_service and lipc_bt_write_prop then
-            local val = lipc_bt_write_is_str and "false" or "0"
-            os.execute("lipc-set-prop " .. lipc_bt_service .. " " .. lipc_bt_write_prop .. " " .. val .. " 2>/dev/null")
-            os.execute("sleep 1")
+            if lipc_bt_service == "kaf_file" then
+                local wf = io.open(lipc_bt_write_prop, "w")
+                if wf then
+                    wf:write("false\n")
+                    wf:close()
+                    os.execute("sleep 1")
+                end
+            else
+                local val = lipc_bt_write_is_str and "false" or "0"
+                os.execute("lipc-set-prop " .. lipc_bt_service .. " " .. lipc_bt_write_prop .. " " .. val .. " 2>/dev/null")
+                os.execute("sleep 1")
+            end
         end
         return true
     end
