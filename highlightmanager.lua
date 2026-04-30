@@ -35,7 +35,7 @@ function HighlightManager:new(o)
     setmetatable(o, self)
     self.__index = self
 
-    o.current_style = o.style or self.STYLES.INVERT
+    o.current_style = o.style or self.STYLES.BACKGROUND
     o.is_highlighting = false
     o.current_word = nil
     -- For native crengine highlighting
@@ -355,7 +355,7 @@ function HighlightManager:_highlightSentenceRolling(sentence, parsed_data, doc, 
         local best_x = end_x
         local best_diff = math.abs(got_len - want_len)
         local MAX_ITER = 6  -- converges in ~log2(box.w/char_w) ≈ 5-6 steps
-        for _ = 1, MAX_ITER do
+        for iter = 1, MAX_ITER do
             if hi - lo < 2 then break end
             local mid = math.floor((lo + hi) / 2)
             local mid_text = querySelection(cur_sx, cur_sy, mid, cur_ey)
@@ -395,7 +395,7 @@ function HighlightManager:_highlightSentenceRolling(sentence, parsed_data, doc, 
                 local hi = start_x + math.floor(sb.w * 0.3) -- don't search too far right
                 hi = math.min(hi, sb.x + sb.w - 1)
                 local best_x = start_x
-                for _ = 1, 6 do
+                for iter = 1, 6 do
                     if hi - lo < 2 then break end
                     local mid = math.floor((lo + hi) / 2)
                     local mid_text = querySelection(mid, start_y, end_x, end_y)
@@ -519,23 +519,17 @@ function HighlightManager:_paintOverlay(bb, _x, _y)
                 bb:paintRect(bx, by + bh - line_w, bw, line_w,
                     Blitbuffer.COLOR_BLACK)
             elseif style == self.STYLES.BACKGROUND then
-                -- Prefer native dimRect (lighter, softer overlay).
-                -- BlitBuffer8 (PB632, some Kindles) lacks dimRect, so
-                -- fall back to a 2-pixel horizontal stipple of invertRect:
-                -- alternating 2px-on / 2px-off bands give a 50% coverage
-                -- pattern that reads as a softer, dimmer version of invert
-                -- on e-ink, and is visually distinct from full invert.
-                local ok = pcall(function() bb:dimRect(bx, by, bw, bh) end)
-                if not ok then
-                    local band = 2
-                    local y0 = by
-                    while y0 < by + bh do
-                        local h = math.min(band, by + bh - y0)
-                        if h > 0 then
-                            pcall(function() bb:invertRect(bx, y0, bw, h) end)
-                        end
-                        y0 = y0 + band * 2
-                    end
+                -- 1-pixel horizontal stipple: invert every other row.
+                -- This produces a smooth 50% gray overlay that mimics the
+                -- native text selection highlight (the blue/gray background
+                -- you see when long-pressing text to select it).
+                -- It is intentionally less intense than full INVERT (which
+                -- swaps 100% of pixels) and more visible than dimRect
+                -- (which is too subtle on e-ink for read-along tracking).
+                local y0 = by
+                while y0 < by + bh do
+                    pcall(function() bb:invertRect(bx, y0, bw, 1) end)
+                    y0 = y0 + 2
                 end
             elseif style == self.STYLES.BOX then
                 -- Top

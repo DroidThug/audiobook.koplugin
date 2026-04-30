@@ -239,7 +239,7 @@ end
 
 function PlaybackBar:onRewindHold()
     -- Rewind multiple paragraphs on hold
-    for _ = 1, 3 do
+    for _iter = 1, 3 do
         self:onRewind()
     end
 end
@@ -254,7 +254,7 @@ end
 
 function PlaybackBar:onForwardHold()
     -- Forward multiple paragraphs on hold
-    for _ = 1, 3 do
+    for _iter = 1, 3 do
         self:onForward()
     end
 end

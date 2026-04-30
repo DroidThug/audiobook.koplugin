@@ -3378,7 +3378,7 @@ function TTSEngine:_startPersistentPipeline()
     self._pipeline_wrapper_pid = tonumber(pid_str:match("(%d+)"))
     -- Wait for gst-launch PID file to appear (up to 3s)
     local gst_pid = nil
-    for _ = 1, 60 do  -- 60 × 50ms = 3s
+    for iter = 1, 60 do  -- 60 × 50ms = 3s
         local pf = io.open(PIPELINE_CTRL_DIR .. "/gst_pid", "r")
         if pf then
             local pid = pf:read("*a")

@@ -10,6 +10,7 @@ local Event = require("ui/event")
 local UIManager = require("ui/uimanager")
 local logger = require("logger")
 local time = require("ui/time")
+local _ = require("gettext")
 
 -- Shared utility modules (DRY: eliminates duplicated getPluginPath, ws)
 local _utils_dir = debug.getinfo(1, "S").source:match("^@(.*/)[^/]*$") or "./"

@@ -178,7 +178,7 @@ function Audiobook:_initSubmodules()
     self.highlight_manager = HighlightManager:new{
         plugin = self,
         ui = self.ui,
-        style = self:getSetting("highlight_style", "invert"),
+        style = self:getSetting("highlight_style", "background"),
     }
     self.sync_controller = SyncController:new{
         plugin = self,
