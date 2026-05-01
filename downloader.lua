@@ -473,8 +473,10 @@ function Downloader:refreshVoiceList(plugin_dir, callback)
 
     local sink = {}
     socketutil:set_timeout(socketutil.FILE_BLOCK_TIMEOUT, socketutil.FILE_BLOCK_TIMEOUT)
+    -- Append cache-busting timestamp so GitHub raw content serves the latest file
+    local fetch_url = self.VOICES_JSON_URL .. "?cb=" .. os.time()
     local code, headers, status = require("socket").skip(1, http.request{
-        url = self.VOICES_JSON_URL,
+        url = fetch_url,
         method = "GET",
         headers = {
             ["User-Agent"] = "audiobook.koplugin-downloader",

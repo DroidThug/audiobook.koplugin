@@ -709,6 +709,7 @@ function MenuBuilder.buildPiperDownloadMenu(plugin, Downloader)
     local menu = {}
     local plugin_dir = plugin.plugin_dir or "."
     local voices = Downloader:getPiperVoiceList(plugin_dir)
+    logger.warn("buildPiperDownloadMenu: plugin_dir=", plugin_dir, "voices=", #voices)
 
     -- Refresh voice list from internet (hybrid approach)
     table.insert(menu, {
@@ -749,6 +750,11 @@ function MenuBuilder.buildPiperDownloadMenu(plugin, Downloader)
         local voice_name = voice.name
         local size_mb = voice.size_mb
         local size_str = string.format(" · %d MB", size_mb)
+        -- Debug: log first few voices to trace installed status
+        if __idx <= 3 then
+            local inst = Downloader:hasPiperVoice(voice_id, plugin_dir)
+            logger.warn("buildPiperDownloadMenu voice", __idx, voice_id, "installed=", inst)
+        end
         table.insert(menu, {
             text_func = function()
                 local inst = Downloader:hasPiperVoice(voice_id, plugin_dir)
