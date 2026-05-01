@@ -381,10 +381,14 @@ function TTSEngine:synthesize(text, callback)
         return false
     end
     self.timing_data = {}
+    -- Store the text for all backends so that Kindle native TTS fallback
+    -- (used when WAV playback fails on stripped GStreamer firmware) has
+    -- the sentence text available.  See kindle-native-tts-fallback in
+    -- findAudioPlayer() and play().
+    self._native_tts_text = text
     -- Kindle native TTS: text goes directly to playermgr (no WAV synthesis).
     -- The Kindle's Ivona SDK handles both synthesis and audio output.
     if self.backend == self.BACKENDS.KINDLE_NATIVE then
-        self._native_tts_text = text
         self:generateTimingEstimates(text)
         local dur_ms = 0
         if #self.timing_data > 0 then
@@ -958,7 +962,6 @@ function TTSEngine:usePrefetched(text)
         self._prefetch_file = nil
         self._prefetch_timing = nil
         self._prefetch_text = nil
-        self._native_tts_text = nil
         logger.dbg("TTSEngine: Using prefetched audio")
         return true
     end
@@ -970,7 +973,6 @@ function TTSEngine:usePrefetched(text)
         end
         self.current_audio_file = piper_file
         self.timing_data = piper_timing
-        self._native_tts_text = nil
         return true
     end
     return false
@@ -1393,7 +1395,8 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
     -- v0.1.5.37: Use liblipc.so FFI with a named LIPC source.  CLI tools
     -- (lipc-set-prop) use anonymous transient connections; playermgr may
     -- only trigger TTS for named sources (VoiceView uses the C API).
-    if self.audio_player_type == "kindle-native-tts" then
+    if self.audio_player_type == "kindle-native-tts"
+        or self.audio_player_type == "kindle-native-tts-fallback" then
         local text = self._native_tts_text
         -- Stale-cache guard: when a WAV audio file was synthesized
         -- (e.g. by Piper or espeak) but the player_type is still
@@ -1401,9 +1404,14 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         -- the native Ivona path cannot play WAVs.  Falling through to
         -- "no text to speak" loses the audio entirely.  Switch to
         -- kindle-gst-play (or kindle-lipc) if available so the WAV plays.
+        -- NOTE: kindle-native-tts-fallback INTENTIONALLY uses Ivona even
+        -- when a WAV exists (that's the whole point -- the WAV player is
+        -- broken on stripped GStreamer firmware like PW5 / Colorsoft).
+        local is_fallback = self.audio_player_type == "kindle-native-tts-fallback"
         local is_real_wav = self.current_audio_file
             and self.current_audio_file ~= "/tmp/.kindle_native_tts"
             and self.current_audio_file:match("%.wav$")
+            and not is_fallback
         if is_real_wav then
             if not self._kindle_gst_play_bin then
                 local plugin_dir = self.plugin_dir or "."
@@ -1438,6 +1446,20 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             logger.err("TTSEngine: Kindle native TTS -- no text to speak")
             self:onPlaybackComplete()
             return true
+        end
+        -- Notify once per session when using the degraded fallback.
+        if is_fallback and not self._native_fallback_warned then
+            self._native_fallback_warned = true
+            UIManager:show(InfoMessage:new{
+                text = _(
+                    "Using Kindle's built-in voice.\n\n"
+                    .. "Your Kindle model's audio system cannot play the selected voice "
+                    .. "(espeak-ng or Piper).  Falling back to the Kindle's native "
+                    .. "Ivona TTS, which works on all Kindle models.\n\n"
+                    .. "Word highlighting may be slightly less precise with the built-in voice."
+                ),
+                timeout = 8,
+            })
         end
         self._concat_durations = nil
         -- Duration was already estimated during synthesis
@@ -2083,6 +2105,10 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         local poll_count = 0
         local dur_ms = self._expected_play_duration_ms or 5000
         local max_polls = math.max(300, math.floor(dur_ms * 3 / 100))
+        -- Health-check: if the process is still running after this many polls
+        -- but the log hasn't progressed beyond initial loading, assume hung.
+        local health_check_polls = 25   -- 2.5s (poll interval is 0.1s)
+        local health_checked = false
         local function pollGstPlayDone()
             if (engine.play_generation or 0) ~= my_gen then return end
             if not engine.is_speaking then return end
@@ -2095,7 +2121,44 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             local proc_fh = pid and io.open("/proc/" .. pid .. "/status", "r")
             if proc_fh then
                 proc_fh:close()
-                -- Still running
+                -- Still running -- perform a health check after a few seconds.
+                if not health_checked and poll_count >= health_check_polls then
+                    health_checked = true
+                    local log_text = ""
+                    local log_fh = io.open("/tmp/.gst_play_last.log", "r")
+                    if log_fh then
+                        log_text = log_fh:read("*a") or ""
+                        log_fh:close()
+                    end
+                    -- If the log only contains the initial loader message and
+                    -- (for the new helper) the pipeline description, but no
+                    -- playback progress, the pipeline is likely hung in state
+                    -- change or caps negotiation (missing audioconvert/audioresample).
+                    local has_playback_activity = log_text:match("GStreamer error")
+                        or log_text:match("EOS")
+                        or log_text:match("playback")
+                    local is_hung = not has_playback_activity
+                        and log_text:match("gst%-play: loaded libgstreamer")
+                    if is_hung then
+                        logger.err("TTSEngine: kindle-gst-play hung after",
+                            poll_count * 0.1, "s, log=", log_text:gsub("\n", " "):sub(1, 200))
+                        os.execute("kill " .. pid .. " 2>/dev/null")
+                        engine._gst_play_pid = nil
+                        engine._gst_play_broken = true
+                        engine.is_speaking = false
+                        engine.play_generation = (engine.play_generation or 0) + 1
+                        engine:cleanup()
+                        local msg = _("Audio playback failed on this Kindle model.\n\nThe GStreamer pipeline started but could not produce audio. This usually means the firmware's GStreamer installation is too stripped (missing audioconvert / audioresample plugins).\n\nPlease generate a bug report (Audiobook > Report a bug) and share it on the GitHub issue.")
+                        UIManager:show(InfoMessage:new{
+                            text = msg,
+                            timeout = 12,
+                        })
+                        if engine.on_fail_callback then
+                            engine.on_fail_callback()
+                        end
+                        return
+                    end
+                end
                 if poll_count >= max_polls then
                     logger.warn("TTSEngine: kindle-gst-play timed out after",
                         poll_count * 0.1, "s -- killing")
@@ -2610,45 +2673,72 @@ function TTSEngine:findAudioPlayer()
                 -- No wavparse -- playermgr cannot decode WAV.  Check for our
                 -- bundled gst-play helper which feeds raw PCM to mixersink
                 -- directly, bypassing the missing wavparse plugin.
-                local plugin_dir = self.plugin_dir or "."
-                local gst_play_bin = plugin_dir .. "/kindle/gst-play"
-                local gf = io.open(gst_play_bin, "r")
-                if gf then
-                    gf:close()
-                    -- Wrap through bundled ld-linux to bypass old system glibc.
-                    -- Include /usr/lib:/lib so dlopen can find system libgstreamer.
-                    local gst_play_cmd = gst_play_bin
-                    if self.espeak_linker then
-                        gst_play_cmd = string.format(
-                            "%s --library-path %s:/usr/lib:/lib %s",
-                            self.espeak_linker, self.espeak_lib_path, gst_play_bin)
-                    end
-                    -- Run --probe to verify GStreamer loads and mixersink exists.
-                    -- Capture stderr (2>&1) so plugin load failures are visible.
-                    local ph = io.popen(gst_play_cmd .. " --probe 2>&1")
-                    if ph then
-                        local probe = ph:read("*a") or ""
-                        ph:close()
-                        local has_plugin_error = probe:match("Failed to load plugin")
-                            or probe:match("undefined symbol")
-                            or probe:match("GStreamer%-WARNING")
-                        if has_plugin_error then
-                            logger.warn("TTSEngine: kindle-gst-play probe found plugin load error:", probe:gsub("\n", " "))
-                        elseif probe:match("mixersink=found") then
-                            self.audio_player_type = "kindle-gst-play"
-                            self._kindle_gst_play_bin = gst_play_cmd
-                            self._no_real_audio_output = false
-                            logger.warn("TTSEngine: Found kindle-gst-play with mixersink, probe:", probe:gsub("\n", " "))
-                            return "kindle-gst-play"
-                        else
-                            logger.warn("TTSEngine: kindle-gst-play probe failed:", probe:gsub("\n", " "))
+                -- Skip if we already know it hangs on this device (detected at
+                -- runtime during a previous playback attempt).
+                if not self._gst_play_broken then
+                    local plugin_dir = self.plugin_dir or "."
+                    local gst_play_bin = plugin_dir .. "/kindle/gst-play"
+                    local gf = io.open(gst_play_bin, "r")
+                    if gf then
+                        gf:close()
+                        -- Wrap through bundled ld-linux to bypass old system glibc.
+                        -- Include /usr/lib:/lib so dlopen can find system libgstreamer.
+                        local gst_play_cmd = gst_play_bin
+                        if self.espeak_linker then
+                            gst_play_cmd = string.format(
+                                "%s --library-path %s:/usr/lib:/lib %s",
+                                self.espeak_linker, self.espeak_lib_path, gst_play_bin)
                         end
+                        -- Run --probe to verify GStreamer loads and mixersink exists.
+                        -- Capture stderr (2>&1) so plugin load failures are visible.
+                        local ph = io.popen(gst_play_cmd .. " --probe 2>&1")
+                        if ph then
+                            local probe = ph:read("*a") or ""
+                            ph:close()
+                            local has_plugin_error = probe:match("Failed to load plugin")
+                                or probe:match("undefined symbol")
+                                or probe:match("GStreamer%-WARNING")
+                            if has_plugin_error then
+                                logger.warn("TTSEngine: kindle-gst-play probe found plugin load error:", probe:gsub("\n", " "))
+                            elseif probe:match("mixersink=found") then
+                                self.audio_player_type = "kindle-gst-play"
+                                self._kindle_gst_play_bin = gst_play_cmd
+                                self._no_real_audio_output = false
+                                logger.warn("TTSEngine: Found kindle-gst-play with mixersink, probe:", probe:gsub("\n", " "))
+                                return "kindle-gst-play"
+                            else
+                                logger.warn("TTSEngine: kindle-gst-play probe failed:", probe:gsub("\n", " "))
+                            end
+                        end
+                    end
+                else
+                    logger.warn("TTSEngine: kindle-gst-play skipped (marked broken on this device)")
+                end
+
+                -- SATISFACTORY FALLBACK for PW5 / Colorsoft (issues #22, #23):
+                -- When GStreamer is stripped (no wavparse) and gst-play hangs
+                -- (missing audioconvert / audioresample), but the Ivona SDK
+                -- is available, fall back to the Kindle's native TTS.  This
+                -- routes text → ttssrc → Ivona → mixersink → audiomgrd → BT,
+                -- bypassing ALL missing plugins.  Audio works; word timing
+                -- comes from our estimates (may be slightly off since Ivona
+                -- speaks at a different rate than espeak/Piper).
+                local h_orchestrator = io.popen("lipc-get-prop com.lab126.tts.orchestrator orchestratorStarted 2>/dev/null")
+                if h_orchestrator then
+                    local orch_val = h_orchestrator:read("*a") or ""
+                    h_orchestrator:close()
+                    if orch_val:match("^%s*1") then
+                        self.audio_player_type = "kindle-native-tts-fallback"
+                        self._no_real_audio_output = false
+                        logger.warn("TTSEngine: Kindle native TTS fallback selected (Ivona SDK available, GStreamer stripped)")
+                        return "kindle-native-tts-fallback"
                     end
                 end
 
                 -- Fall through: no wavparse AND no gst-play helper (or
-                -- mixersink not found).  Select kindle-lipc anyway but flag
-                -- that audio will fail so rapid-fail detection kicks in.
+                -- mixersink not found) AND no Ivona SDK.  Select kindle-lipc
+                -- anyway but flag that audio will fail so rapid-fail detection
+                -- kicks in.
                 self.audio_player_type = "kindle-lipc"
                 self._no_real_audio_output = true
                 logger.warn("TTSEngine: Kindle playermgr found but GStreamer lacks wavparse and no gst-play helper")
@@ -3939,8 +4029,9 @@ function TTSEngine:stop()
         self._gst_play_pid = nil
     end
 
-    -- Stop Kindle native TTS via FFI or shell
-    if self.audio_player_type == "kindle-native-tts" then
+    -- Stop Kindle native TTS via FFI or shell (includes fallback mode)
+    if self.audio_player_type == "kindle-native-tts"
+        or self.audio_player_type == "kindle-native-tts-fallback" then
         if self._lipc_handle and _lipc_lib then
             pcall(_lipc_lib.LipcSetStringProperty, self._lipc_handle,
                 "com.lab126.playermgr", "Stop", "")
@@ -4023,8 +4114,9 @@ function TTSEngine:forceKillAll()
         os.execute("kill " .. self._gst_play_pid .. " 2>/dev/null")
         self._gst_play_pid = nil
     end
-    -- Close Kindle native TTS LIPC handle
-    if self.audio_player_type == "kindle-native-tts" then
+    -- Close Kindle native TTS LIPC handle (includes fallback mode)
+    if self.audio_player_type == "kindle-native-tts"
+        or self.audio_player_type == "kindle-native-tts-fallback" then
         os.execute("lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null")
         if self._lipc_handle and _lipc_lib then
             pcall(_lipc_lib.LipcClose, self._lipc_handle)

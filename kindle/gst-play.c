@@ -338,10 +338,11 @@ static int do_play(const char *wav_path)
     void *error = NULL;
     void *pipeline = gst_parse_launch_(desc, &error);
     if (!pipeline) {
-        fprintf(stderr, "gst-play: pipeline creation failed\n");
+        fprintf(stderr, "gst-play: pipeline creation failed: %s\n", desc);
         unlink(raw_path);
         return 3;
     }
+    fprintf(stderr, "gst-play: pipeline: %s\n", desc);
 
     pipeline_g = pipeline;
 
@@ -370,10 +371,19 @@ static int do_play(const char *wav_path)
                the error output pointer stays NULL. */
             if (gst_message_parse_error_) {
                 void *err = NULL;
-                gst_message_parse_error_(msg, &err, NULL);
-                if (err != NULL)
+                char *debug_info = NULL;
+                gst_message_parse_error_(msg, &err, &debug_info);
+                if (err != NULL) {
+                    /* GError struct: domain (4/4) + code (4/4) + message pointer.
+                       Offset 8 is stable on both 32-bit and 64-bit glib. */
+                    char **err_msg_ptr = (char **)((char *)err + 8);
+                    fprintf(stderr, "gst-play: GStreamer error: %s\n",
+                            *err_msg_ptr ? *err_msg_ptr : "(unknown)");
+                    if (debug_info && *debug_info)
+                        fprintf(stderr, "gst-play: debug: %s\n", debug_info);
                     ret = 4;
-                /* err leaked intentionally -- process exits shortly */
+                }
+                /* err/debug leaked intentionally -- process exits shortly */
             }
             /* msg leaked intentionally */
         }

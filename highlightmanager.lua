@@ -519,17 +519,17 @@ function HighlightManager:_paintOverlay(bb, _x, _y)
                 bb:paintRect(bx, by + bh - line_w, bw, line_w,
                     Blitbuffer.COLOR_BLACK)
             elseif style == self.STYLES.BACKGROUND then
-                -- 1-pixel horizontal stipple: invert every other row.
-                -- This produces a smooth 50% gray overlay that mimics the
+                -- 1-pixel horizontal stipple: invert every third row.
+                -- This produces a ~33% gray overlay that mimics the
                 -- native text selection highlight (the blue/gray background
                 -- you see when long-pressing text to select it).
-                -- It is intentionally less intense than full INVERT (which
-                -- swaps 100% of pixels) and more visible than dimRect
-                -- (which is too subtle on e-ink for read-along tracking).
+                -- It is less intense than full INVERT and subtler than the
+                -- original every-other-row pattern, while still visible
+                -- enough for read-along tracking on e-ink.
                 local y0 = by
                 while y0 < by + bh do
                     pcall(function() bb:invertRect(bx, y0, bw, 1) end)
-                    y0 = y0 + 2
+                    y0 = y0 + 3
                 end
             elseif style == self.STYLES.BOX then
                 -- Top

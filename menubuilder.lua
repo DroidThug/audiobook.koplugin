@@ -147,6 +147,15 @@ function MenuBuilder.buildVoiceSettingsMenu(plugin)
                 return MenuBuilder.buildPiperVoiceMenu(plugin)
             end,
         })
+        -- Downloadable Piper voices (HuggingFace upstream) — only relevant when Piper is active
+        table.insert(menu, {
+            text = _("Download Piper voice…"),
+            sub_item_table_func = function()
+                local _dir = debug.getinfo(1, "S").source:match("^@(.*/)[^/]*$") or "./"
+                local Downloader = dofile(_dir .. "downloader.lua")
+                return MenuBuilder.buildPiperDownloadMenu(plugin, Downloader)
+            end,
+        })
     else
         table.insert(menu, {
             text_func = function()
@@ -155,16 +164,6 @@ function MenuBuilder.buildVoiceSettingsMenu(plugin)
             sub_item_table = MenuBuilder.buildVoiceMenu(plugin),
         })
     end
-
-    -- Downloadable Piper voices (from HuggingFace upstream)
-    table.insert(menu, {
-        text = _("Download Piper voice…"),
-        sub_item_table_func = function()
-            local _dir = debug.getinfo(1, "S").source:match("^@(.*/)[^/]*$") or "./"
-            local Downloader = dofile(_dir .. "downloader.lua")
-            return MenuBuilder.buildPiperDownloadMenu(plugin, Downloader)
-        end,
-    })
 
     return menu
 end
@@ -409,6 +408,7 @@ function MenuBuilder.buildVoiceMenu(plugin)
     end
 
     local accents = {
+        -- English variants
         { id = "en",              label = _("English (GB)") },
         { id = "en-us",           label = _("English (US)") },
         { id = "en-gb-x-rp",     label = _("English (Received Pronunciation)") },
@@ -417,6 +417,32 @@ function MenuBuilder.buildVoiceMenu(plugin)
         { id = "en-gb-x-gbcwmd", label = _("English (West Midlands)") },
         { id = "en-029",          label = _("English (Caribbean)") },
         { id = "en-us-nyc",       label = _("English (New York City)") },
+        { separator = true },
+        -- European languages
+        { id = "de",              label = _("German") },
+        { id = "es",              label = _("Spanish") },
+        { id = "fr",              label = _("French") },
+        { id = "it",              label = _("Italian") },
+        { id = "pt",              label = _("Portuguese") },
+        { id = "pt-br",           label = _("Portuguese (Brazil)") },
+        { id = "nl",              label = _("Dutch") },
+        { id = "ru",              label = _("Russian") },
+        { id = "pl",              label = _("Polish") },
+        { id = "cs",              label = _("Czech") },
+        { id = "sv",              label = _("Swedish") },
+        { id = "tr",              label = _("Turkish") },
+        { id = "el",              label = _("Greek") },
+        { id = "fi",              label = _("Finnish") },
+        { id = "hu",              label = _("Hungarian") },
+        { id = "ro",              label = _("Romanian") },
+        { separator = true },
+        -- Other languages
+        { id = "ar",              label = _("Arabic") },
+        { id = "zh",              label = _("Chinese (Mandarin)") },
+        { id = "ja",              label = _("Japanese") },
+        { id = "ko",              label = _("Korean") },
+        { id = "hi",              label = _("Hindi") },
+        { id = "vi",              label = _("Vietnamese") },
     }
 
     local variants = {
@@ -443,6 +469,9 @@ function MenuBuilder.buildVoiceMenu(plugin)
         { id = "m1",       label = _("Male 1") },
         { id = "m2",       label = _("Male 2") },
         { id = "m3",       label = _("Male 3") },
+        { id = "m4",       label = _("Male 4") },
+        { id = "m5",       label = _("Male 5") },
+        { id = "m6",       label = _("Male 6") },
         { id = "m7",       label = _("Male 7") },
         { id = "Alex",     label = _("Alex (M)") },
         { id = "Andy",     label = _("Andy (M)") },
@@ -471,20 +500,22 @@ function MenuBuilder.buildVoiceMenu(plugin)
     -- Accent submenu
     local accent_sub = {}
     for _i, a in ipairs(accents) do
-        table.insert(accent_sub, {
-            text = a.label,
-            checked_func = function()
-                return plugin:getSetting("tts_voice", "en") == a.id
-            end,
-            callback = function()
-                plugin:setSetting("tts_voice", a.id)
-                plugin:setSetting("tts_voice_label", a.label)
-                local var = plugin:getSetting("tts_voice_variant", "")
-                local full = a.id
-                if var ~= "" then full = a.id .. "+" .. var end
-                plugin.tts_engine:setVoice(full)
-            end,
-        })
+        if not a.separator then
+            table.insert(accent_sub, {
+                text = a.label,
+                checked_func = function()
+                    return plugin:getSetting("tts_voice", "en") == a.id
+                end,
+                callback = function()
+                    plugin:setSetting("tts_voice", a.id)
+                    plugin:setSetting("tts_voice_label", a.label)
+                    local var = plugin:getSetting("tts_voice_variant", "")
+                    local full = a.id
+                    if var ~= "" then full = a.id .. "+" .. var end
+                    plugin.tts_engine:setVoice(full)
+                end,
+            })
+        end
     end
     table.insert(menu, {
         text_func = function()
@@ -695,8 +726,17 @@ function MenuBuilder.buildPiperDownloadMenu(plugin, Downloader)
                     function(ok, err)
                         UIManager:close(info)
                         if ok then
+                            -- Auto-select the downloaded voice so it appears
+                            -- checked in the Piper voice menu immediately.
+                            local voice_path = plugin_dir .. "/piper/" .. voice.id .. ".onnx"
+                            if plugin.tts_engine then
+                                plugin.tts_engine:setPiperModel(voice_path)
+                            end
+                            plugin:setSetting("piper_model", voice_path)
+                            plugin:setSetting("piper_model_label", voice.name)
                             UIManager:show(InfoMessage:new{
-                                text = _("Voice installed:\n") .. voice.name,
+                                text = _("Voice installed:\n") .. voice.name
+                                    .. _("\n\nIt is now selected as your active Piper voice."),
                                 timeout = 3,
                             })
                         else
