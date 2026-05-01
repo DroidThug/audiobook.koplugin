@@ -708,8 +708,40 @@ end
 function MenuBuilder.buildPiperDownloadMenu(plugin, Downloader)
     local menu = {}
     local plugin_dir = plugin.plugin_dir or "."
+    local voices = Downloader:getPiperVoiceList(plugin_dir)
 
-    for __idx, voice in ipairs(Downloader.PIPER_VOICES) do
+    -- Refresh voice list from internet (hybrid approach)
+    table.insert(menu, {
+        text = _("Refresh voice list from internet"),
+        keep_menu_open = true,
+        callback = function()
+            local info = InfoMessage:new{
+                text = _("Fetching latest voice list…"),
+                timeout = 0,
+            }
+            UIManager:show(info)
+            Downloader:refreshVoiceList(plugin_dir, function(ok, result)
+                UIManager:close(info)
+                if ok then
+                    UIManager:show(InfoMessage:new{
+                        text = T(_("Voice list updated.\n%1 voices available."), #result),
+                        timeout = 3,
+                    })
+                else
+                    UIManager:show(InfoMessage:new{
+                        text = _("Could not refresh voice list.\n\n") .. (result or _("unknown error")),
+                        timeout = 5,
+                    })
+                end
+            end)
+        end,
+    })
+    table.insert(menu, {
+        text = _("─"),
+        enabled = false,
+    })
+
+    for __idx, voice in ipairs(voices) do
         local installed = Downloader:hasPiperVoice(voice.id, plugin_dir)
         local status = installed and _(" ✓ installed") or _("")
         local size_str = string.format(" · %d MB", voice.size_mb)

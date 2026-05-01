@@ -10,6 +10,7 @@ local UIManager = require("ui/uimanager")
 local InfoMessage = require("ui/widget/infomessage")
 local logger = require("logger")
 local time = require("ui/time")
+local _ = require("gettext")
 
 local Downloader = {}
 
@@ -66,7 +67,7 @@ Downloader.PIPER_VOICES = {
     { id = "pt_BR-edresson-low",   name = "Edresson (Portuguese BR, low)", size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/pt/pt_BR/edresson/low/pt_BR-edresson-low.onnx" },
     -- Italian
     { id = "it_IT-paola-medium",   name = "Paola (Italian, medium)",       size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/it/it_IT/paola/medium/it_IT-paola-medium.onnx" },
-    { id = "it_IT-riccardo-x-low", name = "Riccardo (Italian, low)",       size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/it/it_IT/riccardo/x_low/it_IT-riccardo-x-low.onnx" },
+    { id = "it_IT-riccardo-x-low", name = "Riccardo (Italian, low)",       size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/it/it_IT/riccardo/low/it_IT-riccardo-x-low.onnx" },
     -- Dutch
     { id = "nl_NL-mls_5809-low",   name = "MLS 5809 (Dutch, low)",         size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/nl/nl_NL/mls_5809/low/nl_NL-mls_5809-low.onnx" },
     { id = "nl_NL-mls_7432-low",   name = "MLS 7432 (Dutch, low)",         size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/nl/nl_NL/mls_7432/low/nl_NL-mls_7432-low.onnx" },
@@ -269,7 +270,7 @@ Download a Piper voice model (.onnx + .json).
 --]]
 function Downloader:downloadPiperVoice(voice_id, plugin_dir, on_progress, on_complete)
     local voice = nil
-    for _, v in ipairs(self.PIPER_VOICES) do
+    for _, v in ipairs(self:getPiperVoiceList(plugin_dir)) do
         if v.id == voice_id then
             voice = v
             break
@@ -315,6 +316,91 @@ function Downloader:hasPiperVoice(voice_id, plugin_dir)
     local f = io.open(plugin_dir .. "/piper/" .. voice_id .. ".onnx", "r")
     if f then f:close(); return true end
     return false
+end
+
+-- ── Hybrid voice list (cached + online refresh) ──────────────────────
+-- URL of the voices.json on the master branch (raw GitHub content).
+Downloader.VOICES_JSON_URL = "https://raw.githubusercontent.com/stradichenko/audiobook.koplugin/master/voices.json"
+
+--[[--
+Return the effective Piper voice list.
+1. If a cached voices.json exists in plugin_dir/piper/voices_cache.json,
+   parse and return it.
+2. Otherwise fall back to the built-in PIPER_VOICES table.
+@return table  Array of voice entries {id, name, size_mb, url}
+--]]
+function Downloader:getPiperVoiceList(plugin_dir)
+    local cache_path = plugin_dir .. "/piper/voices_cache.json"
+    local cf = io.open(cache_path, "r")
+    if cf then
+        local content = cf:read("*a")
+        cf:close()
+        if content and #content > 0 then
+            local JSON = require("json")
+            local ok, voices = pcall(JSON.decode, content)
+            if ok and type(voices) == "table" and #voices > 0 then
+                logger.dbg("Downloader: using cached voice list (", #voices, "voices)")
+                return voices
+            else
+                logger.warn("Downloader: cached voice list invalid, using built-in")
+            end
+        end
+    end
+    logger.dbg("Downloader: using built-in voice list (", #self.PIPER_VOICES, "voices)")
+    return self.PIPER_VOICES
+end
+
+--[[--
+Fetch the latest voice list from the internet and cache it locally.
+@param plugin_dir string
+@param callback function(success, voices_or_err_msg)
+--]]
+function Downloader:refreshVoiceList(plugin_dir, callback)
+    local http = require("socket.http")
+    local ltn12 = require("ltn12")
+    local socketutil = require("socketutil")
+    local JSON = require("json")
+
+    local sink = {}
+    socketutil:set_timeout(socketutil.FILE_BLOCK_TIMEOUT, socketutil.FILE_BLOCK_TIMEOUT)
+    local code, headers, status = require("socket").skip(1, http.request{
+        url = self.VOICES_JSON_URL,
+        method = "GET",
+        headers = {
+            ["User-Agent"] = "audiobook.koplugin-downloader",
+        },
+        sink = ltn12.sink.table(sink),
+    })
+    socketutil:reset_timeout()
+
+    if code ~= 200 then
+        logger.warn("Downloader: voice list fetch failed, code=", code, "status=", status)
+        if callback then callback(false, T(_("Failed to fetch voice list (HTTP %1)"), tostring(code or status or "no response"))) end
+        return
+    end
+
+    local body = table.concat(sink)
+    local ok, voices = pcall(JSON.decode, body)
+    if not ok or type(voices) ~= "table" or #voices == 0 then
+        logger.warn("Downloader: voice list JSON parse failed:", tostring(voices))
+        if callback then callback(false, _("Failed to parse voice list.")) end
+        return
+    end
+
+    -- Cache the fetched list
+    local piper_dir = plugin_dir .. "/piper"
+    os.execute(string.format('mkdir -p "%s"', piper_dir))
+    local cache_path = piper_dir .. "/voices_cache.json"
+    local cf = io.open(cache_path, "w")
+    if cf then
+        cf:write(body)
+        cf:close()
+        logger.warn("Downloader: cached", #voices, "voices to", cache_path)
+    else
+        logger.warn("Downloader: could not write voice cache to", cache_path)
+    end
+
+    if callback then callback(true, voices) end
 end
 
 return Downloader
