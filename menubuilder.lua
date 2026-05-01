@@ -637,7 +637,7 @@ function MenuBuilder.buildEngineSelectMenu(plugin)
                 -- Close the menu so the user reopens Voice Settings and sees
                 -- the correct engine-specific items (pitch, pauses, etc.).
                 if touchmenu_instance then
-                    touchmenu_instance:close()
+                    touchmenu_instance:closeMenu()
                 end
             end,
         })
