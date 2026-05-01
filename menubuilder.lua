@@ -631,9 +631,14 @@ function MenuBuilder.buildEngineSelectMenu(plugin)
             checked_func = function()
                 return engine.backend == backend.id
             end,
-            callback = function()
+            callback = function(touchmenu_instance)
                 engine:setBackend(backend.id)
                 plugin:setSetting("tts_backend", backend.id)
+                -- Close the menu so the user reopens Voice Settings and sees
+                -- the correct engine-specific items (pitch, pauses, etc.).
+                if touchmenu_instance then
+                    touchmenu_instance:close()
+                end
             end,
         })
     end
