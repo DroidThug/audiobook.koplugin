@@ -20,14 +20,12 @@ local Downloader = {}
 Downloader.PIPER_VOICES = {
     -- English (US)
     { id = "en_US-danny-low",      name = "Danny (US English, low)",       size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/danny/low/en_US-danny-low.onnx" },
-    { id = "en_US-danny-medium",   name = "Danny (US English, medium)",    size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/danny/medium/en_US-danny-medium.onnx" },
     { id = "en_US-ryan-low",       name = "Ryan (US English, low)",        size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/ryan/low/en_US-ryan-low.onnx" },
     { id = "en_US-ryan-medium",    name = "Ryan (US English, medium)",     size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/ryan/medium/en_US-ryan-medium.onnx" },
     { id = "en_US-amy-low",        name = "Amy (US English, low)",         size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/low/en_US-amy-low.onnx" },
     { id = "en_US-amy-medium",     name = "Amy (US English, medium)",      size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx" },
     { id = "en_US-lessac-low",     name = "Lessac (US English, low)",      size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/low/en_US-lessac-low.onnx" },
     { id = "en_US-lessac-medium",  name = "Lessac (US English, medium)",   size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx" },
-    { id = "en_US-ljspeech-low",   name = "LJSpeech (US English, low)",    size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/ljspeech/low/en_US-ljspeech-low.onnx" },
     { id = "en_US-ljspeech-medium",name = "LJSpeech (US English, medium)", size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/ljspeech/medium/en_US-ljspeech-medium.onnx" },
     { id = "en_US-arctic-medium",  name = "Arctic (US English, medium)",   size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/arctic/medium/en_US-arctic-medium.onnx" },
     { id = "en_US-bryce-medium",   name = "Bryce (US English, medium)",    size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/bryce/medium/en_US-bryce-medium.onnx" },
@@ -41,33 +39,25 @@ Downloader.PIPER_VOICES = {
     { id = "en_GB-southern_english_female-low", name = "Southern English Female (GB, low)", size_mb = 15, url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB/southern_english_female/low/en_GB-southern_english_female-low.onnx" },
     -- Spanish
     { id = "es_ES-sharvard-medium",name = "Sharvard (Spanish, medium)",    size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/es/es_ES/sharvard/medium/es_ES-sharvard-medium.onnx" },
-    { id = "es_ES-carlfm-low",     name = "Carlfm (Spanish, low)",         size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/es/es_ES/carlfm/low/es_ES-carlfm-low.onnx" },
-    { id = "es_ES-carlfm-medium",  name = "Carlfm (Spanish, medium)",      size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/es/es_ES/carlfm/medium/es_ES-carlfm-medium.onnx" },
     { id = "es_ES-mls_10246-low",  name = "MLS 10246 (Spanish, low)",      size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/es/es_ES/mls_10246/low/es_ES-mls_10246-low.onnx" },
     { id = "es_ES-mls_9972-low",   name = "MLS 9972 (Spanish, low)",       size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/es/es_ES/mls_9972/low/es_ES-mls_9972-low.onnx" },
     -- German
     { id = "de_DE-thorsten-low",   name = "Thorsten (German, low)",        size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/low/de_DE-thorsten-low.onnx" },
     { id = "de_DE-thorsten-medium",name = "Thorsten (German, medium)",     size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx" },
-    { id = "de_DE-eva_k-low",      name = "Eva K (German, low)",           size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/eva_k/low/de_DE-eva_k-low.onnx" },
-    { id = "de_DE-eva_k-medium",   name = "Eva K (German, medium)",        size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/eva_k/medium/de_DE-eva_k-medium.onnx" },
     { id = "de_DE-karlsson-low",   name = "Karlsson (German, low)",        size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/karlsson/low/de_DE-karlsson-low.onnx" },
     { id = "de_DE-karlsson-medium",name = "Karlsson (German, medium)",     size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/karlsson/medium/de_DE-karlsson-medium.onnx" },
     { id = "de_DE-pavoque-low",    name = "Pavoque (German, low)",         size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/pavoque/low/de_DE-pavoque-low.onnx" },
-    { id = "de_DE-pavoque-medium", name = "Pavoque (German, medium)",      size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/pavoque/medium/de_DE-pavoque-medium.onnx" },
     { id = "de_DE-ramona-low",     name = "Ramona (German, low)",          size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/ramona/low/de_DE-ramona-low.onnx" },
-    { id = "de_DE-ramona-medium",  name = "Ramona (German, medium)",       size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/ramona/medium/de_DE-ramona-medium.onnx" },
     -- French
     { id = "fr_FR-siwis-low",      name = "Siwis (French, low)",           size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/fr/fr_FR/siwis/low/fr_FR-siwis-low.onnx" },
     { id = "fr_FR-siwis-medium",   name = "Siwis (French, medium)",        size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/fr/fr_FR/siwis/medium/fr_FR-siwis-medium.onnx" },
     { id = "fr_FR-gilles-low",     name = "Gilles (French, low)",          size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/fr/fr_FR/gilles/low/fr_FR-gilles-low.onnx" },
-    { id = "fr_FR-gilles-medium",  name = "Gilles (French, medium)",       size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/fr/fr_FR/gilles/medium/fr_FR-gilles-medium.onnx" },
     { id = "fr_FR-mls_1840-low",   name = "MLS 1840 (French, low)",        size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/fr/fr_FR/mls_1840/low/fr_FR-mls_1840-low.onnx" },
     -- Portuguese (Brazil)
     { id = "pt_BR-faber-medium",   name = "Faber (Portuguese BR, medium)", size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/pt/pt_BR/faber/medium/pt_BR-faber-medium.onnx" },
     { id = "pt_BR-edresson-low",   name = "Edresson (Portuguese BR, low)", size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/pt/pt_BR/edresson/low/pt_BR-edresson-low.onnx" },
     -- Italian
     { id = "it_IT-paola-medium",   name = "Paola (Italian, medium)",       size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/it/it_IT/paola/medium/it_IT-paola-medium.onnx" },
-    { id = "it_IT-riccardo-x-low", name = "Riccardo (Italian, low)",       size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/it/it_IT/riccardo/low/it_IT-riccardo-x-low.onnx" },
     -- Dutch
     { id = "nl_NL-mls_5809-low",   name = "MLS 5809 (Dutch, low)",         size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/nl/nl_NL/mls_5809/low/nl_NL-mls_5809-low.onnx" },
     { id = "nl_NL-mls_7432-low",   name = "MLS 7432 (Dutch, low)",         size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/nl/nl_NL/mls_7432/low/nl_NL-mls_7432-low.onnx" },
@@ -80,7 +70,6 @@ Downloader.PIPER_VOICES = {
     { id = "cs_CZ-jirka-low",      name = "Jirka (Czech, low)",            size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/cs/cs_CZ/jirka/low/cs_CZ-jirka-low.onnx" },
     { id = "cs_CZ-jirka-medium",   name = "Jirka (Czech, medium)",         size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/cs/cs_CZ/jirka/medium/cs_CZ-jirka-medium.onnx" },
     -- Ukrainian
-    { id = "uk_UA-lada-medium",    name = "Lada (Ukrainian, medium)",      size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/uk/uk_UA/lada/medium/uk_UA-lada-medium.onnx" },
     -- Finnish
     { id = "fi_FI-harri-low",      name = "Harri (Finnish, low)",          size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/fi/fi_FI/harri/low/fi_FI-harri-low.onnx" },
     { id = "fi_FI-harri-medium",   name = "Harri (Finnish, medium)",       size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/fi/fi_FI/harri/medium/fi_FI-harri-medium.onnx" },
@@ -115,7 +104,21 @@ function Downloader:_detectTool()
     if h then
         local r = h:read("*a"):gsub("%s+", "")
         h:close()
-        if r ~= "" then return "wget" end
+        if r ~= "" then
+            -- BusyBox wget doesn't support -L (redirect following).
+            -- Detect by checking whether --help mentions "location".
+            local h2 = io.popen('wget --help 2>&1 | grep -q "location" && echo yes || echo no')
+            if h2 then
+                local r2 = h2:read("*a"):gsub("%s+", "")
+                h2:close()
+                if r2 == "yes" then
+                    return "wget"
+                else
+                    return "wget-noredirect"
+                end
+            end
+            return "wget"
+        end
     end
     return nil
 end
@@ -132,10 +135,103 @@ function Downloader:_buildCmd(url, dest, tool)
         -- -L follows redirects, -f fails silently on HTTP errors,
         -- --progress-bar gives visual feedback when run in foreground
         return string.format('curl -Lf -o "%s" "%s" 2>&1', dest, url)
+    elseif tool == "wget" then
+        -- GNU wget: follow redirects, resume, quiet
+        return string.format('wget -q -c -L -O "%s" "%s" 2>&1', dest, url)
     else
-        -- BusyBox wget: -O output, -q quiet, -c continue
+        -- BusyBox wget: no redirect support, handled by _downloadWithSocket
         return string.format('wget -q -c -O "%s" "%s" 2>&1', dest, url)
     end
+end
+
+--[[--
+Download a file using socket.http with manual redirect following.
+Used as a fallback when only BusyBox wget is available (no -L support).
+@param url string
+@param dest string
+@param on_complete function(success, err_msg)
+--]]
+function Downloader:_downloadWithSocket(url, dest, on_complete)
+    local http = require("socket.http")
+    local ltn12 = require("ltn12")
+    local socketutil = require("socketutil")
+    local MAX_REDIRECTS = 5
+
+    socketutil:set_timeout(socketutil.FILE_BLOCK_TIMEOUT, socketutil.FILE_BLOCK_TIMEOUT)
+
+    local current_url = url
+    for i = 1, MAX_REDIRECTS do
+        local f, err = io.open(dest, "wb")
+        if not f then
+            socketutil:reset_timeout()
+            if on_complete then on_complete(false, _("Cannot open file for writing: ") .. tostring(err)) end
+            return
+        end
+
+        -- ltn12.sink.file closes the file automatically on stream end,
+        -- so we must not call f:close() ourselves. If http.request throws,
+        -- the file stays open and we close it in the error path.
+        -- socket.http.request returns (1, code, headers) on success; the leading 1
+        -- is an internal flag. We use socket.skip(1, ...) to discard it, matching
+        -- the pattern used in refreshVoiceList().
+        local ok, code, headers = pcall(function()
+            return require("socket").skip(1, http.request{
+                url = current_url,
+                method = "GET",
+                sink = ltn12.sink.file(f),
+            })
+        end)
+        if not ok then
+            pcall(function() f:close() end)
+            socketutil:reset_timeout()
+            logger.err("Downloader: request failed:", code)
+            os.remove(dest)
+            if on_complete then on_complete(false, _("Download failed (network error).")) end
+            return
+        end
+
+        if code == 200 then
+            socketutil:reset_timeout()
+            -- Validate file size (>1 KB) to catch empty/error-page responses
+            local sf = io.open(dest, "rb")
+            local fsize = 0
+            if sf then
+                sf:seek("end")
+                fsize = sf:seek()
+                sf:close()
+            end
+            if fsize < 1024 then
+                logger.err("Downloader: file too small (", fsize, "bytes), likely an error page")
+                os.remove(dest)
+                if on_complete then on_complete(false, _("Downloaded file is too small (server error).")) end
+                return
+            end
+            logger.warn("Downloader: finished", dest, "(", fsize, "bytes)")
+            if on_complete then on_complete(true, nil) end
+            return
+        elseif code and code >= 300 and code < 400 and headers and headers.location then
+            current_url = headers.location
+            -- Resolve relative URLs
+            if current_url:sub(1, 1) == "/" then
+                local base = url:match("^(https?://[^/]+)")
+                current_url = base .. current_url
+            elseif not current_url:match("^https?://") then
+                local base = url:match("^(https?://.+/)")
+                current_url = base .. current_url
+            end
+            logger.dbg("Downloader: following redirect to", current_url)
+        else
+            socketutil:reset_timeout()
+            logger.err("Downloader: HTTP error", code, "for", url)
+            os.remove(dest)
+            if on_complete then on_complete(false, _("Download failed (HTTP ") .. tostring(code or "?") .. ").") end
+            return
+        end
+    end
+
+    socketutil:reset_timeout()
+    os.remove(dest)
+    if on_complete then on_complete(false, _("Download failed: too many redirects.")) end
 end
 
 --[[--
@@ -158,6 +254,16 @@ function Downloader:download(url, dest, on_progress, on_complete)
     local dir = dest:match("^(.+)/[^/]+$")
     if dir then
         os.execute(string.format('mkdir -p "%s"', dir))
+    end
+
+    -- BusyBox wget can't follow redirects; fall back to socket.http.
+    if tool == "wget-noredirect" then
+        logger.warn("Downloader: using socket.http for", url)
+        -- Defer slightly so the UI can render any "Downloading…" dialog first.
+        UIManager:scheduleIn(0.1, function()
+            self:_downloadWithSocket(url, dest, on_complete)
+        end)
+        return
     end
 
     local cmd = self:_buildCmd(url, dest, tool)
@@ -297,7 +403,11 @@ function Downloader:downloadPiperVoice(voice_id, plugin_dir, on_progress, on_com
         end
         -- Download JSON config (small, synchronous is fine)
         local tool = self:_detectTool()
-        if tool then
+        if tool == "wget-noredirect" then
+            self:_downloadWithSocket(json_url, json_dest, function(ok, err)
+                if not ok then logger.warn("Downloader: JSON config failed:", err) end
+            end)
+        elseif tool then
             local cmd = self:_buildCmd(json_url, json_dest, tool)
             os.execute(cmd)
         end

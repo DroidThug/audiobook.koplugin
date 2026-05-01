@@ -742,21 +742,31 @@ function MenuBuilder.buildPiperDownloadMenu(plugin, Downloader)
     })
 
     for __idx, voice in ipairs(voices) do
-        local installed = Downloader:hasPiperVoice(voice.id, plugin_dir)
-        local status = installed and _(" ✓ installed") or _("")
-        local size_str = string.format(" · %d MB", voice.size_mb)
+        -- In Lua 5.1 (LuaJIT) loop locals are reused across iterations,
+        -- so closures must not capture 'installed' directly.  Re-query
+        -- the disk state inside each closure instead.
+        local voice_id = voice.id
+        local voice_name = voice.name
+        local size_mb = voice.size_mb
+        local size_str = string.format(" · %d MB", size_mb)
         table.insert(menu, {
-            text = voice.name .. size_str .. status,
-            enabled_func = function() return not installed end,
+            text_func = function()
+                local inst = Downloader:hasPiperVoice(voice_id, plugin_dir)
+                local status = inst and _(" ✓ installed") or _("")
+                return voice_name .. size_str .. status
+            end,
+            enabled_func = function()
+                return not Downloader:hasPiperVoice(voice_id, plugin_dir)
+            end,
             callback = function()
-                if installed then return end
+                if Downloader:hasPiperVoice(voice_id, plugin_dir) then return end
                 local info = InfoMessage:new{
-                    text = _("Downloading ") .. voice.name .. _("…\n(~")
-                        .. voice.size_mb .. _(" MB)"),
+                    text = _("Downloading ") .. voice_name .. _("…\n(~")
+                        .. size_mb .. _(" MB)"),
                     timeout = 0,
                 }
                 UIManager:show(info)
-                Downloader:downloadPiperVoice(voice.id, plugin_dir,
+                Downloader:downloadPiperVoice(voice_id, plugin_dir,
                     function(done, total)
                         -- progress callback (optional)
                     end,
@@ -765,14 +775,14 @@ function MenuBuilder.buildPiperDownloadMenu(plugin, Downloader)
                         if ok then
                             -- Auto-select the downloaded voice so it appears
                             -- checked in the Piper voice menu immediately.
-                            local voice_path = plugin_dir .. "/piper/" .. voice.id .. ".onnx"
+                            local voice_path = plugin_dir .. "/piper/" .. voice_id .. ".onnx"
                             if plugin.tts_engine then
                                 plugin.tts_engine:setPiperModel(voice_path)
                             end
                             plugin:setSetting("piper_model", voice_path)
-                            plugin:setSetting("piper_model_label", voice.name)
+                            plugin:setSetting("piper_model_label", voice_name)
                             UIManager:show(InfoMessage:new{
-                                text = _("Voice installed:\n") .. voice.name
+                                text = _("Voice installed:\n") .. voice_name
                                     .. _("\n\nIt is now selected as your active Piper voice."),
                                 timeout = 3,
                             })
