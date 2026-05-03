@@ -2675,7 +2675,12 @@ function TTSEngine:findAudioPlayer()
                 -- directly, bypassing the missing wavparse plugin.
                 -- Skip if we already know it hangs on this device (detected at
                 -- runtime during a previous playback attempt).
-                if not self._gst_play_broken then
+                -- Also pre-emptively skip on Kindle Colorsoft where the
+                -- pipeline starts but cannot produce audio (issue #23).
+                local is_colorsoft = Device.model and Device.model == "KindleColorSoft"
+                if is_colorsoft then
+                    logger.warn("TTSEngine: skipping kindle-gst-play on Kindle Colorsoft (known broken)")
+                elseif not self._gst_play_broken then
                     local plugin_dir = self.plugin_dir or "."
                     local gst_play_bin = plugin_dir .. "/kindle/gst-play"
                     local gf = io.open(gst_play_bin, "r")

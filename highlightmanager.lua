@@ -519,18 +519,10 @@ function HighlightManager:_paintOverlay(bb, _x, _y)
                 bb:paintRect(bx, by + bh - line_w, bw, line_w,
                     Blitbuffer.COLOR_BLACK)
             elseif style == self.STYLES.BACKGROUND then
-                -- 1-pixel horizontal stipple: invert every third row.
-                -- This produces a ~33% gray overlay that mimics the
-                -- native text selection highlight (the blue/gray background
-                -- you see when long-pressing text to select it).
-                -- It is less intense than full INVERT and subtler than the
-                -- original every-other-row pattern, while still visible
-                -- enough for read-along tracking on e-ink.
-                local y0 = by
-                while y0 < by + bh do
-                    pcall(function() bb:invertRect(bx, y0, bw, 1) end)
-                    y0 = y0 + 3
-                end
+                -- Match KOReader's native "lighten" highlight style:
+                -- darkenRect dims existing pixels by a factor (0.2 = 20%),
+                -- producing the same smooth gray overlay used for bookmarks.
+                bb:darkenRect(bx, by, bw, bh, 0.2)
             elseif style == self.STYLES.BOX then
                 -- Top
                 bb:paintRect(bx, by, bw, line_w, Blitbuffer.COLOR_BLACK)

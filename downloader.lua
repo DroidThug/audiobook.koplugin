@@ -70,6 +70,22 @@ Downloader.PIPER_VOICES = {
     { id = "cs_CZ-jirka-low",      name = "Jirka (Czech, low)",            size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/cs/cs_CZ/jirka/low/cs_CZ-jirka-low.onnx" },
     { id = "cs_CZ-jirka-medium",   name = "Jirka (Czech, medium)",         size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/cs/cs_CZ/jirka/medium/cs_CZ-jirka-medium.onnx" },
     -- Ukrainian
+    { id = "uk_UA-lada-x_low",     name = "Lada (Ukrainian, x_low)",      size_mb = 5,   url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/uk/uk_UA/lada/x_low/uk_UA-lada-x_low.onnx" },
+    -- Hindi
+    { id = "hi_IN-pratham-medium", name = "Pratham (Hindi, medium)",      size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/hi/hi_IN/pratham/medium/hi_IN-pratham-medium.onnx" },
+    -- Arabic
+    { id = "ar_JO-kareem-low",     name = "Kareem (Arabic, low)",          size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/ar/ar_JO/kareem/low/ar_JO-kareem-low.onnx" },
+    { id = "ar_JO-kareem-medium",  name = "Kareem (Arabic, medium)",       size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/ar/ar_JO/kareem/medium/ar_JO-kareem-medium.onnx" },
+    -- Catalan
+    { id = "ca_ES-upc_ona-x_low",  name = "UPC Ona (Catalan, x_low)",     size_mb = 5,   url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/ca/ca_ES/upc_ona/x_low/ca_ES-upc_ona-x_low.onnx" },
+    { id = "ca_ES-upc_ona-medium", name = "UPC Ona (Catalan, medium)",    size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/ca/ca_ES/upc_ona/medium/ca_ES-upc_ona-medium.onnx" },
+    -- Chinese (Simplified)
+    { id = "zh_CN-chaowen-medium", name = "Chaowen (Chinese, medium)",    size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/zh/zh_CN/chaowen/medium/zh_CN-chaowen-medium.onnx" },
+    { id = "zh_CN-huayan-x_low",   name = "Huayan (Chinese, x_low)",      size_mb = 5,   url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/zh/zh_CN/huayan/x_low/zh_CN-huayan-x_low.onnx" },
+    { id = "zh_CN-huayan-medium",  name = "Huayan (Chinese, medium)",     size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/zh/zh_CN/huayan/medium/zh_CN-huayan-medium.onnx" },
+    { id = "zh_CN-xiao_ya-medium", name = "Xiao Ya (Chinese, medium)",    size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/zh/zh_CN/xiao_ya/medium/zh_CN-xiao_ya-medium.onnx" },
+    -- Danish
+    { id = "da_DK-talesyntese-medium", name = "Talesyntese (Danish, medium)", size_mb = 60, url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/da/da_DK/talesyntese/medium/da_DK-talesyntese-medium.onnx" },
     -- Finnish
     { id = "fi_FI-harri-low",      name = "Harri (Finnish, low)",          size_mb = 15,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/fi/fi_FI/harri/low/fi_FI-harri-low.onnx" },
     { id = "fi_FI-harri-medium",   name = "Harri (Finnish, medium)",       size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/fi/fi_FI/harri/medium/fi_FI-harri-medium.onnx" },

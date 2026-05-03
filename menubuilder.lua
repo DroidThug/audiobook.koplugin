@@ -12,6 +12,7 @@ local _ = require("gettext")
 local T = require("ffi/util").template
 local UIManager = require("ui/uimanager")
 local InfoMessage = require("ui/widget/infomessage")
+local logger = require("logger")
 
 -- Shared utility module
 local _dir = debug.getinfo(1, "S").source:match("^@(.*/)[^/]*$") or "./"
@@ -707,7 +708,16 @@ end
 
 function MenuBuilder.buildPiperDownloadMenu(plugin, Downloader)
     local menu = {}
-    local plugin_dir = plugin.plugin_dir or "."
+    -- plugin.plugin_dir may be nil; fall back to deriving from piper_model_dir
+    -- which is set during TTSEngine init as plugin_dir .. "/piper".
+    local plugin_dir = plugin.plugin_dir
+    if not plugin_dir then
+        local pmd = plugin.tts_engine and plugin.tts_engine.piper_model_dir
+        if pmd then
+            plugin_dir = pmd:match("^(.+)/piper$")
+        end
+    end
+    plugin_dir = plugin_dir or "."
     local voices = Downloader:getPiperVoiceList(plugin_dir)
     logger.warn("buildPiperDownloadMenu: plugin_dir=", plugin_dir, "voices=", #voices)
 

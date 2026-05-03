@@ -1200,4 +1200,19 @@ function Audiobook:toggleSetting(key, default)
     self:setSetting(key, not current)
 end
 
+--[[--
+Delete all plugin settings from KOReader's persistent storage.
+Called by KOReader's "Delete plugin settings" UI action.
+--]]
+function Audiobook:deletePluginSettings()
+    G_reader_settings:delSetting("audiobook_settings")
+    -- Reset in-memory state to defaults
+    self.current_speed = 1.0
+    self.current_pitch = 1.0
+    self.current_volume = 1.0
+    self.tts_engine_type = "espeak"
+    self.voice = nil
+    self.highlight_style = "background"
+end
+
 return Audiobook
