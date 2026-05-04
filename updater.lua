@@ -231,6 +231,21 @@ function Updater._performUpdate(plugin, release)
 
     logger.warn("Updater: extracting", zip_path, "to", plugin_dir)
 
+    -- Backup the existing plugin directory so we can restore it if
+    -- extraction fails part-way through (issue #22: archive_read_extract2
+    -- can abort mid-extraction on FAT32 Kindles, leaving the plugin
+    -- directory corrupted with missing .lua files).
+    local lfs = require("libs/libkoreader-lfs")
+    local backup_dir = tmp_dir .. "/audiobook.koplugin.backup"
+    os.execute('rm -rf "' .. backup_dir .. '" 2>/dev/null')
+    local backup_ok = os.execute('cp -rf "' .. plugin_dir .. '" "' .. backup_dir .. '" 2>/dev/null')
+    if backup_ok == 0 or backup_ok == true then
+        logger.warn("Updater: backed up plugin to", backup_dir)
+    else
+        logger.warn("Updater: plugin backup failed (non-fatal)")
+        backup_dir = nil
+    end
+
     -- Use KOReader's Device:unpackArchive which handles stripping the
     -- top-level directory from the zip (GitHub release zips contain
     -- "audiobook.koplugin/...").
@@ -252,7 +267,6 @@ function Updater._performUpdate(plugin, release)
         -- reports as 256.  We used to fail the update on that.  Now we
         -- ignore the exit code entirely and verify success by checking
         -- whether the destination directory was actually populated.
-        local lfs = require("libs/libkoreader-lfs")
         local unzip_dir = tmp_dir .. "/audiobook-update-tmp"
         os.execute('rm -rf "' .. unzip_dir .. '" 2>/dev/null')
         os.execute('mkdir -p "' .. unzip_dir .. '" 2>/dev/null')
@@ -298,10 +312,21 @@ function Updater._performUpdate(plugin, release)
     end
 
     if not extract_ok then
+        -- Restore from backup so the plugin isn't left in a broken state
+        -- with missing .lua files (issue #22).
+        if backup_dir then
+            logger.warn("Updater: restoring plugin from backup", backup_dir)
+            os.execute('rm -rf "' .. plugin_dir .. '" 2>/dev/null')
+            os.execute('mv "' .. backup_dir .. '" "' .. plugin_dir .. '" 2>/dev/null')
+        end
         UIManager:show(InfoMessage:new{
             text = T(_("Extraction failed: %1"), extract_err or _("unknown")),
         })
         return
+    end
+    -- Extraction succeeded -- remove the backup to save space.
+    if backup_dir then
+        os.execute('rm -rf "' .. backup_dir .. '" 2>/dev/null')
     end
 
     logger.warn("Updater: successfully installed v" .. release.version)

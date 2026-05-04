@@ -97,6 +97,11 @@ function TTSEngine:new(o)
     o._piper = PiperQueue:new{engine = o}
     -- Android TTS wrapper (initialized lazily in detectBackend)
     o._android_tts = nil
+    -- Load persisted "gst-play is broken" flag so we don't re-probe a
+    -- hanging pipeline on every KOReader restart (issue #22, PW5).
+    if o.plugin then
+        o._gst_play_broken = o.plugin:getSetting("_gst_play_broken") or false
+    end
     o:detectBackend()
     return o
 end
@@ -1606,25 +1611,33 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         if ffiSetProp("com.lab126.audiomgrd", "setFocus", "tts") == nil then
             os.execute("lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>/dev/null")
         end
-        -- Strategy A: PlayParameter only (VoiceView's steady-state protocol)
+        -- Strategy A: PlayParameter only (VoiceView's steady-state protocol).
+        -- For kindle-native-tts-fallback (used on PW5/Colorsoft where WAV
+        -- players are broken), skip the minimal Strategy A and go straight to
+        -- the full Open+PlayParameter+Play sequence.  Some newer Kindle
+        -- firmware (Colorsoft) ignores PlayParameter alone and needs an
+        -- explicit Open + Play handshake (issue #23).
         local using_ffi = lipc_h ~= nil
-        logger.warn("TTSEngine: Kindle native TTS strategy A: PlayParameter",
-            using_ffi and "(FFI)" or "(shell)")
-        if using_ffi then
-            ffiSetProp("com.lab126.playermgr", "PlayParameter", payload)
-        else
-            -- Shell-safe single-quote escaping (only ' needs escaping in '...')
-            local function shellEsc(s) return "'" .. s:gsub("'", "'\\''") .. "'" end
-            local function lipc_cmd(cmd)
-                local h = io.popen(cmd .. " 2>&1")
-                local out = ""
-                if h then out = h:read("*a") or ""; h:close() end
-                return out
+        local tts_state = 0
+        if not is_fallback then
+            logger.warn("TTSEngine: Kindle native TTS strategy A: PlayParameter",
+                using_ffi and "(FFI)" or "(shell)")
+            if using_ffi then
+                ffiSetProp("com.lab126.playermgr", "PlayParameter", payload)
+            else
+                -- Shell-safe single-quote escaping (only ' needs escaping in '...')
+                local function shellEsc(s) return "'" .. s:gsub("'", "'\\''") .. "'" end
+                local function lipc_cmd(cmd)
+                    local h = io.popen(cmd .. " 2>&1")
+                    local out = ""
+                    if h then out = h:read("*a") or ""; h:close() end
+                    return out
+                end
+                lipc_cmd("lipc-set-prop com.lab126.playermgr PlayParameter " .. shellEsc(payload))
             end
-            lipc_cmd("lipc-set-prop com.lab126.playermgr PlayParameter " .. shellEsc(payload))
+            tts_state = getTtsState()
         end
-        local tts_state = getTtsState()
-        -- Strategy B: Open TTS session + PlayParameter + Play (shell fallback only)
+        -- Strategy B: Open TTS session + PlayParameter + Play (shell)
         if tts_state == 0 and not using_ffi then
             local function shellEsc(s) return "'" .. s:gsub("'", "'\\''") .. "'" end
             local function lipc_cmd(cmd)
@@ -2145,6 +2158,10 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                         os.execute("kill " .. pid .. " 2>/dev/null")
                         engine._gst_play_pid = nil
                         engine._gst_play_broken = true
+                        if engine.plugin then
+                            engine.plugin:setSetting("_gst_play_broken", true)
+                            logger.warn("TTSEngine: persisted _gst_play_broken=true")
+                        end
                         engine.is_speaking = false
                         engine.play_generation = (engine.play_generation or 0) + 1
                         engine:cleanup()
