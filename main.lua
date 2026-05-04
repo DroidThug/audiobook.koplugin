@@ -263,49 +263,48 @@ function Audiobook:addToMainMenu(menu_items)
                     self:startReadAlong()
                 end,
             },
-            -- ── Bluetooth (high priority - needed before first playback) ──
+            -- ── Bluetooth settings ──
             {
-                text_func = function()
-                    return BtUI.btMenuLabel(self)
-                end,
-                sub_item_table_func = function()
-                    return BtUI.buildBluetoothMenu(self)
-                end,
+                text = _("Bluetooth settings"),
+                sub_item_table = {
+                    {
+                        text_func = function()
+                            return BtUI.btMenuLabel(self)
+                        end,
+                        sub_item_table_func = function()
+                            return BtUI.buildBluetoothMenu(self)
+                        end,
+                    },
+                    {
+                        text = _("BT headset media buttons"),
+                        checked_func = function()
+                            return self:getSetting("bt_media_control", true)
+                        end,
+                        callback = function()
+                            self:toggleSetting("bt_media_control", true)
+                            if self:getSetting("bt_media_control", true) then
+                                BtMediaControl.start(self)
+                            else
+                                BtMediaControl.stop()
+                            end
+                        end,
+                        help_text = _("When enabled, play/pause/next/prev buttons on a Bluetooth headset or speaker will control TTS playback. The connected device will also show playback status."),
+                    },
+                    {
+                        text_func = function()
+                            local val = self:getSetting("bt_disconnect_check", 30)
+                            if val == 0 then
+                                return _("BT disconnect alert: off")
+                            end
+                            return T(_("BT disconnect alert: %1s"), val)
+                        end,
+                        sub_item_table_func = function()
+                            return BtUI.buildBTDisconnectMenu(self)
+                        end,
+                    },
+                },
             },
-            {
-                text_func = function()
-                    local val = self:getSetting("bt_disconnect_check", 30)
-                    if val == 0 then
-                        return _("BT disconnect alert: off")
-                    end
-                    return T(_("BT disconnect alert: %1s"), val)
-                end,
-                sub_item_table_func = function()
-                    return BtUI.buildBTDisconnectMenu(self)
-                end,
-            },
-            -- Audio output device (PocketBook only, next to BT for discoverability)
-            {
-                text_func = function()
-                    if not self._init_ok or not self.tts_engine._wav_play_bin then
-                        return _("Audio output: N/A")
-                    end
-                    local pb_default = self.tts_engine._pb_has_tts_sm and "tts_sm" or ""
-                    local dev = self:getSetting("pb_alsa_device", pb_default)
-                    local labels = {
-                        ["tts_sm"] = _("PocketBook pipeline"),
-                        [""] = _("Auto"),
-                    }
-                    return T(_("Audio output: %1"), labels[dev] or dev)
-                end,
-                sub_item_table_func = function()
-                    return MenuBuilder.buildAlsaDeviceMenu(self)
-                end,
-                enabled_func = function()
-                    return self._init_ok and self.tts_engine._wav_play_bin ~= nil
-                end,
-            },
-            -- ── Voice & highlight settings ──
+            -- ── Voice settings ──
             {
                 text_func = function()
                     if not self._init_ok then return _("Voice settings") end
@@ -324,107 +323,89 @@ function Audiobook:addToMainMenu(menu_items)
                     return MenuBuilder.buildVoiceSettingsMenu(self)
                 end,
             },
+            -- ── General settings ──
             {
-                text_func = function()
-                    local styles = {
-                        background = _("Background"),
-                        underline = _("Underline"),
-                        box = _("Box"),
-                        invert = _("Invert"),
-                    }
-                    return T(_("Highlight style: %1"), styles[self:getSetting("highlight_style", "background")] or _("Background"))
-                end,
-                sub_item_table_func = function()
-                    return MenuBuilder.buildHighlightStyleMenu(self)
-                end,
-            },
-            -- ── Toggles ──
-            {
-                text = _("Auto-advance pages"),
-                checked_func = function()
-                    return self:getSetting("auto_advance", true)
-                end,
-                callback = function()
-                    self:toggleSetting("auto_advance", true)
-                end,
-            },
-            {
-                text = _("Highlight sentences"),
-                checked_func = function()
-                    return self:getSetting("highlight_sentences", true)
-                end,
-                callback = function()
-                    self:toggleSetting("highlight_sentences", true)
-                end,
-            },
-            {
-                text = _("Quick start with espeak (while Piper loads)"),
-                checked_func = function()
-                    return self:getSetting("espeak_cold_start", true)
-                end,
-                callback = function()
-                    self:toggleSetting("espeak_cold_start", true)
-                end,
-                enabled_func = function()
-                    return self._init_ok
-                        and self.tts_engine.backend == self.tts_engine.BACKENDS.PIPER
-                        and self.tts_engine.espeak_bin ~= nil
-                end,
-            },
-            {
-                text = _("espeak-only mode (skip Piper)"),
-                checked_func = function()
-                    return self:getSetting("espeak_only_mode", false)
-                end,
-                callback = function()
-                    self:toggleSetting("espeak_only_mode", false)
-                end,
-                enabled_func = function()
-                    return self._init_ok
-                        and self.tts_engine.backend == self.tts_engine.BACKENDS.PIPER
-                        and self.tts_engine.espeak_bin ~= nil
-                end,
-                help_text = _("Use espeak-ng for all sentences instead of Piper neural TTS. Enable this on single-core devices where Piper cannot synthesize fast enough, causing the device to freeze. This is auto-enabled when the plugin detects Piper cannot keep up."),
-            },
-            {
-                text = _("Keep playing when lid is closed"),
-                checked_func = function()
-                    return self:getSetting("keep_playing_on_lid_close", false)
-                end,
-                callback = function()
-                    self:toggleSetting("keep_playing_on_lid_close", false)
-                end,
-                help_text = _("When enabled, closing the case/cover will not stop audio playback. When disabled (default), playback pauses on lid close and resumes when reopened. Disabling prevents device crashes caused by audio processes running during hardware suspend."),
-            },
-            {
-                text = _("BT headset media buttons"),
-                checked_func = function()
-                    return self:getSetting("bt_media_control", true)
-                end,
-                callback = function()
-                    self:toggleSetting("bt_media_control", true)
-                    if self:getSetting("bt_media_control", true) then
-                        BtMediaControl.start(self)
-                    else
-                        BtMediaControl.stop()
-                    end
-                end,
-                help_text = _("When enabled, play/pause/next/prev buttons on a Bluetooth headset or speaker will control TTS playback. The connected device will also show playback status."),
-            },
-            {
-                text = _("Hide control bar while playing (experimental)"),
-                checked_func = function()
-                    return self:getSetting("playback_bar_visibility", "always") == "paused_only"
-                end,
-                callback = function()
-                    local cur = self:getSetting("playback_bar_visibility", "always")
-                    local new_val = (cur == "paused_only") and "always" or "paused_only"
-                    self:setSetting("playback_bar_visibility", new_val)
-                    if self.sync_controller and self.sync_controller._applyBarVisibility then
-                        self.sync_controller:_applyBarVisibility()
-                    end
-                end,
-                help_text = _("Experimental: when enabled, the playback control bar disappears while TTS is playing so the bottom of the page is fully visible for read-along. Pause playback (via tap-to-pause overlay or BT headset button) to bring the bar back."),
+                text = _("General settings"),
+                sub_item_table = {
+                    {
+                        text_func = function()
+                            if not self._init_ok or not self.tts_engine._wav_play_bin then
+                                return _("Audio output (PocketBook): N/A")
+                            end
+                            local pb_default = self.tts_engine._pb_has_tts_sm and "tts_sm" or ""
+                            local dev = self:getSetting("pb_alsa_device", pb_default)
+                            local labels = {
+                                ["tts_sm"] = _("PocketBook pipeline"),
+                                [""] = _("Auto"),
+                            }
+                            return T(_("Audio output (PocketBook): %1"), labels[dev] or dev)
+                        end,
+                        sub_item_table_func = function()
+                            return MenuBuilder.buildAlsaDeviceMenu(self)
+                        end,
+                        enabled_func = function()
+                            return self._init_ok and self.tts_engine._wav_play_bin ~= nil
+                        end,
+                        help_text = _("PocketBook devices route audio through different paths depending on firmware. The default works on most devices — change this only if you hear no sound, distorted sound, or playback at 2-3x speed (known issue on PB631). Each option in the submenu has its own help text describing what to try."),
+                    },
+                    {
+                        text = _("Keep playing when lid is closed"),
+                        checked_func = function()
+                            return self:getSetting("keep_playing_on_lid_close", false)
+                        end,
+                        callback = function()
+                            self:toggleSetting("keep_playing_on_lid_close", false)
+                        end,
+                        help_text = _("When enabled, closing the case/cover will not stop audio playback. When disabled (default), playback pauses on lid close and resumes when reopened. Disabling prevents device crashes caused by audio processes running during hardware suspend."),
+                    },
+                    {
+                        text = _("Hide control bar while playing (experimental)"),
+                        checked_func = function()
+                            return self:getSetting("playback_bar_visibility", "always") == "paused_only"
+                        end,
+                        callback = function()
+                            local cur = self:getSetting("playback_bar_visibility", "always")
+                            local new_val = (cur == "paused_only") and "always" or "paused_only"
+                            self:setSetting("playback_bar_visibility", new_val)
+                            if self.sync_controller and self.sync_controller._applyBarVisibility then
+                                self.sync_controller:_applyBarVisibility()
+                            end
+                        end,
+                        help_text = _("Experimental: when enabled, the playback control bar disappears while TTS is playing so the bottom of the page is fully visible for read-along. Pause playback (via tap-to-pause overlay or BT headset button) to bring the bar back."),
+                    },
+                    {
+                        text_func = function()
+                            local styles = {
+                                background = _("Background"),
+                                underline = _("Underline"),
+                                box = _("Box"),
+                                invert = _("Invert"),
+                            }
+                            return T(_("Highlight style: %1"), styles[self:getSetting("highlight_style", "background")] or _("Background"))
+                        end,
+                        sub_item_table_func = function()
+                            return MenuBuilder.buildHighlightStyleMenu(self)
+                        end,
+                    },
+                    {
+                        text = _("Auto-advance pages"),
+                        checked_func = function()
+                            return self:getSetting("auto_advance", true)
+                        end,
+                        callback = function()
+                            self:toggleSetting("auto_advance", true)
+                        end,
+                    },
+                    {
+                        text = _("Highlight sentences"),
+                        checked_func = function()
+                            return self:getSetting("highlight_sentences", true)
+                        end,
+                        callback = function()
+                            self:toggleSetting("highlight_sentences", true)
+                        end,
+                    },
+                },
             },
             -- ── Diagnostics ──
             {

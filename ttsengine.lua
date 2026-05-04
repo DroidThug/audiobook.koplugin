@@ -887,7 +887,9 @@ function TTSEngine:espeakSynthesizeFallback(text)
         -- Generate timing estimates for the espeak audio
         self:generateTimingEstimates(text)
         self.current_audio_file = audio_file
-        self._native_tts_text = nil
+        -- Keep _native_tts_text intact: the Kindle native TTS fallback path
+        -- (used when gst-play is broken on stripped GStreamer firmware) needs
+        -- the sentence text.  Clearing it here causes "no text to speak".
         return audio_file
     end
     return nil
@@ -1506,7 +1508,11 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         -- Skip native TTS entirely when /var is full and gst-play is available.
         -- Ivona SDK cannot synthesize without temp space, so going through the
         -- 10s strategy+timeout loop is pointless.  Fall back immediately.
-        if self._var_full then
+        -- IMPORTANT: if gst-play is already known to hang on this device
+        -- (issue #22, PW5), do NOT try it again -- that just causes another
+        -- hang and a second error dialog.  Let the native TTS path fail
+        -- gracefully (the /var-full warning was already shown above).
+        if self._var_full and not self._gst_play_broken then
             if not self._kindle_gst_play_bin then
                 local plugin_dir = self.plugin_dir or "."
                 local gst_play_bin = plugin_dir .. "/kindle/gst-play"

@@ -1862,8 +1862,8 @@ function SyncController:_checkPiperAbandon()
             .. tostring(self._espeak_fallback_count)
             .. " sentences, it still hadn't produced any audio.\n\n"
             .. "Switching to espeak-only mode for stable playback. "
-            .. "You can disable this in:\n"
-            .. "  Audiobook > espeak-only mode (skip Piper)",
+            .. "To re-enable Piper, go to:\n"
+            .. "  Audiobook > Voice settings > TTS engine",
         timeout = 10,
     })
 end

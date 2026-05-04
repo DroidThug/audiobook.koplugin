@@ -42,6 +42,21 @@ function MenuBuilder.buildVoiceSettingsMenu(plugin)
         end,
     })
 
+    -- Quick start with espeak (Piper-only): play first sentences via espeak
+    -- while Piper warms up.  Only relevant when both backends are usable.
+    if plugin.tts_engine.backend == plugin.tts_engine.BACKENDS.PIPER
+       and plugin.tts_engine.espeak_bin then
+        table.insert(menu, {
+            text = _("Quick start with espeak (while Piper loads)"),
+            checked_func = function()
+                return plugin:getSetting("espeak_cold_start", true)
+            end,
+            callback = function()
+                plugin:toggleSetting("espeak_cold_start", true)
+            end,
+        })
+    end
+
     -- Speech rate submenu
     table.insert(menu, {
         text_func = function()
@@ -635,6 +650,10 @@ function MenuBuilder.buildEngineSelectMenu(plugin)
             callback = function(touchmenu_instance)
                 engine:setBackend(backend.id)
                 plugin:setSetting("tts_backend", backend.id)
+                -- An explicit engine choice clears any prior auto-fallback to
+                -- espeak-only mode; otherwise the user's selection would be
+                -- silently overridden on the next page.
+                plugin:setSetting("espeak_only_mode", false)
                 -- Close the menu so the user reopens Voice Settings and sees
                 -- the correct engine-specific items (pitch, pauses, etc.).
                 if touchmenu_instance then
