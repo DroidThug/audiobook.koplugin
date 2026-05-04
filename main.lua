@@ -276,7 +276,7 @@ function Audiobook:addToMainMenu(menu_items)
                         end,
                     },
                     {
-                        text = _("BT headset media buttons"),
+                        text = _("Headset media buttons"),
                         checked_func = function()
                             return self:getSetting("bt_media_control", true)
                         end,
@@ -294,9 +294,9 @@ function Audiobook:addToMainMenu(menu_items)
                         text_func = function()
                             local val = self:getSetting("bt_disconnect_check", 30)
                             if val == 0 then
-                                return _("BT disconnect alert: off")
+                                return _("Disconnect alert: off")
                             end
-                            return T(_("BT disconnect alert: %1s"), val)
+                            return T(_("Disconnect alert: %1s"), val)
                         end,
                         sub_item_table_func = function()
                             return BtUI.buildBTDisconnectMenu(self)
@@ -346,7 +346,7 @@ function Audiobook:addToMainMenu(menu_items)
                         enabled_func = function()
                             return self._init_ok and self.tts_engine._wav_play_bin ~= nil
                         end,
-                        help_text = _("PocketBook devices route audio through different paths depending on firmware. The default works on most devices — change this only if you hear no sound, distorted sound, or playback at 2-3x speed (known issue on PB631). Each option in the submenu has its own help text describing what to try."),
+                        help_text = _("PocketBook devices route audio through different paths depending on firmware. The default works on most devices. Change this only if you hear no sound, distorted sound, or playback at 2-3x speed (known issue on PB631). Each option in the submenu has its own help text describing what to try."),
                     },
                     {
                         text = _("Keep playing when lid is closed"),

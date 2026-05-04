@@ -1149,11 +1149,11 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         self.player_error = true
         local msg
         if Device:isKindle() then
-            msg = _("No audio output available.\n\nKindle has no built-in speaker. Audio needs Bluetooth headphones connected via Kindle Settings.\n\nPlease generate a bug report (Audiobook > Report a bug) and share it on the GitHub issue -- it will help identify the correct audio path for this Kindle model.")
+            msg = _("No audio output available.\n\nKindle has no built-in speaker. Audio needs Bluetooth headphones connected via Kindle Settings.\n\nPlease generate a bug report (Audiobook > Generate bug report) and share it on the GitHub issue -- it will help identify the correct audio path for this Kindle model.")
         elseif Device:isKobo() then
             msg = _("No audio output available.\n\nKobo has no built-in speaker.\n\nPlease pair Bluetooth headphones:\nSettings → Bluetooth → Pair\n\nThen try again.")
         elseif Device.isPocketBook and Device:isPocketBook() then
-            msg = _("No audio output available.\n\nPlease generate a bug report (Audiobook > Report a bug) and share it on the GitHub issue -- it will help identify the correct audio path for this PocketBook model.")
+            msg = _("No audio output available.\n\nPlease generate a bug report (Audiobook > Generate bug report) and share it on the GitHub issue -- it will help identify the correct audio path for this PocketBook model.")
         else
             msg = _("No audio output available.\n\nNo supported audio player found (aplay, paplay, mpv, mplayer).\n\nIf using Bluetooth, make sure headphones are paired and connected.")
         end
@@ -1207,9 +1207,9 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             self.is_speaking = false
             local msg
             if Device:isKindle() then
-                msg = _("No audio output available.\n\nKindle has no built-in speaker. Please connect Bluetooth headphones via Kindle Settings, then try again.\n\nIf you already have headphones connected, please generate a bug report (Audiobook > Report a bug) and share it on GitHub — it will help identify the correct audio path for this Kindle model.")
+                msg = _("No audio output available.\n\nKindle has no built-in speaker. Please connect Bluetooth headphones via Kindle Settings, then try again.\n\nIf you already have headphones connected, please generate a bug report (Audiobook > Generate bug report) and share it on GitHub — it will help identify the correct audio path for this Kindle model.")
             else
-                msg = _("No audio output available.\n\nThis device has no built-in speaker. Please connect a Bluetooth audio device first:\n\n1. Go to Audiobook > Bluetooth\n2. Turn Bluetooth on\n3. Scan and pair your headphones/speaker\n4. Then start read-along again.")
+                msg = _("No audio output available.\n\nThis device has no built-in speaker. Please connect a Bluetooth audio device first:\n\n1. Go to Audiobook > Bluetooth settings > Bluetooth\n2. Turn Bluetooth on\n3. Scan and pair your headphones/speaker\n4. Then start read-along again.")
             end
             UIManager:show(InfoMessage:new{
                 text = msg,
@@ -1959,7 +1959,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                 engine.is_speaking = false
                 engine.play_generation = (engine.play_generation or 0) + 1
                 engine:cleanup()
-                local msg = _("Kindle audio playback failed.\n\nThe playermgr service accepted commands but audio never started.\n\nPossible causes:\n1. GStreamer cannot find the wavparse plugin on this firmware\n2. audiomgrd denied audio focus to the plugin\n3. No audio sink is configured (built-in speaker absent, BT not connected)\n\nTry: Connect Bluetooth headphones via Kindle Settings first, then start read-along.\n\nIf this persists, please generate a bug report (Audiobook > Report a bug) and share it on GitHub.")
+                local msg = _("Kindle audio playback failed.\n\nThe playermgr service accepted commands but audio never started.\n\nPossible causes:\n1. GStreamer cannot find the wavparse plugin on this firmware\n2. audiomgrd denied audio focus to the plugin\n3. No audio sink is configured (built-in speaker absent, BT not connected)\n\nTry: Connect Bluetooth headphones via Kindle Settings first, then start read-along.\n\nIf this persists, please generate a bug report (Audiobook > Generate bug report) and share it on GitHub.")
                 -- If we have kindle-gst-play available, suggest falling back
                 if engine._kindle_gst_play_bin then
                     msg = msg .. "\n\nAlternatively, try switching to 'gst-play' audio player in Audiobook settings (if available)."
@@ -2052,9 +2052,9 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                                 engine:cleanup()
                                 local msg
                                 if engine._no_real_audio_output then
-                                    msg = _("Kindle audio playback failed.\n\nThis Kindle model's GStreamer installation cannot decode audio files (no wavparse plugin). Audio may work if:\n\n1. You have connected Bluetooth headphones via Kindle Settings\n2. VoiceView is enabled (Settings > Accessibility > VoiceView)\n3. You switch to espeak TTS backend (Audiobook > TTS Engine)\n\nPlease generate a bug report (Audiobook > Report a bug) and share it on GitHub.")
+                                    msg = _("Kindle audio playback failed.\n\nThis Kindle model's GStreamer installation cannot decode audio files (no wavparse plugin). Audio may work if:\n\n1. You have connected Bluetooth headphones via Kindle Settings\n2. VoiceView is enabled (Settings > Accessibility > VoiceView)\n3. You switch to espeak TTS backend (Audiobook > Voice settings > TTS engine)\n\nPlease generate a bug report (Audiobook > Generate bug report) and share it on GitHub.")
                                 else
-                                    msg = _("Kindle audio playback failed.\n\nThe playermgr service accepted commands but audio never started.\n\nPossible causes:\n1. GStreamer cannot find the wavparse plugin on this firmware\n2. audiomgrd denied audio focus to the plugin\n3. No audio sink is configured (built-in speaker absent, BT not connected)\n\nTry: Connect Bluetooth headphones via Kindle Settings first, then start read-along.\n\nIf this persists, please generate a bug report (Audiobook > Report a bug) and share it on GitHub.")
+                                    msg = _("Kindle audio playback failed.\n\nThe playermgr service accepted commands but audio never started.\n\nPossible causes:\n1. GStreamer cannot find the wavparse plugin on this firmware\n2. audiomgrd denied audio focus to the plugin\n3. No audio sink is configured (built-in speaker absent, BT not connected)\n\nTry: Connect Bluetooth headphones via Kindle Settings first, then start read-along.\n\nIf this persists, please generate a bug report (Audiobook > Generate bug report) and share it on GitHub.")
                                 end
                                 if engine._kindle_gst_play_bin then
                                     msg = msg .. "\n\nTry: Switch to gst-play in Audiobook settings if available."
@@ -2171,7 +2171,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                         engine.is_speaking = false
                         engine.play_generation = (engine.play_generation or 0) + 1
                         engine:cleanup()
-                        local msg = _("Audio playback failed on this Kindle model.\n\nThe GStreamer pipeline started but could not produce audio. This usually means the firmware's GStreamer installation is too stripped (missing audioconvert / audioresample plugins).\n\nPlease generate a bug report (Audiobook > Report a bug) and share it on the GitHub issue.")
+                        local msg = _("Audio playback failed on this Kindle model.\n\nThe GStreamer pipeline started but could not produce audio. This usually means the firmware's GStreamer installation is too stripped (missing audioconvert / audioresample plugins).\n\nPlease generate a bug report (Audiobook > Generate bug report) and share it on the GitHub issue.")
                         UIManager:show(InfoMessage:new{
                             text = msg,
                             timeout = 12,
@@ -2226,7 +2226,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                     else
                         msg = msg .. "."
                     end
-                    msg = msg .. _("\n\nThis is often a system library compatibility issue. Try connecting Bluetooth headphones via Kindle Settings, switch to the espeak backend (Tools → Audiobook → TTS Engine), or generate a bug report (Audiobook > Report a bug) and share it on the GitHub issue.")
+                    msg = msg .. _("\n\nThis is often a system library compatibility issue. Try connecting Bluetooth headphones via Kindle Settings, switch to the espeak backend (Tools → Audiobook → Voice settings → TTS engine), or generate a bug report (Audiobook > Generate bug report) and share it on the GitHub issue.")
                     UIManager:show(InfoMessage:new{
                         text = msg,
                         timeout = 12,
@@ -3842,11 +3842,11 @@ function TTSEngine:_startProcessWatcher(bt_retry_allowed, skip_on_fail)
                         end
                         local msg
                         if is_kindle_dev then
-                            msg = _("No audio output available.\n\nKindle has no built-in speaker. Audio needs Bluetooth headphones connected via Kindle Settings.\n\nThe Kindle audio subsystem did not expose a usable ALSA device. Please generate a bug report (Audiobook > Report a bug) and share it on the GitHub issue -- it will help identify the correct audio path for this Kindle model.")
+                            msg = _("No audio output available.\n\nKindle has no built-in speaker. Audio needs Bluetooth headphones connected via Kindle Settings.\n\nThe Kindle audio subsystem did not expose a usable ALSA device. Please generate a bug report (Audiobook > Generate bug report) and share it on the GitHub issue -- it will help identify the correct audio path for this Kindle model.")
                         elseif is_pb_dev then
-                            msg = _("No audio output available.\n\nThe audio player exited immediately. Please check that a playback device is available (speaker or Bluetooth headphones)." .. stderr_hint .. "\n\nIf this persists, generate a bug report (Audiobook > Report a bug) and share it on the GitHub issue.")
+                            msg = _("No audio output available.\n\nThe audio player exited immediately. Please check that a playback device is available (speaker or Bluetooth headphones)." .. stderr_hint .. "\n\nIf this persists, generate a bug report (Audiobook > Generate bug report) and share it on the GitHub issue.")
                         else
-                            msg = _("No audio output available.\n\nThis device has no built-in speaker. Please connect a Bluetooth audio device first:\n\n1. Go to Audiobook > Bluetooth\n2. Turn Bluetooth on\n3. Scan and pair your headphones/speaker\n4. Then start read-along again.")
+                            msg = _("No audio output available.\n\nThis device has no built-in speaker. Please connect a Bluetooth audio device first:\n\n1. Go to Audiobook > Bluetooth settings > Bluetooth\n2. Turn Bluetooth on\n3. Scan and pair your headphones/speaker\n4. Then start read-along again.")
                         end
                         UIManager:show(InfoMessage:new{
                             text = msg,

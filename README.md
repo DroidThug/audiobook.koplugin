@@ -168,14 +168,22 @@ Reading pauses automatically when you open a menu and resumes when you close it.
 
 All settings are under **Tools > Audiobook Read-Along**:
 
-- **Bluetooth settings** - pair, connect, disconnect alert interval
-- **Voice settings** - TTS engine, voice, speech rate, pitch, volume, sentence/paragraph pauses (espeak-ng), sentence/paragraph gaps (Piper), word gap, clause pause
-- **Highlight style** - background (default), invert (best for e-ink), underline, box
-- **Auto-advance pages** - turn pages automatically
-- **Highlight words / sentences** - toggle each independently
-- **Quick start with espeak** - play first sentence with espeak-ng while Piper loads (avoids the ~3s cold start silence)
-- **Keep playing when lid is closed** - prevents device suspend so audio continues with the case closed
-- **BT headset media buttons** - use play/pause/next/prev on a Bluetooth headset or speaker to control TTS playback
+- **Start reading from current page** - begin read-along from the current page
+- **Bluetooth settings**
+  - **Bluetooth** - pair, connect, disconnect, scan
+  - **Headset media buttons** - use play/pause/next/prev on a Bluetooth headset or speaker to control TTS playback
+  - **Disconnect alert** - notify if all BT audio devices disconnect during playback
+- **Voice settings** - TTS engine, voice, speech rate, pitch, volume, sentence/paragraph pauses (espeak-ng), sentence/paragraph gaps (Piper), word gap, clause pause. Includes **Quick start with espeak** (Piper-only) which plays the first sentence with espeak-ng while Piper loads, avoiding the ~3s cold start silence.
+- **General settings**
+  - **Audio output (PocketBook)** - ALSA device selection for PocketBook firmware quirks
+  - **Keep playing when lid is closed** - prevents device suspend so audio continues with the case closed
+  - **Hide control bar while playing** - experimental; hides the playback bar during TTS so the page is fully visible
+  - **Highlight style** - background (default), invert (best for e-ink), underline, box
+  - **Auto-advance pages** - turn pages automatically
+  - **Highlight sentences** - draw highlight on the active sentence
+- **Generate bug report** - save a diagnostic report to share when reporting issues
+- **Run device benchmark** - run a TTS performance benchmark on this device
+- **Check for updates** - fetch and install a newer release from GitHub
 
 ## Tweaking & advanced configuration
 
