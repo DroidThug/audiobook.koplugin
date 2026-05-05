@@ -428,6 +428,34 @@ function TTSEngine:synthesizeCommand(text, callback)
         text = text:sub(1, max_text_len)
         logger.dbg("TTSEngine: Truncated text to", max_text_len, "chars")
     end
+    -- Preflight: check that /tmp has enough free space.  On Kindle /tmp is
+    -- a symlink to /var/tmp; a full /var causes synthesis to silently fail
+    -- because espeak-ng and Piper cannot write their output WAV files.
+    -- Issue #22 / #23.
+    if Device:isKindle() then
+        local df_h = io.popen("df /var 2>/dev/null | tail -1")
+        if df_h then
+            local df_line = df_h:read("*a") or ""; df_h:close()
+            local use_pct = tonumber(df_line:match("(%d+)%%"))
+            if use_pct and use_pct >= 95 then
+                logger.warn("TTSEngine: /var is", use_pct, "% full -- synthesis will fail")
+                os.execute("rm -f /var/tmp/audiomgrd.err /var/tmp/*.tmp 2>/dev/null")
+                local df2 = io.popen("df /var 2>/dev/null | tail -1")
+                if df2 then
+                    local df2_line = df2:read("*a") or ""; df2:close()
+                    local pct2 = tonumber(df2_line:match("(%d+)%%"))
+                    if pct2 and pct2 >= 98 then
+                        UIManager:show(InfoMessage:new{
+                            text = _("Temporary storage is full (" .. pct2 .. "% used).\n\nTTS synthesis needs space in /tmp to create audio files. Try rebooting your Kindle to clear temporary files, then try again."),
+                            timeout = 12,
+                        })
+                        if callback then callback(false, nil) end
+                        return false
+                    end
+                end
+            end
+        end
+    end
     if self.backend == self.BACKENDS.ESPEAK then
         -- espeak-ng supports word timing output
         local speed = math.floor(175 * self.rate) -- Default is 175 wpm
@@ -605,8 +633,14 @@ function TTSEngine:synthesizeCommand(text, callback)
         -- treat this as an immediate failure.
         return nil
     end
-    -- Non-Piper backends: run synchronously (espeak-ng is fast ~100ms)
-    local result = os.execute(cmd)
+    -- Non-Piper backends: run synchronously (espeak-ng is fast ~100ms).
+    -- Use io.popen so we can capture stderr for diagnostics.
+    local synth_handle = io.popen(cmd, "r")
+    local synth_output = ""
+    if synth_handle then
+        synth_output = synth_handle:read("*a") or ""
+        synth_handle:close()
+    end
     -- Clean up SSML temp file if one was created
     if self._ssml_temp_file then
         os.remove(self._ssml_temp_file)
@@ -617,7 +651,6 @@ function TTSEngine:synthesizeCommand(text, callback)
         os.remove(self._piper_text_file)
         self._piper_text_file = nil
     end
-    logger.dbg("TTSEngine: Command result:", result)
     -- Check if file was created
     local file = io.open(audio_file, "r")
     if file then
@@ -638,10 +671,17 @@ function TTSEngine:synthesizeCommand(text, callback)
     else
         logger.err("TTSEngine: Failed to create audio file at:", audio_file)
     end
+    if synth_output and #synth_output > 0 then
+        logger.err("TTSEngine: Synthesis output:", synth_output:sub(1, 400))
+    end
     -- Show error to user
+    local err_msg = _("TTS synthesis failed.\n\nCould not generate audio file.\n\nCommon causes:\n• The TTS engine is not installed\n• /tmp or /var is full (reboot to clear)\n• Insufficient free memory")
+    if synth_output and #synth_output > 0 then
+        err_msg = err_msg .. _("\n\nError output:\n") .. synth_output:sub(1, 200)
+    end
     UIManager:show(InfoMessage:new{
-        text = _("TTS synthesis failed.\n\nCould not generate audio file.\nCheck that espeak-ng is installed."),
-        timeout = 4,
+        text = err_msg,
+        timeout = 6,
     })
     if callback then
         callback(false, nil)

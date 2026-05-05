@@ -103,6 +103,18 @@ local function collectDeviceHeader()
     if meminfo then
         table.insert(lines, "memory: " .. meminfo:gsub("^MemTotal:%s*", ""))
     end
+    local memfree = shellCapture("grep MemFree /proc/meminfo 2>/dev/null", 2)
+    if memfree then
+        table.insert(lines, "mem_free: " .. memfree:gsub("^MemFree:%s*", ""))
+    end
+    local disk_var = shellCapture("df -h /var 2>/dev/null | tail -1", 2)
+    if disk_var then
+        table.insert(lines, "disk_var: " .. disk_var)
+    end
+    local disk_tmp = shellCapture("df -h /tmp 2>/dev/null | tail -1", 2)
+    if disk_tmp then
+        table.insert(lines, "disk_tmp: " .. disk_tmp)
+    end
     local uname = shellCapture("uname -r", 2)
     if uname then
         table.insert(lines, "kernel: " .. uname)
@@ -163,8 +175,9 @@ local function benchEspeak(engine, text)
 
     local t0 = os.clock()
     local handle = io.popen(cmd, "r")
+    local output = ""
     if handle then
-        handle:read("*a")
+        output = handle:read("*a") or ""
         handle:close()
     end
     local synth_ms = math.floor((os.clock() - t0) * 1000)
@@ -173,7 +186,9 @@ local function benchEspeak(engine, text)
     local wav_ms = WavUtils.getDurationMs(audio_file)
     os.remove(audio_file)
 
-    if wav_bytes == 0 then return nil end
+    if wav_bytes == 0 then
+        return { synth_ms = synth_ms, wav_ms = 0, wav_bytes = 0, error = output:sub(1, 200) }
+    end
     return { synth_ms = synth_ms, wav_ms = wav_ms, wav_bytes = wav_bytes }
 end
 
