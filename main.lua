@@ -447,6 +447,60 @@ function Audiobook:addToMainMenu(menu_items)
                 end,
                 help_text = _("Checks GitHub for a newer release. If an update is available, downloads and installs it. Requires Wi-Fi."),
             },
+            {
+                text = _("About / Debug info"),
+                callback = function()
+                    local lines = {}
+                    -- Plugin version
+                    local ok, meta = pcall(dofile, PLUGIN_PATH .. "_meta.lua")
+                    if ok and meta then
+                        table.insert(lines, T(_("Plugin: Audiobook Read-Along %1"), meta.version or "unknown"))
+                    end
+                    -- KOReader version
+                    local rev = "unknown"
+                    local ok_v, Version = pcall(require, "version")
+                    if ok_v and Version and Version.getCurrentRevision then
+                        rev = Version:getCurrentRevision() or rev
+                    else
+                        local rev_file = io.open("git-rev", "r")
+                        if rev_file then
+                            rev = rev_file:read("*l") or rev
+                            rev_file:close()
+                        end
+                    end
+                    table.insert(lines, T(_("KOReader: %1"), rev))
+                    -- Device info
+                    local model = (Device.getDeviceModel and Device:getDeviceModel())
+                        or (Device.model or "unknown")
+                    local platform = (Device.getPlatform and Device:getPlatform())
+                        or (Device.platform or "unknown")
+                    table.insert(lines, T(_("Device: %1 (%2)"), model, platform))
+                    -- TTS backend
+                    local engine = self.tts_engine
+                    if engine then
+                        local backend_name = engine.backend or "none"
+                        local backend_labels = {
+                            espeak = "espeak-ng",
+                            piper = "Piper",
+                            pico = "Pico",
+                            flite = "Flite",
+                            festival = "Festival",
+                            android = "Android",
+                        }
+                        table.insert(lines, T(_("TTS backend: %1"), backend_labels[backend_name] or backend_name))
+                        -- Audio player
+                        local player = engine.audio_player_type or "none"
+                        table.insert(lines, T(_("Audio player: %1"), player))
+                    end
+                    -- Plugin directory
+                    table.insert(lines, T(_("Plugin path: %1"), PLUGIN_PATH or "unknown"))
+                    UIManager:show(InfoMessage:new{
+                        text = table.concat(lines, "\n"),
+                        timeout = 10,
+                    })
+                end,
+                help_text = _("Shows plugin version, KOReader version, device model, active TTS backend, and audio player. Useful when reporting issues."),
+            },
         },
     }
 end
