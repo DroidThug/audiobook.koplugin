@@ -1728,7 +1728,11 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                                 end
                             end
                         end
-                        if engine._kindle_gst_play_bin and engine.current_audio_file then
+                        -- Do NOT fall back to gst-play if it is known broken on
+                        -- this device (Colorsoft or previously detected hang).
+                        local is_colorsoft = Device.model and Device.model == "KindleColorSoft"
+                        if not is_colorsoft and not engine._gst_play_broken
+                            and engine._kindle_gst_play_bin and engine.current_audio_file then
                             logger.warn("TTSEngine: native TTS failed, falling back to kindle-gst-play (issue #18)")
                             engine.audio_player_type = "kindle-gst-play"
                             engine._no_real_audio_output = false

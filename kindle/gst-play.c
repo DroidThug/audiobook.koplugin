@@ -409,11 +409,121 @@ static int do_play(const char *wav_path)
     return ret;
 }
 
+/* ---- TTS src mode (experimental) ----
+ * Try to play text via the Kindle's ttssrc GStreamer element.
+ * ttssrc connects to the TTS orchestrator (Ivona SDK) and produces
+ * raw audio that flows to mixersink → audiomgrd → BT headphones.
+ * This bypasses playermgr entirely, which is needed on Colorsoft
+ * firmware where playermgr Open/PlayParameter does not trigger TTS.
+ */
+static int do_ttssrc(const char *text)
+{
+    if (load_gstreamer() != 0)
+        return 3;
+
+    int argc = 0;
+    gst_init_(&argc, NULL);
+
+    /* Check that ttssrc exists before building the pipeline */
+    if (gst_element_factory_find_) {
+        void *f = gst_element_factory_find_("ttssrc");
+        if (!f) {
+            fprintf(stderr, "gst-play: ttssrc element not found\n");
+            return 3;
+        }
+    }
+
+    /* Build a simple ttssrc pipeline.
+     * Try ttssrc with a text property first; if the element expects a
+     * URI, the parse will fail and we report the error.
+     * GStreamer 0.10 caps for raw audio from ttssrc:
+     *   audio/x-raw-int,rate=24000,channels=1,width=16,depth=16,signed=true
+     * GStreamer 1.0 equivalent:
+     *   audio/x-raw,format=S16LE,rate=24000,channels=1
+     */
+    char desc[1024];
+    if (gst_version_minor == 10) {
+        snprintf(desc, sizeof(desc),
+            "ttssrc text=\"%s\" ! "
+            "audio/x-raw-int,"
+            "rate=(int)24000,"
+            "channels=(int)1,"
+            "width=(int)16,"
+            "depth=(int)16,"
+            "signed=(boolean)true"
+            " ! mixersink",
+            text);
+    } else {
+        snprintf(desc, sizeof(desc),
+            "ttssrc text=\"%s\" ! "
+            "audio/x-raw,"
+            "format=(string)S16LE,"
+            "rate=(int)24000,"
+            "channels=(int)1,"
+            "layout=(string)interleaved"
+            " ! mixersink",
+            text);
+    }
+
+    fprintf(stderr, "gst-play: ttssrc pipeline: %s\n", desc);
+
+    void *error = NULL;
+    void *pipeline = gst_parse_launch_(desc, &error);
+    if (!pipeline) {
+        fprintf(stderr, "gst-play: ttssrc pipeline creation failed\n");
+        return 3;
+    }
+    pipeline_g = pipeline;
+
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = on_signal;
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGINT, &sa, NULL);
+
+    gst_element_set_state_(pipeline, GST_STATE_PLAYING);
+
+    int ret = 0;
+    void *bus = gst_element_get_bus_(pipeline);
+    if (bus) {
+        void *msg = gst_bus_poll_(bus, GST_MESSAGE_EOS | GST_MESSAGE_ERROR,
+                                  (int64_t)(-1));
+        if (msg) {
+            if (gst_message_parse_error_) {
+                void *err = NULL;
+                char *debug_info = NULL;
+                gst_message_parse_error_(msg, &err, &debug_info);
+                if (err != NULL) {
+                    char **err_msg_ptr = (char **)((char *)err + 8);
+                    fprintf(stderr, "gst-play: GStreamer error: %s\n",
+                            *err_msg_ptr ? *err_msg_ptr : "(unknown)");
+                    if (debug_info && *debug_info)
+                        fprintf(stderr, "gst-play: debug: %s\n", debug_info);
+                    ret = 4;
+                }
+            }
+        }
+    } else {
+        /* No bus -- wait up to 30s for TTS to complete */
+        int secs = 30;
+        while (secs > 0 && !got_signal) {
+            sleep(1);
+            secs--;
+        }
+    }
+
+    if (got_signal)
+        ret = 5;
+
+    gst_element_set_state_(pipeline, GST_STATE_NULL);
+    return ret;
+}
+
 /* ---- Entry point ---- */
 int main(int argc, char *argv[])
 {
     if (argc < 2) {
-        fprintf(stderr, "Usage: %s [--probe | --version] <file.wav>\n",
+        fprintf(stderr, "Usage: %s [--probe | --version | --ttssrc <text>] <file.wav>\n",
                 argv[0]);
         return 1;
     }
@@ -429,6 +539,13 @@ int main(int argc, char *argv[])
     }
     if (strcmp(argv[1], "--probe") == 0)
         return do_probe();
+    if (strcmp(argv[1], "--ttssrc") == 0) {
+        if (argc < 3) {
+            fprintf(stderr, "Usage: %s --ttssrc <text>\n", argv[0]);
+            return 1;
+        }
+        return do_ttssrc(argv[2]);
+    }
 
     return do_play(argv[1]);
 }

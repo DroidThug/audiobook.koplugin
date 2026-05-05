@@ -1094,6 +1094,12 @@ fi
             "cat /tmp/.gst_play_last.log 2>/dev/null", 2) or "none"
     end
 
+    -- Clean up temp files that benchmark tests may have left in /var/tmp.
+    -- The TTS orchestrator and audiomgrd can create files there during
+    -- probing; on a 64MB /var tmpfs this can fill the filesystem and
+    -- break subsequent TTS attempts (issue #23).
+    os.execute("rm -f /var/tmp/audiomgrd.err /var/tmp/*.tmp 2>/dev/null")
+
     return info
 end
 

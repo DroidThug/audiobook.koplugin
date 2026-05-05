@@ -462,6 +462,27 @@ For the full technical analysis, see [docs/ANDROID_TTS.md](docs/ANDROID_TTS.md).
 - Word timing is estimated (Android TTS does not provide per-word callbacks when synthesizing to file)
 - First sentence may have a brief delay while the TTS engine initializes
 
+### Neural TTS engines (offline)
+
+The plugin uses whatever engine you set as Android's default TTS. The factory default (Google or Samsung) is decent, but installing a free, open-source neural engine gives you offline voices comparable to Piper on Linux e-readers.
+
+#### Quick setup
+
+1. Install one of the engines below.
+2. Open **Android Settings → System → Languages & input → Text-to-speech output** (path varies by manufacturer skin).
+3. Set "Preferred engine" to the new engine, pick a voice, and tap "Listen to an example" to confirm.
+4. Restart KOReader. The plugin will route synthesis through the new engine automatically.
+
+| Engine | Distribution | Min Android | Models | Notes |
+|--------|--------------|-------------|--------|-------|
+| [SherpaTTS](https://f-droid.org/packages/org.woheller69.ttsengine/) | F-Droid (signed, audited) | 10+ | Piper / VITS via Sherpa-ONNX, downloaded on first launch | Single app with built-in model picker. Easiest, most trustworthy install. |
+| [VoxSherpa TTS](https://github.com/CodeBySonu95/VoxSherpa-TTS) | GitHub APK (sideload) | 11+ | Piper / VITS plus Kokoro 82M; imports any Sherpa-ONNX `.onnx` | Newest. Pick this if you want Kokoro or to drop in your own `.onnx` voices. |
+| [Sherpa-ONNX engine APKs](https://k2-fsa.github.io/sherpa/onnx/tts/apk-engine.html) | Direct APK from k2-fsa | varies | One voice per APK | Use only if you want a specific pre-bundled model and nothing else. |
+
+If you're unsure, start with **SherpaTTS** from F-Droid. It is signed by F-Droid (no sideloading from random hosts), works on Android 10+, lets you pick models inside the app, and has a longer track record. Move to VoxSherpa later if you want Kokoro or custom `.onnx` imports.
+
+> Android only allows one default TTS engine system-wide, so switching engines for KOReader changes it for every app that uses TTS (TalkBack, navigation, other readers).
+
 ## Building from source
 
 The `package-for-kobo.sh` script cross-compiles espeak-ng and wav-play for ARM and bundles the plugin into a ready-to-deploy directory. It targets ARMv7 and works for both Kobo and PocketBook. It requires [Nix](https://nixos.org/download) for the cross-compilation toolchain.
