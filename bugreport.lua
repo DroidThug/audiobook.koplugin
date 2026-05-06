@@ -624,6 +624,8 @@ rm -f /tmp/.lipc_test.wav
         -- GStreamer + audio tools on the device
         info.kindle_gst_tools = shellCapture([[echo "gst_launch=$(which gst-launch-1.0 2>/dev/null || echo not_found)"
 echo "gst_inspect=$(which gst-inspect-1.0 2>/dev/null || echo not_found)"
+echo "gst_launch_010=$(which gst-launch-0.10 2>/dev/null || echo not_found)"
+echo "gst_inspect_010=$(which gst-inspect-0.10 2>/dev/null || echo not_found)"
 echo "amixer=$(which amixer 2>/dev/null || echo not_found)"
 echo "pactl=$(which pactl 2>/dev/null || echo not_found)"
 ]], 3) or "n/a"
@@ -634,6 +636,12 @@ echo "pactl=$(which pactl 2>/dev/null || echo not_found)"
         -- GStreamer element inspection (what does ttssrc/mixersink accept?)
         info.kindle_gst_inspect_ttssrc = shellCapture("gst-inspect-1.0 ttssrc 2>/dev/null | head -30", 3) or "n/a"
         info.kindle_gst_inspect_mixersink = shellCapture("gst-inspect-1.0 mixersink 2>/dev/null | head -30", 3) or "n/a"
+        -- v0.1.6.4: List all LIPC properties exposed by playermgr and audiomgrd.
+        -- Newer firmware (e.g. Colorsoft 5.18.6) may omit properties that exist
+        -- on older devices (e.g. tts.orchestrator "speak").
+        info.kindle_playermgr_props = shellCapture("lipc-probe com.lab126.playermgr 2>/dev/null | head -40", 3) or "n/a"
+        info.kindle_audiomgrd_props = shellCapture("lipc-probe com.lab126.audiomgrd 2>/dev/null | head -40", 3) or "n/a"
+
         -- v0.1.5.31: TTS orchestrator smoke test.
         -- Try to make the native TTS speak, which routes through the
         -- working audio pipeline (ttssrc → mixersink → audiomgrd → BT).
@@ -780,6 +788,8 @@ lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
         -- PlayParameter + raw PCM: strip the 44-byte WAV header, set
         -- GStreamer caps via PlayParameter, try Open/Play with raw audio.
         -- If mixersink accepts S16LE @ 22050 without a parser, this works.
+        -- v0.1.6.4: Also note when /var is full (raw_size=0 means the test
+        -- file could not be written, which blocks ALL audio on the device).
         info.kindle_raw_pcm_test = shellCapture([[dd if=/dev/zero bs=44100 count=1 2>/dev/null | {
   printf 'RIFF'
   printf '\x24\xac\x00\x00'
@@ -796,8 +806,13 @@ lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
   printf '\x04\xac\x00\x00'
   cat
 } > /tmp/.pcm_test.wav
-dd if=/tmp/.pcm_test.wav of=/tmp/.pcm_test.raw bs=1 skip=44 2>/dev/null
-echo "raw_size=$(wc -c < /tmp/.pcm_test.raw 2>/dev/null)"
+if [ ! -s /tmp/.pcm_test.wav ]; then
+  echo "raw_size=0  (/var full? cannot write test file)"
+  echo "df_var=$(df /var 2>/dev/null | tail -1)"
+else
+  dd if=/tmp/.pcm_test.wav of=/tmp/.pcm_test.raw bs=1 skip=44 2>/dev/null
+  echo "raw_size=$(wc -c < /tmp/.pcm_test.raw 2>/dev/null)"
+fi
 lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
 lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>/dev/null
 echo "--- PlayParameter + raw PCM (path) ---"
@@ -1162,9 +1177,22 @@ function BugReport.generate(plugin)
         version = meta.version or version
     end
 
+    -- v0.1.6.4: Prominently warn when /var is full -- this is the #1 cause
+    -- of silent audio failures on Kindle (issues #22, #23).
+    local var_warning = nil
+    if resources and resources.disk_var then
+        local var_pct = tonumber(resources.disk_var:match("(%d+)%%"))
+        if var_pct and var_pct >= 95 then
+            var_warning = "WARNING: /var is " .. var_pct .. "% full."
+                .. " This is the most common cause of silent TTS failures on Kindle."
+                .. " Please reboot the device to clear /var, then test again."
+        end
+    end
+
     local sections = {
         "=== Audiobook Read-Along Bug Report (v" .. version .. ") ===",
         "Generated: " .. timestamp,
+        var_warning and "\n*** " .. var_warning .. " ***\n" or nil,
         "",
         formatSection("Device", device),
         "",

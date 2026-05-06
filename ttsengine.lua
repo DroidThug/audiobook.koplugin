@@ -439,20 +439,16 @@ function TTSEngine:synthesizeCommand(text, callback)
             local use_pct = tonumber(df_line:match("(%d+)%%"))
             if use_pct and use_pct >= 95 then
                 logger.warn("TTSEngine: /var is", use_pct, "% full -- synthesis will fail")
+                -- Try to free a little space, but warn regardless.
+                -- On Kindle /tmp is a symlink to /var/tmp; when /var is full
+                -- even a tiny WAV file may fail to write.
                 os.execute("rm -f /var/tmp/audiomgrd.err /var/tmp/*.tmp 2>/dev/null")
-                local df2 = io.popen("df /var 2>/dev/null | tail -1")
-                if df2 then
-                    local df2_line = df2:read("*a") or ""; df2:close()
-                    local pct2 = tonumber(df2_line:match("(%d+)%%"))
-                    if pct2 and pct2 >= 98 then
-                        UIManager:show(InfoMessage:new{
-                            text = _("Temporary storage is full (" .. pct2 .. "% used).\n\nTTS synthesis needs space in /tmp to create audio files. Try rebooting your Kindle to clear temporary files, then try again."),
-                            timeout = 12,
-                        })
-                        if callback then callback(false, nil) end
-                        return false
-                    end
-                end
+                UIManager:show(InfoMessage:new{
+                    text = _("Temporary storage is full (" .. use_pct .. "% used).\n\nTTS synthesis needs space in /tmp to create audio files.\n\nPlease reboot your Kindle to clear temporary files, then try again."),
+                    timeout = 12,
+                })
+                if callback then callback(false, nil) end
+                return false
             end
         end
     end
@@ -1526,22 +1522,17 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                 local df_line = df_h:read("*a") or ""; df_h:close()
                 local use_pct = tonumber(df_line:match("(%d+)%%"))
                 if use_pct and use_pct >= 95 then
-                    logger.warn("TTSEngine: /var is", use_pct, "% full -- TTS may fail")
-                    -- Try to free space: remove known safe temp files
+                    logger.warn("TTSEngine: /var is", use_pct, "% full -- native TTS will fail")
+                    self._var_full = true
+                    -- Try to free a little space, but warn regardless
                     os.execute("rm -f /var/tmp/audiomgrd.err /var/tmp/*.tmp 2>/dev/null")
-                    -- Re-check
-                    local df2 = io.popen("df /var 2>/dev/null | tail -1")
-                    if df2 then
-                        local df2_line = df2:read("*a") or ""; df2:close()
-                        local pct2 = tonumber(df2_line:match("(%d+)%%"))
-                        if pct2 and pct2 >= 98 then
-                            self._var_full = true
-                            UIManager:show(InfoMessage:new{
-                                text = _("/var is full (" .. pct2 .. "% used).\n\nThe Kindle's native TTS engine needs temporary space in /var to synthesize speech. With /var full, playback will silently fail.\n\nTry rebooting your Kindle to clear /var, then try again."),
-                                timeout = 15,
-                            })
-                        end
-                    end
+                    UIManager:show(InfoMessage:new{
+                        text = _("/var is full (" .. use_pct .. "% used).\n\nThe Kindle's native TTS engine needs temporary space in /var to synthesize speech. With /var full, playback will silently fail.\n\nPlease reboot your Kindle to clear /var, then try again."),
+                        timeout = 15,
+                    })
+                    self.is_speaking = false
+                    self:onPlaybackComplete()
+                    return true
                 end
             end
         end
