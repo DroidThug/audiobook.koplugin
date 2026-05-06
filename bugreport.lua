@@ -634,8 +634,10 @@ echo "pactl=$(which pactl 2>/dev/null || echo not_found)"
         -- Full A2DP socket state (both .a2dp_ctrl and .a2dp_data)
         info.kindle_a2dp_sockets = shellCapture("cat /proc/net/unix 2>/dev/null | grep -i a2dp", 3) or "none"
         -- GStreamer element inspection (what does ttssrc/mixersink accept?)
-        info.kindle_gst_inspect_ttssrc = shellCapture("gst-inspect-1.0 ttssrc 2>/dev/null | head -30", 3) or "n/a"
-        info.kindle_gst_inspect_mixersink = shellCapture("gst-inspect-1.0 mixersink 2>/dev/null | head -30", 3) or "n/a"
+        info.kindle_gst_inspect_ttssrc = shellCapture("gst-inspect-0.10 ttssrc 2>/dev/null | head -40", 3) or "n/a"
+        info.kindle_gst_inspect_mixersink = shellCapture("gst-inspect-0.10 mixersink 2>/dev/null | head -40", 3) or "n/a"
+        info.kindle_gst_inspect_fdsrc = shellCapture("gst-inspect-0.10 fdsrc 2>/dev/null | head -30", 3) or "n/a"
+        info.kindle_gst_inspect_capsfilter = shellCapture("gst-inspect-0.10 capsfilter 2>/dev/null | head -30", 3) or "n/a"
         -- v0.1.6.4: List all LIPC properties exposed by playermgr and audiomgrd.
         -- Newer firmware (e.g. Colorsoft 5.18.6) may omit properties that exist
         -- on older devices (e.g. tts.orchestrator "speak").
@@ -831,6 +833,47 @@ echo "inplayback_raw_uri=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
 lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
 rm -f /tmp/.pcm_test.wav /tmp/.pcm_test.raw
 ]], 20) or "failed"
+
+        -- v0.1.6.5: kindle-gst-play --ttssrc test.
+        -- On Colorsoft, playermgr is non-functional but ttssrc bypasses it.
+        local plugin_dir = info.plugin_dir or "plugins/audiobook.koplugin/"
+        local gst_play_bin = plugin_dir .. "kindle/gst-play"
+        info.kindle_gst_ttssrc_test = shellCapture(
+            "echo '--- kindle-gst-play --ttssrc ---'; "
+            .. "'" .. gst_play_bin .. "' --ttssrc 'hello world' 2>&1; "
+            .. "echo 'exit_code=$?'",
+            15) or "failed"
+
+        -- v0.1.6.5: Try different audiomgrd setFocus values.
+        -- Colorsoft may need a specific client name to grant audio focus.
+        info.kindle_setfocus_test = shellCapture([[
+echo "--- setFocus tts ---"
+lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>&1
+echo "--- setFocus playermgr ---"
+lipc-set-prop com.lab126.audiomgrd setFocus 'playermgr' 2>&1
+echo "--- setFocus com.lab126.playermgr ---"
+lipc-set-prop com.lab126.audiomgrd setFocus 'com.lab126.playermgr' 2>&1
+echo "--- setFocus com.lab126.koreader.tts ---"
+lipc-set-prop com.lab126.audiomgrd setFocus 'com.lab126.koreader.tts' 2>&1
+]], 10) or "failed"
+
+        -- v0.1.6.5: Raw PCM via gst-launch-0.10 with explicit caps.
+        -- If mixersink accepts raw audio without wavparse, this works.
+        info.kindle_gst_raw_pipeline_test = shellCapture([[dd if=/dev/zero bs=44100 count=1 2>/dev/null | {
+  printf 'RIFF\x24\xac\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x22\x56\x00\x00\x44\xac\x00\x00\x02\x00\x10\x00data\x04\xac\x00\x00'
+  cat
+} > /tmp/.gst_raw_test.wav 2>/dev/null
+dd if=/tmp/.gst_raw_test.wav of=/tmp/.gst_raw_test.raw bs=1 skip=44 2>/dev/null
+if [ -s /tmp/.gst_raw_test.raw ]; then
+  echo "--- filesrc + capsfilter raw PCM ---"
+  timeout 3 gst-launch-0.10 -v filesrc location=/tmp/.gst_raw_test.raw ! capsfilter caps="audio/x-raw-int,rate=22050,channels=1,width=16,depth=16,signed=true,endianness=1234" ! mixersink 2>&1 | head -15
+  echo "--- fdsrc + capsfilter raw PCM ---"
+  timeout 3 gst-launch-0.10 -v fdsrc location=/tmp/.gst_raw_test.raw ! capsfilter caps="audio/x-raw-int,rate=22050,channels=1,width=16,depth=16,signed=true,endianness=1234" ! mixersink 2>&1 | head -15
+else
+  echo "raw_file_missing=/var_full?"
+fi
+rm -f /tmp/.gst_raw_test.wav /tmp/.gst_raw_test.raw
+]], 15) or "failed"
 
         -- amixer: check ALSA mixer controls (audiomgrd may expose some)
         info.kindle_amixer = shellCapture("amixer 2>&1 | head -20", 3) or "n/a"

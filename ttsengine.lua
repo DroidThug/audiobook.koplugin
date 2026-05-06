@@ -1568,6 +1568,100 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                 return true
             end
         end
+        -- v0.1.6.5: On Colorsoft (and other devices where kindle-gst-play
+        -- --ttssrc is available), bypass playermgr entirely and use ttssrc
+        -- directly.  ttssrc connects to the TTS orchestrator (Ivona SDK) and
+        -- routes audio through mixersink → audiomgrd → BT, bypassing the
+        -- broken playermgr Open/PlayParameter path (issue #23).
+        if is_fallback and self._kindle_gst_play_bin then
+            logger.warn("TTSEngine: Kindle native TTS via kindle-gst-play --ttssrc")
+
+            local function escapeForGst(s)
+                return s:gsub('\\', '\\\\'):gsub('"', '\\"'):gsub("\n", " ")
+            end
+            local function shellEsc(s)
+                return "'" .. s:gsub("'", "'\\''") .. "'"
+            end
+            local escaped_text = escapeForGst(text)
+
+            local pid_file = "/tmp/.ttssrc_pid_" .. my_gen
+            local done_file = "/tmp/.ttssrc_done_" .. my_gen
+            os.remove(pid_file)
+            os.remove(done_file)
+
+            local cmd = string.format(
+                "%s --ttssrc %s > /dev/null 2>&1 & pid=$!; echo $pid > %s; (wait $pid; echo $? > %s) &",
+                self._kindle_gst_play_bin, shellEsc(escaped_text),
+                pid_file, done_file
+            )
+            os.execute(cmd)
+
+            self._audio_launched_at = UIManager:getTime()
+            self:startTimingLoop()
+
+            local engine = self
+            local poll_count = 0
+            local max_polls = math.max(300, math.floor(dur_ms * 3 / 100))
+            local startup_polls = 15
+            local function pollTtsSrcDone()
+                if (engine.play_generation or 0) ~= my_gen then return end
+                if not engine.is_speaking then return end
+                if engine.is_paused then
+                    UIManager:scheduleIn(0.3, pollTtsSrcDone)
+                    return
+                end
+                poll_count = poll_count + 1
+                if poll_count > startup_polls then
+                    local df = io.open(done_file, "r")
+                    if df then
+                        local rc = df:read("*a") or ""
+                        df:close()
+                        os.remove(done_file)
+                        os.remove(pid_file)
+                        local exit_code = tonumber(rc:match("(%d+)")) or 1
+                        if exit_code == 0 then
+                            logger.warn("TTSEngine: kindle-gst-play --ttssrc completed")
+                            engine._ttssrc_consec_fails = 0
+                            engine:onPlaybackComplete()
+                            return
+                        else
+                            logger.err("TTSEngine: kindle-gst-play --ttssrc failed, code=", exit_code)
+                            engine._ttssrc_consec_fails = (engine._ttssrc_consec_fails or 0) + 1
+                            if engine._ttssrc_consec_fails >= 2 then
+                                engine._kindle_gst_play_bin = nil
+                                engine.is_speaking = false
+                                engine.play_generation = (engine.play_generation or 0) + 1
+                                engine:cleanup()
+                                UIManager:show(InfoMessage:new{
+                                    text = _("Kindle native TTS failed.\n\nThe text-to-speech engine could not produce audio. Please generate a bug report and share it on GitHub."),
+                                    timeout = 10,
+                                })
+                                return
+                            end
+                            engine:onPlaybackComplete()
+                            return
+                        end
+                    end
+                end
+                if poll_count >= max_polls then
+                    logger.warn("TTSEngine: kindle-gst-play --ttssrc timed out")
+                    local pf = io.open(pid_file, "r")
+                    local pid = pf and pf:read("*a"):match("%d+")
+                    if pf then pf:close() end
+                    if pid then
+                        os.execute("kill " .. pid .. " 2>/dev/null")
+                    end
+                    os.remove(done_file)
+                    os.remove(pid_file)
+                    engine:onPlaybackComplete()
+                else
+                    UIManager:scheduleIn(0.1, pollTtsSrcDone)
+                end
+            end
+            UIManager:scheduleIn(0.1, pollTtsSrcDone)
+            return true
+        end
+
         -- JSON-escape the text for the PlayParameter payload
         local json_text = text:gsub('\\', '\\\\'):gsub('"', '\\"')
                               :gsub('\n', '\\n'):gsub('\r', '\\r'):gsub('\t', '\\t')
@@ -2737,7 +2831,23 @@ function TTSEngine:findAudioPlayer()
                 -- pipeline starts but cannot produce audio (issue #23).
                 local is_colorsoft = Device.model and Device.model == "KindleColorSoft"
                 if is_colorsoft then
-                    logger.warn("TTSEngine: skipping kindle-gst-play on Kindle Colorsoft (known broken)")
+                    logger.warn("TTSEngine: skipping kindle-gst-play WAV mode on Kindle Colorsoft (known broken)")
+                    -- v0.1.6.5: Keep kindle-gst-play for --ttssrc mode.
+                    -- ttssrc bypasses playermgr entirely (which is non-functional
+                    -- on Colorsoft) and routes text directly to the Ivona SDK.
+                    local gst_play_bin = plugin_dir .. "/kindle/gst-play"
+                    local gf = io.open(gst_play_bin, "r")
+                    if gf then
+                        gf:close()
+                        local gst_play_cmd = gst_play_bin
+                        if self.espeak_linker then
+                            gst_play_cmd = string.format(
+                                "%s --library-path %s:/usr/lib:/lib %s",
+                                self.espeak_linker, self.espeak_lib_path, gst_play_bin)
+                        end
+                        self._kindle_gst_play_bin = gst_play_cmd
+                        logger.warn("TTSEngine: kindle-gst-play available for --ttssrc mode")
+                    end
                 elseif not self._gst_play_broken then
                     local plugin_dir = self.plugin_dir or "."
                     local gst_play_bin = plugin_dir .. "/kindle/gst-play"
