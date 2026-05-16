@@ -46,6 +46,10 @@ local PlaybackBar = InputContainer:extend{
     on_forward = nil,
     on_close = nil,
     on_realign = nil,
+    -- Scrubber mode for audio file playback
+    scrubber_mode = false,
+    on_seek = nil,
+    current_time_str = "",
 }
 
 function PlaybackBar:init()
@@ -142,18 +146,24 @@ function PlaybackBar:setupUI()
         show_parent = self,
     }
     
-    -- Current word display
+    -- Current word display (time in scrubber mode, word in TTS mode)
+    local display_text = self.current_word or _("Starting...")
+    if self.scrubber_mode then
+        display_text = self.current_time_str ~= "" and self.current_time_str or "0:00 / 0:00"
+    end
     self.word_display = TextWidget:new{
-        text = self.current_word or _("Starting..."),
+        text = display_text,
         face = Font:getFace("cfont", 16),
         max_width = self.width - button_width * 5 - spacing * 7,
         truncate_left = true,
     }
     
     -- Progress bar — tall enough to be clearly visible on e-ink
+    -- In scrubber mode we enlarge the touch target vertically
+    local bar_height = Screen:scaleBySize(10)
     self.progress_bar = ProgressWidget:new{
         width = self.width - Size.padding.large * 2,
-        height = Screen:scaleBySize(10),
+        height = bar_height,
         percentage = self.progress / 100,
         fillcolor = Blitbuffer.COLOR_BLACK,
         bgcolor = Blitbuffer.COLOR_LIGHT_GRAY,
@@ -165,6 +175,10 @@ function PlaybackBar:setupUI()
         tick_width = 0,
         last = nil,
     }
+    -- Scrubber touch area: larger than the visual bar for easier targeting
+    self._scrubber_touch_height = Screen:scaleBySize(30)
+    self._scrubber_dragging = false
+    self._scrubber_drag_pct = nil
     
     -- Button row
     local button_row = HorizontalGroup:new{
@@ -301,6 +315,60 @@ function PlaybackBar:updateProgress(progress)
     end
 end
 
+function PlaybackBar:_formatTime(seconds)
+    seconds = math.floor(seconds or 0)
+    local mins = math.floor(seconds / 60)
+    local secs = seconds % 60
+    return string.format("%d:%02d", mins, secs)
+end
+
+function PlaybackBar:updateTimeDisplay(current_sec, total_sec)
+    if not self.scrubber_mode then return end
+    local text = self:_formatTime(current_sec) .. " / " .. self:_formatTime(total_sec)
+    if text ~= self.current_time_str then
+        self.current_time_str = text
+        self.word_display:setText(text)
+        UIManager:setDirty(self, function()
+            return "ui", self.word_display.dimen
+        end)
+    end
+end
+
+function PlaybackBar:_xToPercentage(x)
+    if not self.progress_bar or not self.progress_bar.dimen then return nil end
+    local bar_left = self.progress_bar.dimen.x
+    local bar_width = self.progress_bar.dimen.w
+    if not bar_left or not bar_width or bar_width <= 0 then return nil end
+    local pct = (x - bar_left) / bar_width
+    pct = math.max(0, math.min(1, pct))
+    return pct
+end
+
+function PlaybackBar:_updateScrubberPreview(x)
+    local pct = self:_xToPercentage(x)
+    if not pct then return end
+    self._scrubber_drag_pct = pct
+    -- Update progress bar visually without triggering seek
+    self.progress_bar:setPercentage(pct)
+    UIManager:setDirty(self, function()
+        return "ui", self.progress_bar.dimen
+    end)
+end
+
+function PlaybackBar:setScrubberMode(enabled)
+    enabled = enabled and true or false
+    if self.scrubber_mode == enabled then return end
+    self.scrubber_mode = enabled
+    if enabled then
+        self.word_display:setText(self.current_time_str)
+    else
+        self.word_display:setText(self.current_word or _("Starting..."))
+    end
+    UIManager:setDirty(self, function()
+        return "ui", self.word_display.dimen
+    end)
+end
+
 function PlaybackBar:setPlaying(is_playing)
     if is_playing ~= self.is_playing then
         self.is_playing = is_playing
@@ -324,6 +392,8 @@ function PlaybackBar:hide()
     self.visible = false
     self.suppressed = false
     UIManager:close(self)
+    -- Force refresh of the bar area to clear ghosting on e-ink
+    UIManager:setDirty("all", "ui")
 end
 
 --- Suppress / un-suppress painting without removing the widget from the
@@ -419,6 +489,27 @@ function PlaybackBar:handleEvent(event)
             if self:_isOverlayActive() then
                 return false
             end
+            -- Scrubber drag: update visual indicator during drag
+            if ges.ges == "pan" and self.scrubber_mode and self.visible
+                and ges.pos and self.dimen and ges.pos.y >= self.dimen.y then
+                local bar_y_center = self.dimen.y + self.progress_bar.dimen.y +
+                                     self.progress_bar.dimen.h / 2
+                if math.abs(ges.pos.y - bar_y_center) <= self._scrubber_touch_height / 2 then
+                    self:_updateScrubberPreview(ges.pos.x)
+                    self._scrubber_dragging = true
+                    return true
+                end
+            end
+            -- Scrubber release: perform seek
+            if (ges.ges == "hold_release" or ges.ges == "pan_release")
+                and self.scrubber_mode and self._scrubber_dragging then
+                self._scrubber_dragging = false
+                if self._scrubber_drag_pct and self.on_seek then
+                    self.on_seek(self._scrubber_drag_pct)
+                    self._scrubber_drag_pct = nil
+                end
+                return true
+            end
             -- Tap during active playback
             if ges.ges == "tap" and self.visible then
                 -- When the bar is suppressed (paused_only mode while playing)
@@ -427,6 +518,19 @@ function PlaybackBar:handleEvent(event)
                 if self.suppressed then
                     self:onPlayPause()
                     return true
+                end
+                -- Scrubber tap on progress bar
+                if self.scrubber_mode and ges.pos and self.dimen
+                    and ges.pos.y >= self.dimen.y then
+                    local bar_y_center = self.dimen.y + self.progress_bar.dimen.y +
+                                         self.progress_bar.dimen.h / 2
+                    if math.abs(ges.pos.y - bar_y_center) <= self._scrubber_touch_height / 2 then
+                        local pct = self:_xToPercentage(ges.pos.x)
+                        if pct and self.on_seek then
+                            self.on_seek(pct)
+                        end
+                        return true
+                    end
                 end
                 -- Taps inside the bar area: dispatch to buttons
                 if ges.pos and self.dimen and ges.pos.y >= self.dimen.y then

@@ -23,7 +23,7 @@ local PLUGIN_PATH
 
 local Audiobook = WidgetContainer:extend{
     name = "audiobook",
-    is_doc_only = true,
+    is_doc_only = false,
 }
 
 function Audiobook:init()
@@ -131,61 +131,99 @@ end
 
 function Audiobook:_initSubmodules()
     -- ── Orphan cleanup from previous crash/SIGKILL ──
-    -- If KOReader was killed (OOM, watchdog, etc.), no Lua cleanup ran.
-    -- Kill any orphan processes from the previous session to free the
-    -- BT audio socket and reclaim CPU/memory.
     self:_killOrphanProcessesFromPreviousSession()
 
-    -- Load submodules from plugin directory
     local pp = PLUGIN_PATH
-    local TextParser = dofile(pp .. "textparser.lua")
-    local TTSEngine = dofile(pp .. "ttsengine.lua")
-    local HighlightManager = dofile(pp .. "highlightmanager.lua")
-    local SyncController = dofile(pp .. "synccontroller.lua")
-    self.bt_manager = dofile(pp .. "btmanager.lua")
-    
-    self.text_parser = TextParser:new()
-    self.tts_engine = TTSEngine:new{
-        plugin = self,
-        plugin_dir = pp:sub(1, -2), -- strip trailing slash
-    }
-    -- Restore saved TTS backend selection (if user explicitly chose one)
-    local saved_backend = self:getSetting("tts_backend", nil)
-    if saved_backend then
-        self.tts_engine:setBackend(saved_backend)
+    local has_document = self.ui and self.ui.document
+
+    -- ── TTS / read-along modules (only when a document is open) ──
+    if has_document then
+        local ok_tts, err_tts = pcall(function()
+            local TextParser = dofile(pp .. "textparser.lua")
+            local TTSEngine = dofile(pp .. "ttsengine.lua")
+            local HighlightManager = dofile(pp .. "highlightmanager.lua")
+            local SyncController = dofile(pp .. "synccontroller.lua")
+            self.bt_manager = dofile(pp .. "btmanager.lua")
+
+            self.text_parser = TextParser:new()
+            self.tts_engine = TTSEngine:new{
+                plugin = self,
+                plugin_dir = pp:sub(1, -2),
+            }
+            local saved_backend = self:getSetting("tts_backend", nil)
+            if saved_backend then
+                self.tts_engine:setBackend(saved_backend)
+            end
+            self.tts_engine:setRate(self:getSetting("speech_rate", 1.0))
+            self.tts_engine:setPitch(self:getSetting("speech_pitch", 50))
+            self.tts_engine:setVolume(self:getSetting("speech_volume", 1.0))
+            local voice_base = self:getSetting("tts_voice", "en")
+            local voice_variant = self:getSetting("tts_voice_variant", "")
+            local full_voice = voice_base
+            if voice_variant ~= "" then
+                full_voice = voice_base .. "+" .. voice_variant
+            end
+            self.tts_engine:setVoice(full_voice)
+            self.tts_engine:setWordGap(self:getSetting("word_gap", 2))
+            self.tts_engine:setClausePause(self:getSetting("clause_pause", 0))
+            local piper_model = self:getSetting("piper_model", nil)
+            if piper_model then
+                self.tts_engine:setPiperModel(piper_model)
+            end
+            self.tts_engine:setPiperSpeaker(self:getSetting("piper_speaker", 0))
+            self.tts_engine._gap_test_mode = self:getSetting("gap_test_mode", false)
+            self.highlight_manager = HighlightManager:new{
+                plugin = self,
+                ui = self.ui,
+                style = self:getSetting("highlight_style", "background"),
+            }
+            self.sync_controller = SyncController:new{
+                plugin = self,
+                tts_engine = self.tts_engine,
+                highlight_manager = self.highlight_manager,
+                text_parser = self.text_parser,
+            }
+        end)
+        if not ok_tts then
+            logger.warn("Audiobook: TTS modules failed to load:", err_tts)
+        end
     end
-    -- Restore saved voice settings
-    self.tts_engine:setRate(self:getSetting("speech_rate", 1.0))
-    self.tts_engine:setPitch(self:getSetting("speech_pitch", 50))
-    self.tts_engine:setVolume(self:getSetting("speech_volume", 1.0))
-    -- Compose full voice id: base accent + optional variant (e.g. "en-us+f1")
-    local voice_base = self:getSetting("tts_voice", "en")
-    local voice_variant = self:getSetting("tts_voice_variant", "")
-    local full_voice = voice_base
-    if voice_variant ~= "" then
-        full_voice = voice_base .. "+" .. voice_variant
+
+    -- ── Clean old cached cover art ──
+    pcall(function()
+        local MetadataParser = dofile(pp .. "m4bparser.lua")
+        if MetadataParser then
+            MetadataParser:clearOldCoverArt(pp, 30)
+        end
+    end)
+
+    -- ── Clean old transcoded files ──
+    pcall(function()
+        local Transcoder = dofile(pp .. "transcoder.lua")
+        if Transcoder then
+            Transcoder:new{plugin_dir = pp}:clearOldTranscodes(30)
+        end
+    end)
+
+    -- ── Media playback modules (always load; works without a document) ──
+    local ok_media, err_media = pcall(function()
+        local MediaEngine = dofile(pp .. "mediaengine.lua")
+        local MediaSync = dofile(pp .. "mediasync.lua")
+        local Transcoder = dofile(pp .. "transcoder.lua")
+        self.media_engine = MediaEngine:new{plugin = self, plugin_dir = pp:sub(1, -2)}
+        self.transcoder = Transcoder:new{plugin_dir = pp}
+        self.media_sync = MediaSync:new{
+            plugin = self,
+            media_engine = self.media_engine,
+            highlight_manager = self.highlight_manager, -- may be nil
+        }
+    end)
+    if not ok_media then
+        logger.warn("Audiobook: media modules failed to load:", err_media)
+        self.media_engine = nil
+        self.media_sync = nil
+        self.transcoder = nil
     end
-    self.tts_engine:setVoice(full_voice)
-    self.tts_engine:setWordGap(self:getSetting("word_gap", 2))
-    self.tts_engine:setClausePause(self:getSetting("clause_pause", 0))
-    -- Restore Piper-specific settings
-    local piper_model = self:getSetting("piper_model", nil)
-    if piper_model then
-        self.tts_engine:setPiperModel(piper_model)
-    end
-    self.tts_engine:setPiperSpeaker(self:getSetting("piper_speaker", 0))
-    self.tts_engine._gap_test_mode = self:getSetting("gap_test_mode", false)
-    self.highlight_manager = HighlightManager:new{
-        plugin = self,
-        ui = self.ui,
-        style = self:getSetting("highlight_style", "background"),
-    }
-    self.sync_controller = SyncController:new{
-        plugin = self,
-        tts_engine = self.tts_engine,
-        highlight_manager = self.highlight_manager,
-        text_parser = self.text_parser,
-    }
 end
 
 function Audiobook:onDispatcherRegisterActions()
@@ -252,16 +290,69 @@ function Audiobook:addToMainMenu(menu_items)
         return
     end
 
+    local has_doc = self.ui and self.ui.document
+
     menu_items.audiobook = {
         text = _("Audiobook Read-Along"),
         sorting_hint = "tools",
         sub_item_table = {
+            -- ── TTS read-along (document required) ──
             {
                 text = _("Start reading from current page"),
+                enabled_func = function() return has_doc end,
                 callback = function()
                     if not self._init_ok then self:_showInitError(); return end
                     self:startReadAlong()
                 end,
+            },
+            -- ── Media playback (audio files & EPUB overlays) ──
+            {
+                text = _("Play with audiobook"),
+                enabled_func = function()
+                    return has_doc and self._init_ok and self.media_sync ~= nil and self:_hasMediaOverlays()
+                end,
+                callback = function()
+                    self:startMediaPlayback()
+                end,
+            },
+            {
+                text = _("Open audio file..."),
+                enabled_func = function()
+                    return self._init_ok and self.media_sync ~= nil
+                end,
+                callback = function()
+                    self:openAudioFile()
+                end,
+            },
+            {
+                text = _("Open audio + text..."),
+                enabled_func = function()
+                    return self._init_ok and self.media_sync ~= nil
+                end,
+                callback = function()
+                    self:openAudioWithText()
+                end,
+            },
+            {
+                text = _("Alignment"),
+                enabled_func = function()
+                    return self._init_ok and self.media_sync ~= nil
+                end,
+                sub_item_table = {
+                    {
+                        text = _("Load alignment file"),
+                        callback = function()
+                            self:loadAlignmentFile()
+                        end,
+                    },
+                    {
+                        text = _("Generate sentence alignment"),
+                        enabled_func = function() return has_doc end,
+                        callback = function()
+                            self:generateAlignment()
+                        end,
+                    },
+                },
             },
             -- ── Bluetooth settings ──
             {
@@ -288,7 +379,7 @@ function Audiobook:addToMainMenu(menu_items)
                                 BtMediaControl.stop()
                             end
                         end,
-                        help_text = _("When enabled, play/pause/next/prev buttons on a Bluetooth headset or speaker will control TTS playback. The connected device will also show playback status."),
+                        help_text = _("When enabled, play/pause/next/prev buttons on a Bluetooth headset or speaker will control playback. The connected device will also show playback status."),
                     },
                     {
                         text_func = function()
@@ -304,10 +395,11 @@ function Audiobook:addToMainMenu(menu_items)
                     },
                 },
             },
-            -- ── Voice settings ──
+            -- ── Voice settings (document required) ──
             {
                 text_func = function()
                     if not self._init_ok then return _("Voice settings") end
+                    if not self.tts_engine then return _("Voice settings (N/A)") end
                     if self.tts_engine.backend == self.tts_engine.BACKENDS.PIPER then
                         local model_label = self:getSetting("piper_model_label", "default")
                         return T(_("Voice settings (Piper - %1)"), model_label)
@@ -319,6 +411,7 @@ function Audiobook:addToMainMenu(menu_items)
                     end
                     return T(_("Voice settings (%1)"), voice_label)
                 end,
+                enabled_func = function() return has_doc and self._init_ok and self.tts_engine ~= nil end,
                 sub_item_table_func = function()
                     return MenuBuilder.buildVoiceSettingsMenu(self)
                 end,
@@ -329,7 +422,7 @@ function Audiobook:addToMainMenu(menu_items)
                 sub_item_table = {
                     {
                         text_func = function()
-                            if not self._init_ok or not self.tts_engine._wav_play_bin then
+                            if not self._init_ok or not self.tts_engine or not self.tts_engine._wav_play_bin then
                                 return _("Audio output (PocketBook): N/A")
                             end
                             local pb_default = self.tts_engine._pb_has_tts_sm and "tts_sm" or ""
@@ -344,7 +437,7 @@ function Audiobook:addToMainMenu(menu_items)
                             return MenuBuilder.buildAlsaDeviceMenu(self)
                         end,
                         enabled_func = function()
-                            return self._init_ok and self.tts_engine._wav_play_bin ~= nil
+                            return self._init_ok and self.tts_engine and self.tts_engine._wav_play_bin ~= nil
                         end,
                         help_text = _("PocketBook devices route audio through different paths depending on firmware. The default works on most devices. Change this only if you hear no sound, distorted sound, or playback at 2-3x speed (known issue on PB631). Each option in the submenu has its own help text describing what to try."),
                     },
@@ -360,6 +453,7 @@ function Audiobook:addToMainMenu(menu_items)
                     },
                     {
                         text = _("Hide control bar while playing (experimental)"),
+                        enabled_func = function() return has_doc end,
                         checked_func = function()
                             return self:getSetting("playback_bar_visibility", "always") == "paused_only"
                         end,
@@ -383,12 +477,14 @@ function Audiobook:addToMainMenu(menu_items)
                             }
                             return T(_("Highlight style: %1"), styles[self:getSetting("highlight_style", "background")] or _("Background"))
                         end,
+                        enabled_func = function() return has_doc end,
                         sub_item_table_func = function()
                             return MenuBuilder.buildHighlightStyleMenu(self)
                         end,
                     },
                     {
                         text = _("Auto-advance pages"),
+                        enabled_func = function() return has_doc end,
                         checked_func = function()
                             return self:getSetting("auto_advance", true)
                         end,
@@ -398,6 +494,7 @@ function Audiobook:addToMainMenu(menu_items)
                     },
                     {
                         text = _("Highlight sentences"),
+                        enabled_func = function() return has_doc end,
                         checked_func = function()
                             return self:getSetting("highlight_sentences", true)
                         end,
@@ -637,6 +734,445 @@ function Audiobook:startReadAlong(text, start_pos)
     self.sync_controller:start(page_text)
 end
 
+-- ---------------------------------------------------------------------------
+-- Media playback functions (audio files & EPUB Media Overlays)
+-- ---------------------------------------------------------------------------
+
+function Audiobook:_hasMediaOverlays()
+    if not self.ui or not self.ui.document then return false end
+    if not self.ui.rolling then return false end
+    -- Check if the current EPUB has Media Overlays in its manifest.
+    -- We do a lightweight check by looking for .smil files in the EPUB zip.
+    local doc_path = self.ui.document.file_path
+    if not doc_path then return false end
+    local ext = doc_path:match("%.([^.]+)$") or ""
+    if ext:lower() ~= "epub" then return false end
+    -- Quick zip listing check for .smil files
+    local h = io.popen('unzip -l "' .. doc_path:gsub('"', '\\"') .. '" 2>/dev/null | grep -i "\\.smil"')
+    if h then
+        local out = h:read("*a") or ""
+        h:close()
+        if out:match("%.smil") then
+            return true
+        end
+    end
+    return false
+end
+
+function Audiobook:startMediaPlayback()
+    if not self._init_ok or not self.media_sync then
+        self:_showInitError()
+        return
+    end
+
+    local doc_path = self.ui and self.ui.document and self.ui.document.file_path
+    if not doc_path then
+        UIManager:show(InfoMessage:new{
+            text = _("No document is currently open."),
+            timeout = 3,
+        })
+        return
+    end
+
+    UIManager:show(InfoMessage:new{
+        text = _("Loading Media Overlays..."),
+        timeout = 1,
+    })
+
+    UIManager:scheduleIn(0.5, function()
+        local ok, EpubMediaOverlay = pcall(dofile, PLUGIN_PATH .. "epubmediaoverlay.lua")
+        if not ok or not EpubMediaOverlay then
+            UIManager:show(InfoMessage:new{
+                text = _("Failed to load EPUB Media Overlay parser."),
+                timeout = 3,
+            })
+            return
+        end
+
+        local parser = EpubMediaOverlay:new()
+        local timing_data, err = parser:loadFromEpub(doc_path, PLUGIN_PATH:sub(1, -2))
+        if not timing_data then
+            UIManager:show(InfoMessage:new{
+                text = _("No Media Overlays found: ") .. tostring(err),
+                timeout = 3,
+            })
+            return
+        end
+
+        -- Build chapter list from timing_data if no separate chapters
+        local chapters = {}
+        -- Try to load m4b-style chapters if audio is m4b
+        if timing_data[1] and timing_data[1].audio_path then
+            local ext = timing_data[1].audio_path:match("%.([^.]+)$") or ""
+            if ext:lower() == "m4b" then
+                local ok_m4b, M4bParser = pcall(dofile, PLUGIN_PATH .. "m4bparser.lua")
+                if ok_m4b and M4bParser then
+                    local m4b = M4bParser:new()
+                    chapters = m4b:parse(timing_data[1].audio_path)
+                end
+            end
+        end
+
+        -- Find the first audio file with a real path
+        local audio_path = nil
+        for _, entry in ipairs(timing_data) do
+            if entry.audio_path then
+                audio_path = entry.audio_path
+                break
+            end
+        end
+
+        if not audio_path then
+            UIManager:show(InfoMessage:new{
+                text = _("Could not extract audio from EPUB."),
+                timeout = 3,
+            })
+            return
+        end
+
+        self.media_sync:start(audio_path, timing_data, chapters)
+    end)
+end
+
+function Audiobook:openAudioFile()
+    if not self._init_ok or not self.media_sync then
+        self:_showInitError()
+        return
+    end
+    local PathChooser = require("ui/widget/pathchooser")
+    local home_dir = require("datastorage").getDataDir() or "/mnt"
+    UIManager:show(PathChooser:new{
+        title = _("Select audio file"),
+        path = home_dir,
+        select_file = true,
+        onConfirm = function(file_path)
+            self:_playAudioFile(file_path)
+        end,
+    })
+end
+
+function Audiobook:_playAudioFile(file_path)
+    if not file_path or not self.media_sync then return end
+
+    -- Transcode unsupported formats (M4B, OGG, FLAC, etc.) to MP3.
+    -- The transcoded MP3 preserves chapters and cover art.
+    local playable_path = file_path
+    if self.transcoder and not self.transcoder:isPlayable(file_path) then
+        local cached = self.transcoder:getPlayablePath(file_path)
+        if cached then
+            playable_path = cached
+            logger.warn("Audiobook: using cached transcode", cached)
+        else
+            local InfoMessage = require("ui/widget/infomessage")
+            local busy = InfoMessage:new{
+                text = _("Transcoding to MP3...\nThis may take a minute."),
+                timeout = 0,
+            }
+            UIManager:show(busy)
+            UIManager:forceRePaint()
+
+            local ok_trans, trans_path_or_err = pcall(function()
+                return self.transcoder:transcode(file_path)
+            end)
+
+            UIManager:close(busy)
+            UIManager:forceRePaint()
+
+            if ok_trans and trans_path_or_err then
+                playable_path = trans_path_or_err
+                logger.warn("Audiobook: transcoded to", playable_path)
+            else
+                local err_msg = type(trans_path_or_err) == "string" and trans_path_or_err or "unknown error"
+                logger.err("Audiobook: transcoding failed:", err_msg)
+                UIManager:show(InfoMessage:new{
+                    text = _("Transcoding failed: ") .. err_msg,
+                    timeout = 3,
+                })
+                return
+            end
+        end
+    end
+
+    -- Probe duration and chapters from the playable file (original MP3 or transcoded)
+    local duration = self.media_engine:probeDuration(playable_path)
+    local chapters = {}
+    local cover_path = nil
+    logger.warn("Audiobook: loading parser for", playable_path)
+    local ok, MetadataParser = pcall(dofile, PLUGIN_PATH .. "m4bparser.lua")
+    if ok and MetadataParser then
+        logger.warn("Audiobook: parser loaded, creating instance")
+        local parser = MetadataParser:new{plugin_dir = PLUGIN_PATH}
+        chapters = parser:parse(playable_path)
+        cover_path = parser:extractCoverArt(playable_path, PLUGIN_PATH)
+        logger.warn("Audiobook: parser returned", chapters and #chapters or "nil", "chapters, cover=", cover_path)
+    else
+        logger.warn("Audiobook: parser load FAILED:", ok, MetadataParser)
+    end
+
+    -- For standalone audio without text alignment, we create a single
+    -- synthetic timing entry covering the whole file.
+    local timing_data = {{
+        start_time = 0,
+        end_time = duration or 3600,
+        text = _("Audio playback"),
+    }}
+    self.media_sync:start(playable_path, timing_data, chapters, cover_path)
+
+    -- Start BT media button listener if enabled
+    pcall(function()
+        if self:getSetting("bt_media_control", true) and BtMediaControl then
+            BtMediaControl.start(self)
+        end
+    end)
+end
+
+function Audiobook:openAudioWithText()
+    if not self._init_ok or not self.media_sync then
+        self:_showInitError()
+        return
+    end
+
+    local PathChooser = require("ui/widget/pathchooser")
+    local home_dir = require("datastorage").getDataDir() or "/mnt"
+
+    -- Step 1: pick audio file
+    UIManager:show(PathChooser:new{
+        title = _("Select audio file"),
+        path = home_dir,
+        select_file = true,
+        onConfirm = function(audio_path)
+            -- Step 2: pick text file
+            UIManager:show(PathChooser:new{
+                title = _("Select text file (plain text)"),
+                path = home_dir,
+                select_file = true,
+                onConfirm = function(text_path)
+                    self:_alignAndPlayAudioText(audio_path, text_path)
+                end,
+            })
+        end,
+    })
+end
+
+function Audiobook:_alignAndPlayAudioText(audio_path, text_path)
+    if not audio_path or not text_path then return end
+
+    -- Read text file
+    local f = io.open(text_path, "r")
+    if not f then
+        UIManager:show(InfoMessage:new{
+            text = _("Could not read text file."),
+            timeout = 3,
+        })
+        return
+    end
+    local text = f:read("*a") or ""
+    f:close()
+
+    if text == "" then
+        UIManager:show(InfoMessage:new{
+            text = _("Text file is empty."),
+            timeout = 3,
+        })
+        return
+    end
+
+    UIManager:show(InfoMessage:new{
+        text = _("Generating alignment..."),
+        timeout = 1,
+    })
+
+    UIManager:scheduleIn(0.5, function()
+        local ok, MediaAligner = pcall(dofile, PLUGIN_PATH .. "mediaaligner.lua")
+        if not ok or not MediaAligner then
+            UIManager:show(InfoMessage:new{
+                text = _("Failed to load alignment module."),
+                timeout = 3,
+            })
+            return
+        end
+
+        local aligner = MediaAligner:new{plugin_dir = PLUGIN_PATH:sub(1, -2)}
+        local output_path = text_path:gsub("%.[^./]+$", "") .. "_alignment.json"
+        local result, err = aligner:alignTextAudio(text, audio_path, output_path)
+
+        if not result then
+            UIManager:show(InfoMessage:new{
+                text = _("Alignment failed: ") .. tostring(err),
+                timeout = 3,
+            })
+            return
+        end
+
+        -- Load the generated alignment and start playback
+        self:_loadAlignmentAndPlay(audio_path, output_path)
+    end)
+end
+
+function Audiobook:loadAlignmentFile()
+    if not self._init_ok or not self.media_sync then
+        self:_showInitError()
+        return
+    end
+
+    local PathChooser = require("ui/widget/pathchooser")
+    local home_dir = require("datastorage").getDataDir() or "/mnt"
+    UIManager:show(PathChooser:new{
+        title = _("Select alignment JSON file"),
+        path = home_dir,
+        select_file = true,
+        onConfirm = function(json_path)
+            -- Derive audio path from JSON filename or prompt user
+            local audio_path = json_path:gsub("_alignment%.json$", ".m4b")
+            if not audio_path or audio_path == json_path then
+                audio_path = json_path:gsub("_alignment%.json$", ".mp3")
+            end
+            if not audio_path or audio_path == json_path then
+                -- Ask user to pick audio file
+                UIManager:show(PathChooser:new{
+                    title = _("Select matching audio file"),
+                    path = home_dir,
+                    select_file = true,
+                    onConfirm = function(a_path)
+                        self:_loadAlignmentAndPlay(a_path, json_path)
+                    end,
+                })
+                return
+            end
+            self:_loadAlignmentAndPlay(audio_path, json_path)
+        end,
+    })
+end
+
+function Audiobook:_loadAlignmentAndPlay(audio_path, json_path)
+    if not audio_path or not json_path then return end
+
+    local f = io.open(json_path, "r")
+    if not f then
+        UIManager:show(InfoMessage:new{
+            text = _("Could not read alignment file."),
+            timeout = 3,
+        })
+        return
+    end
+    local json_str = f:read("*a") or ""
+    f:close()
+
+    if json_str == "" then
+        UIManager:show(InfoMessage:new{
+            text = _("Alignment file is empty."),
+            timeout = 3,
+        })
+        return
+    end
+
+    -- Parse JSON (lightweight)
+    local ok, alignment = pcall(function()
+        -- Try KOReader's built-in JSON first
+        local json = require("json")
+        return json.decode(json_str)
+    end)
+    if not ok or not alignment then
+        -- Fallback: basic manual parsing for our known format
+        UIManager:show(InfoMessage:new{
+            text = _("Failed to parse alignment JSON."),
+            timeout = 3,
+        })
+        return
+    end
+
+    if not alignment.sentences or #alignment.sentences == 0 then
+        UIManager:show(InfoMessage:new{
+            text = _("Alignment file contains no sentences."),
+            timeout = 3,
+        })
+        return
+    end
+
+    self.media_sync:start(audio_path, alignment.sentences, {})
+end
+
+function Audiobook:generateAlignment()
+    if not self._init_ok or not self.media_sync then
+        self:_showInitError()
+        return
+    end
+
+    -- We need text. Try to get it from the current EPUB page first.
+    local text = self:getCurrentPageText()
+    if not text or text == "" then
+        UIManager:show(InfoMessage:new{
+            text = _("No text available. Open an EPUB and try again, or use Open audio + text..."),
+            timeout = 3,
+        })
+        return
+    end
+
+    local PathChooser = require("ui/widget/pathchooser")
+    local home_dir = require("datastorage").getDataDir() or "/mnt"
+    UIManager:show(PathChooser:new{
+        title = _("Select audio file to align"),
+        path = home_dir,
+        select_file = true,
+        onConfirm = function(audio_path)
+            self:_alignAndPlayAudioText(audio_path, nil, text)
+        end,
+    })
+end
+
+-- Overloaded helper: accepts either a text file path or raw text
+function Audiobook:_alignAndPlayAudioText(audio_path, text_path, raw_text)
+    if not audio_path then return end
+
+    local text = raw_text
+    if text_path then
+        local f = io.open(text_path, "r")
+        if f then
+            text = f:read("*a") or ""
+            f:close()
+        end
+    end
+
+    if not text or text == "" then
+        UIManager:show(InfoMessage:new{
+            text = _("No text available for alignment."),
+            timeout = 3,
+        })
+        return
+    end
+
+    UIManager:show(InfoMessage:new{
+        text = _("Generating alignment..."),
+        timeout = 1,
+    })
+
+    UIManager:scheduleIn(0.5, function()
+        local ok, MediaAligner = pcall(dofile, PLUGIN_PATH .. "mediaaligner.lua")
+        if not ok or not MediaAligner then
+            UIManager:show(InfoMessage:new{
+                text = _("Failed to load alignment module."),
+                timeout = 3,
+            })
+            return
+        end
+
+        local aligner = MediaAligner:new{plugin_dir = PLUGIN_PATH:sub(1, -2)}
+        local base = audio_path:gsub("%.[^./]+$", "")
+        local output_path = base .. "_alignment.json"
+        local result, err = aligner:alignTextAudio(text, audio_path, output_path)
+
+        if not result then
+            UIManager:show(InfoMessage:new{
+                text = _("Alignment failed: ") .. tostring(err),
+                timeout = 3,
+            })
+            return
+        end
+
+        self:_loadAlignmentAndPlay(audio_path, output_path)
+    end)
+end
+
 function Audiobook:startReadAlongFromWord(word, context)
     if not self._init_ok then self:_showInitError(); return end
     local page_text = self:getCurrentPageText()
@@ -819,6 +1355,10 @@ end
 function Audiobook:stopReadAlong()
     if not self._init_ok then return end
     logger.warn("Audiobook: stopReadAlong() called")
+    -- Stop media playback if active
+    if self.media_sync and self.media_sync.state ~= "stopped" then
+        pcall(function() self.media_sync:stop() end)
+    end
     pcall(function() BtUI.stopWatcher(self) end)
     pcall(function() BtMediaControl.stop() end)
     pcall(function() BtMediaControl.sendPlaybackStatus("stopped") end)
@@ -832,12 +1372,24 @@ end
 
 function Audiobook:pauseReadAlong()
     if not self._init_ok then return end
+    -- Pause media playback if active
+    if self.media_sync and self.media_sync.state ~= "stopped" then
+        pcall(function() self.media_sync:pause() end)
+        pcall(function() BtMediaControl.sendPlaybackStatus("paused") end)
+        return
+    end
     self.sync_controller:pause()
     pcall(function() BtMediaControl.sendPlaybackStatus("paused") end)
 end
 
 function Audiobook:resumeReadAlong()
     if not self._init_ok then return end
+    -- Resume media playback if active
+    if self.media_sync and self.media_sync.state == "paused" then
+        pcall(function() self.media_sync:resume() end)
+        pcall(function() BtMediaControl.sendPlaybackStatus("playing") end)
+        return
+    end
     self.sync_controller:resume()
     pcall(function() BtMediaControl.sendPlaybackStatus("playing") end)
 end
@@ -905,6 +1457,17 @@ end
 -- Event handlers
 function Audiobook:onAudiobookToggle()
     if not self._init_ok then self:_showInitError(); return true end
+    -- When media playback is active (no document needed), toggle that
+    if self.media_sync and self.media_sync.state ~= "stopped" then
+        if self.media_sync:isPlaying() then
+            self:pauseReadAlong()
+        elseif self.media_sync:isPaused() then
+            self:resumeReadAlong()
+        end
+        return true
+    end
+    -- Otherwise toggle TTS read-along (requires document)
+    if not self.sync_controller then return true end
     if self.sync_controller:isPlaying() then
         self:pauseReadAlong()
     elseif self.sync_controller:isPaused() then
@@ -986,7 +1549,7 @@ end
 -- visibility via paintTo (checks for overlay widgets in the stack).
 function Audiobook:onShowReaderMenu()
     if not self._init_ok then return end
-    if self.sync_controller:isPlaying() then
+    if self.sync_controller and self.sync_controller:isPlaying() then
         self._paused_by_menu = true
         self.sync_controller:pause()
     end
@@ -996,7 +1559,7 @@ function Audiobook:onCloseReaderMenu()
     if not self._init_ok then return end
     if self._paused_by_menu then
         self._paused_by_menu = false
-        if self.sync_controller:isPaused() then
+        if self.sync_controller and self.sync_controller:isPaused() then
             self.sync_controller:resume()
         end
     end
@@ -1005,7 +1568,7 @@ end
 -- Also pause for the config/bottom menu
 function Audiobook:onShowConfigMenu()
     if not self._init_ok then return end
-    if self.sync_controller:isPlaying() then
+    if self.sync_controller and self.sync_controller:isPlaying() then
         self._paused_by_menu = true
         self.sync_controller:pause()
     end
@@ -1015,7 +1578,7 @@ function Audiobook:onCloseConfigMenu()
     if not self._init_ok then return end
     if self._paused_by_menu then
         self._paused_by_menu = false
-        if self.sync_controller:isPaused() then
+        if self.sync_controller and self.sync_controller:isPaused() then
             self.sync_controller:resume()
         end
     end
@@ -1028,16 +1591,19 @@ end
 -- entire device on some Kobo models.
 function Audiobook:onSuspend()
     if not self._init_ok then return end
-    if self.sync_controller:isPlaying() or self.sync_controller:isPaused() then
-        -- Save current position so we can resume later
+    -- Handle media playback suspend
+    if self.media_sync and (self.media_sync:isPlaying() or self.media_sync:isPaused()) then
+        self._media_was_playing = self.media_sync:isPlaying()
+        pcall(function() self.media_sync:pause() end)
+        self._paused_by_suspend = true
+        logger.warn("Audiobook: Suspend — paused media playback")
+        return
+    end
+    -- Handle TTS read-along suspend
+    if self.sync_controller and (self.sync_controller:isPlaying() or self.sync_controller:isPaused()) then
         self._suspend_sentence_idx = self.sync_controller.reading_sentence_idx
         self._suspend_was_playing = self.sync_controller:isPlaying()
-
-        -- Hard-kill all audio processes to prevent kernel crash
         pcall(function() self.tts_engine:forceKillAll() end)
-
-        -- Set sync controller to paused WITHOUT clearing parsed data
-        -- (stop() would destroy everything; we just want a clean audio state)
         self.sync_controller.state = self.sync_controller.STATE.PAUSED
         self.sync_controller._user_paused = false
         if self.sync_controller.playback_bar then
@@ -1046,7 +1612,6 @@ function Audiobook:onSuspend()
                 self.sync_controller:_applyBarVisibility()
             end
         end
-
         self._paused_by_suspend = true
         logger.warn("Audiobook: Suspend — killed audio processes, will resume from sentence",
             self._suspend_sentence_idx)
@@ -1055,36 +1620,40 @@ end
 
 function Audiobook:onResume()
     if not self._init_ok then return end
-    if self._paused_by_suspend then
-        self._paused_by_suspend = false
-        local sentence_idx = self._suspend_sentence_idx
-        local was_playing = self._suspend_was_playing
-        self._suspend_sentence_idx = nil
-        self._suspend_was_playing = nil
+    if not self._paused_by_suspend then return end
+    self._paused_by_suspend = false
 
-        -- Restart playback from saved position after a delay to let the
-        -- device fully wake up and re-initialize audio hardware.
-        if was_playing and sentence_idx
-                and self.sync_controller.parsed_data then
-            UIManager:scheduleIn(1.5, function()
-                -- readNextSentence increments the index, so subtract 1
-                self.sync_controller.reading_sentence_idx = sentence_idx - 1
-                self.sync_controller.state = self.sync_controller.STATE.PLAYING
-                if self.sync_controller.playback_bar then
-                    self.sync_controller.playback_bar:updatePlayState(true)
-                end
-                -- Reset Piper warm-up flag so prefetch queue restarts cleanly
-                if self.tts_engine.backend == self.tts_engine.BACKENDS.PIPER then
-                    self.sync_controller._piper_warmed_up = false
-                end
-                logger.warn("Audiobook: Resume — restarting from sentence", sentence_idx)
-                self.sync_controller:readNextSentence()
-            end)
-        else
-            -- Not resuming playback; ensure bar visibility matches the paused state
-            if self.sync_controller and self.sync_controller._applyBarVisibility then
-                self.sync_controller:_applyBarVisibility()
+    -- Resume media playback
+    if self.media_sync and self._media_was_playing then
+        self._media_was_playing = nil
+        pcall(function() self.media_sync:resume() end)
+        logger.warn("Audiobook: Resume — resumed media playback")
+        return
+    end
+
+    -- Resume TTS read-along
+    local sentence_idx = self._suspend_sentence_idx
+    local was_playing = self._suspend_was_playing
+    self._suspend_sentence_idx = nil
+    self._suspend_was_playing = nil
+
+    if was_playing and sentence_idx and self.sync_controller
+            and self.sync_controller.parsed_data then
+        UIManager:scheduleIn(1.5, function()
+            self.sync_controller.reading_sentence_idx = sentence_idx - 1
+            self.sync_controller.state = self.sync_controller.STATE.PLAYING
+            if self.sync_controller.playback_bar then
+                self.sync_controller.playback_bar:updatePlayState(true)
             end
+            if self.tts_engine and self.tts_engine.backend == self.tts_engine.BACKENDS.PIPER then
+                self.sync_controller._piper_warmed_up = false
+            end
+            logger.warn("Audiobook: Resume — restarting from sentence", sentence_idx)
+            self.sync_controller:readNextSentence()
+        end)
+    else
+        if self.sync_controller and self.sync_controller._applyBarVisibility then
+            self.sync_controller:_applyBarVisibility()
         end
     end
 end
@@ -1127,10 +1696,16 @@ function Audiobook:_installSleepCoverOverride()
     local plugin = self
 
     UIManager.event_handlers.SleepCoverClosed = function()
+        -- Check if anything is playing (TTS or media file)
+        local is_playing = false
+        if plugin.sync_controller and (plugin.sync_controller:isPlaying() or plugin.sync_controller:isPaused()) then
+            is_playing = true
+        end
+        if plugin.media_sync and (plugin.media_sync:isPlaying() or plugin.media_sync:isPaused()) then
+            is_playing = true
+        end
         -- If "keep playing" is on AND we're actively playing, prevent suspend
-        if plugin:getSetting("keep_playing_on_lid_close", false)
-                and (plugin.sync_controller:isPlaying()
-                     or plugin.sync_controller:isPaused()) then
+        if plugin:getSetting("keep_playing_on_lid_close", false) and is_playing then
             if Device.is_cover_closed ~= nil then
                 Device.is_cover_closed = true
             end
@@ -1194,21 +1769,42 @@ function Audiobook:onSetRotationMode()
     logger.warn("Audiobook: onSetRotationMode — mode=", mode,
         "dims=", cur_w, "x", cur_h,
         "rotation=", Screen.getRotationMode and Screen:getRotationMode() or "?")
-    local was_playing = self.sync_controller:isPlaying()
+    -- Handle media playback overlay rotation.
+    -- AudiobookPlayer also catches SetRotationMode via its own handleEvent,
+    -- but we pass explicit dims here (Screen is already updated in this context).
+    local media_bar = self.media_sync and self.media_sync.playback_bar
+    logger.warn("Audiobook: onSetRotationMode — media_bar=", media_bar and "Y" or "N",
+        "visible=", media_bar and media_bar.visible or "N/A",
+        "minimized=", media_bar and media_bar._minimized or "N/A")
+    if media_bar and media_bar.visible then
+        local media_playing = self.media_sync:isPlaying()
+        if media_playing then
+            self.media_sync:pause()
+        end
+        logger.warn("Audiobook: calling media_bar:onSetDimensions(", cur_w, "x", cur_h, ")")
+        media_bar:onSetDimensions({ w = cur_w, h = cur_h })
+        if media_playing then
+            UIManager:scheduleIn(0.5, function()
+                if self.media_sync and self.media_sync:isPaused() then
+                    self.media_sync:resume()
+                end
+            end)
+        end
+        return
+    end
+
+    -- Handle TTS PlaybackBar rotation
+    local was_playing = self.sync_controller and self.sync_controller:isPlaying()
     if was_playing then
         self.sync_controller:pause()
     end
-    -- Rebuild the PlaybackBar for the new screen size.
-    -- Screen dimensions have already been updated by ReaderView before
-    -- this event reaches us.
     local bar = self.sync_controller and self.sync_controller.playback_bar
     if bar and bar.visible then
         bar:onSetDimensions()
     end
     if was_playing then
-        -- Resume after a short delay to let the rotation redraw settle
         UIManager:scheduleIn(0.5, function()
-            if self.sync_controller:isPaused() then
+            if self.sync_controller and self.sync_controller:isPaused() then
                 self.sync_controller:resume()
             end
         end)

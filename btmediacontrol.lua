@@ -416,29 +416,63 @@ function BtMediaControl._dispatchMediaEvent(event_name)
 
     logger.warn("BtMediaControl: Dispatching media event:", event_name)
 
+    -- Determine which controller is active: media_sync (audio files) or
+    -- sync_controller (TTS).  media_sync takes priority when it is not stopped.
+    local media_active = plugin.media_sync and plugin.media_sync.state ~= "stopped"
+
     if event_name == "MediaPlayPause" then
-        if plugin.sync_controller:isPlaying() then
+        if media_active then
+            if plugin.media_sync.state == "playing" then
+                plugin:pauseReadAlong()
+            elseif plugin.media_sync.state == "paused" then
+                plugin:resumeReadAlong()
+            end
+        elseif plugin.sync_controller:isPlaying() then
             plugin:pauseReadAlong()
         elseif plugin.sync_controller:isPaused() then
             plugin:resumeReadAlong()
         end
     elseif event_name == "MediaPlay" then
-        if plugin.sync_controller:isPaused() then
+        if media_active then
+            if plugin.media_sync.state == "paused" then
+                plugin:resumeReadAlong()
+            end
+        elseif plugin.sync_controller:isPaused() then
             plugin:resumeReadAlong()
         end
     elseif event_name == "MediaPause" then
-        if plugin.sync_controller:isPlaying() then
+        if media_active then
+            if plugin.media_sync.state == "playing" then
+                plugin:pauseReadAlong()
+            end
+        elseif plugin.sync_controller:isPlaying() then
             plugin:pauseReadAlong()
         end
     elseif event_name == "MediaStop" then
         plugin:stopReadAlong()
     elseif event_name == "MediaNext" then
-        if plugin.sync_controller:isPlaying() or plugin.sync_controller:isPaused() then
+        if media_active then
+            plugin.media_sync:nextChapter()
+        elseif plugin.sync_controller:isPlaying() or plugin.sync_controller:isPaused() then
             plugin.sync_controller:nextSentence()
         end
     elseif event_name == "MediaPrev" then
-        if plugin.sync_controller:isPlaying() or plugin.sync_controller:isPaused() then
+        if media_active then
+            plugin.media_sync:prevChapter()
+        elseif plugin.sync_controller:isPlaying() or plugin.sync_controller:isPaused() then
             plugin.sync_controller:prevSentence()
+        end
+    elseif event_name == "MediaFastForward" then
+        if media_active then
+            plugin.media_sync:skipForward(30)
+        elseif plugin.sync_controller:isPlaying() or plugin.sync_controller:isPaused() then
+            plugin.sync_controller:skipForward(30)
+        end
+    elseif event_name == "MediaRewind" then
+        if media_active then
+            plugin.media_sync:skipBack(30)
+        elseif plugin.sync_controller:isPlaying() or plugin.sync_controller:isPaused() then
+            plugin.sync_controller:skipBack(30)
         end
     end
 end

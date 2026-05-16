@@ -44,7 +44,8 @@ function MenuBuilder.buildVoiceSettingsMenu(plugin)
 
     -- Quick start with espeak (Piper-only): play first sentences via espeak
     -- while Piper warms up.  Only relevant when both backends are usable.
-    if plugin.tts_engine.backend == plugin.tts_engine.BACKENDS.PIPER
+    if plugin.tts_engine
+       and plugin.tts_engine.backend == plugin.tts_engine.BACKENDS.PIPER
        and plugin.tts_engine.espeak_bin then
         table.insert(menu, {
             text = _("Quick start with espeak (while Piper loads)"),

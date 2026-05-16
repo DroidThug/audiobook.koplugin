@@ -203,6 +203,7 @@ function Updater._performUpdate(plugin, release)
 
     -- Use external storage on PocketBook: /tmp is a tiny tmpfs that
     -- fills up and destabilises the device when large zips are written.
+    -- On Android /tmp does not exist, so fall back to the plugin dir.
     local tmp_dir = os.getenv("TMPDIR") or "/tmp"
     local created_ext_tmp = false
     local Device = require("device")
@@ -215,6 +216,16 @@ function Updater._performUpdate(plugin, release)
             tmp_dir = ext
             created_ext_tmp = not already_exists
         end
+    end
+    -- Verify the chosen temp directory is actually writable.
+    local test_file = tmp_dir .. "/.audiobook_update_test"
+    local test_fh = io.open(test_file, "w")
+    if not test_fh then
+        tmp_dir = _dir:gsub("/$", "")
+        logger.warn("Updater: temp dir not writable, falling back to", tmp_dir)
+    else
+        test_fh:close()
+        os.remove(test_file)
     end
     local zip_path = tmp_dir .. "/audiobook-koplugin-update.zip"
 
