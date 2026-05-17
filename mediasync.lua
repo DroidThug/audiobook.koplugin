@@ -12,6 +12,7 @@ local logger = require("logger")
 local Screen = require("device").screen
 local time = require("ui/time")
 local _ = require("gettext")
+local Geom = require("ui/geometry")
 
 local _utils_dir = debug.getinfo(1, "S").source:match("^@(.*/)[^/]*$") or "./"
 local PLUGIN_PATH = _utils_dir
@@ -458,11 +459,21 @@ function MediaSync:_startPositionPoller(gen)
                 self.playback_bar:updateTimeDisplay(pos or 0, dur or 0)
             end)
             -- Update chapter title
-            local ok_ch, ch = pcall(function() return self:getCurrentChapter() end)
+            local ok_ch, ch, ch_idx = pcall(function() return self:getCurrentChapter() end)
             if ok_ch and ch then
                 pcall(function()
                     self.playback_bar:updateChapterTitle(ch.title or "")
                 end)
+                -- Update chapter menu highlight if it's open
+                if self._chapter_menu and ch_idx then
+                    local menu = self._chapter_menu
+                    if menu.item_table.current ~= ch_idx then
+                        menu.item_table.current = ch_idx
+                        pcall(function()
+                            menu:updateItems()
+                        end)
+                    end
+                end
             end
         end
 
@@ -586,27 +597,71 @@ function MediaSync:showChapterList()
     end
     local Menu = require("ui/widget/menu")
     local CenterContainer = require("ui/widget/container/centercontainer")
+    local InputContainer = require("ui/widget/container/inputcontainer")
+
+    -- Determine which chapter is currently playing
+    local current_chapter, current_idx = self:getCurrentChapter()
+
+    -- Build menu items first so callbacks can reference the wrapper
     local menu_items = {}
     for i, ch in ipairs(self.chapters) do
         table.insert(menu_items, {
             text = (ch.title or _("Chapter") .. " " .. i) .. "  (" .. self:_formatTime(ch.start_time) .. ")",
             callback = function()
-                UIManager:close(centered_menu)
+                self._chapter_menu = nil
+                UIManager:close(chapter_window)
                 self:seekToChapter(i)
             end,
         })
     end
+    -- Highlight the current chapter in bold
+    menu_items.current = current_idx or 1
+
     local menu = Menu:new{
         title = _("Chapters"),
         item_table = menu_items,
         width = Screen:getWidth() * 0.8,
         height = Screen:getHeight() * 0.7,
     }
-    local centered_menu = CenterContainer:new{
+    self._chapter_menu = menu
+
+    local centered = CenterContainer:new{
         dimen = Screen:getSize(),
         menu,
     }
-    UIManager:show(centered_menu)
+
+    -- Full-screen wrapper that catches taps outside the menu
+    local chapter_window = InputContainer:new{
+        dimen = Screen:getSize(),
+        centered,
+    }
+
+    -- Calculate menu's on-screen rectangle for tap-outside detection
+    local menu_w = Screen:getWidth() * 0.8
+    local menu_h = Screen:getHeight() * 0.7
+    local menu_rect = Geom:new{
+        x = math.floor((Screen:getWidth() - menu_w) / 2),
+        y = math.floor((Screen:getHeight() - menu_h) / 2),
+        w = menu_w,
+        h = menu_h,
+    }
+
+    function chapter_window:onTap(arg, ges_ev)
+        if ges_ev.pos:notIntersectWith(menu_rect) then
+            self._chapter_menu = nil
+            UIManager:close(chapter_window)
+            return true
+        end
+        return false
+    end
+
+    -- Wire the Menu's X button to close the wrapper and clear the reference
+    menu.close_callback = function()
+        self._chapter_menu = nil
+        UIManager:close(chapter_window)
+    end
+
+    UIManager:show(chapter_window)
 end
 
 -- ---------------------------------------------------------------------------

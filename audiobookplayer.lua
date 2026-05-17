@@ -298,11 +298,13 @@ function AudiobookPlayer:setupUI()
         VerticalSpan:new{ width = Size.padding.small },
     }
 
-    -- Full-screen white background frame
+    -- Match the reader's configured background color so the player blends with
+    -- the user's theme instead of forcing pure white.
+    local bg_color = self:_getThemeBackground()
     self[1] = FrameContainer:new{
         width = self.width,
         height = self.height,
-        background = Blitbuffer.COLOR_WHITE,
+        background = bg_color,
         bordersize = 0,
         padding = 0,
         content,
@@ -371,7 +373,7 @@ function AudiobookPlayer:setupUI()
     self._mini_bar = FrameContainer:new{
         width = self.width,
         height = self._mini_height,
-        background = Blitbuffer.COLOR_WHITE,
+        background = self:_getThemeBackground(),
         bordersize = Size.border.thin,
         padding = 0,
         mini_row,
@@ -503,33 +505,108 @@ function AudiobookPlayer:updateOutputName(name)
     end
 end
 
+-- Read JPEG width/height from file headers without loading the image.
+local function _jpegDimensions(path)
+    local f = io.open(path, "rb")
+    if not f then return nil, nil end
+    local data = f:read(2)
+    if data ~= "\xff\xd8" then
+        f:close()
+        return nil, nil
+    end
+    while true do
+        local marker = f:read(2)
+        if not marker then break end
+        if marker:byte(1) ~= 0xFF then
+            f:close()
+            return nil, nil
+        end
+        local mtype = marker:byte(2)
+        while mtype == 0xFF do
+            local b = f:read(1)
+            if not b then f:close(); return nil, nil end
+            mtype = b:byte(1)
+        end
+        if mtype == 0xD9 then break end -- EOI
+        -- markers without payload
+        if mtype == 0xD8 or mtype == 0x01 then
+            -- continue
+        elseif mtype >= 0xD0 and mtype <= 0xD9 then
+            -- continue
+        else
+            local len_b = f:read(2)
+            if not len_b or #len_b < 2 then break end
+            local len = len_b:byte(1) * 256 + len_b:byte(2)
+            -- SOF0 / SOF1 / SOF2 contain dimensions
+            if mtype == 0xC0 or mtype == 0xC1 or mtype == 0xC2 then
+                local sof = f:read(5)
+                if sof and #sof == 5 then
+                    local h = sof:byte(2) * 256 + sof:byte(3)
+                    local w = sof:byte(4) * 256 + sof:byte(5)
+                    f:close()
+                    return w, h
+                end
+                break
+            else
+                if len > 2 then
+                    f:seek("cur", len - 2)
+                end
+            end
+        end
+    end
+    f:close()
+    return nil, nil
+end
+
 function AudiobookPlayer:_buildCoverFrame()
     local cover_height = self._cover_height or math.floor(math.min(self.width, self.height) * 0.32)
     local cover_width = self._cover_width or math.floor(cover_height * 0.75)
-    local inner_widget
+
     if self.cover_image_path then
+        local padding = Size.padding.small
+        local max_w = self.width - padding * 2
+        local max_h = cover_height - padding * 2
+
+        -- Use "cover" scaling: fill the frame and crop excess so any black
+        -- bars or matte in the source image are cropped off.
+        local img_w, img_h = _jpegDimensions(self.cover_image_path)
+        local scale_factor = 0 -- default fit-inside
+        if img_w and img_h and img_w > 0 and img_h > 0 then
+            scale_factor = math.max(max_w / img_w, max_h / img_h)
+        end
+
         local ok, image_widget = pcall(function()
             return ImageWidget:new{
                 file = self.cover_image_path,
-                width = cover_width - Size.border.thin * 2,
-                height = cover_height - Size.border.thin * 2,
-                scale_factor = 0, -- let ImageWidget auto-scale
+                width = max_w,
+                height = max_h,
+                scale_factor = scale_factor,
             }
         end)
         if ok and image_widget then
-            inner_widget = image_widget
+            return FrameContainer:new{
+                width = self.width,
+                height = cover_height,
+                background = self:_getThemeBackground(),
+                bordersize = 0,
+                padding = 0,
+                CenterContainer:new{
+                    dimen = Geom:new{ w = self.width, h = cover_height },
+                    image_widget,
+                },
+            }
         end
     end
-    if not inner_widget then
-        inner_widget = TextWidget:new{
-            text = "♪",
-            face = Font:getFace("cfont", 36),
-        }
-    end
+
+    -- Fallback: placeholder inside a framed box that blends with the theme
+    local inner_widget = TextWidget:new{
+        text = "♪",
+        face = Font:getFace("cfont", 36),
+    }
     return FrameContainer:new{
         width = cover_width,
         height = cover_height,
-        background = Blitbuffer.COLOR_LIGHT_GRAY,
+        background = self:_getThemeBackground(),
         bordersize = Size.border.thin,
         radius = Screen:scaleBySize(4),
         padding = 0,
@@ -585,6 +662,44 @@ function AudiobookPlayer:_formatTime(seconds)
     local mins = math.floor(seconds / 60)
     local secs = seconds % 60
     return string.format("%d:%02d", mins, secs)
+end
+
+-- Return the reader's configured background color so the overlay matches the
+-- user's theme (white, sepia, dark, etc.) instead of forcing pure white.
+-- KOReader widgets must manually invert for night mode; the framebuffer does
+-- not do it automatically.
+function AudiobookPlayer:_getThemeBackground()
+    local bg_color
+
+    -- Try ReaderUI's current page background first
+    if self.plugin and self.plugin.ui and self.plugin.ui.view then
+        local view = self.plugin.ui.view
+        if view.page_bgcolor then
+            bg_color = view.page_bgcolor
+        end
+    end
+
+    if not bg_color then
+        local ok, defaults = pcall(require, "defaults")
+        if ok and defaults and defaults.readSetting then
+            local bg_val = defaults:readSetting("DBACKGROUND_COLOR")
+            if bg_val then
+                bg_color = Blitbuffer.gray(bg_val * (1 / 15))
+            end
+        end
+    end
+
+    if not bg_color then
+        bg_color = Blitbuffer.COLOR_WHITE
+    end
+
+    -- Night mode: invert the grayscale value so white becomes black.
+    -- KOReader uses 8-bit e-ink colors where 0x00 = white and 0xFF = black.
+    if Screen.night_mode then
+        bg_color = 0xFF - bg_color
+    end
+
+    return bg_color
 end
 
 function AudiobookPlayer:_xToPercentage(x)

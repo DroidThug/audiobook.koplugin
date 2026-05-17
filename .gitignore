@@ -17,3 +17,8 @@ result
 
 # Misc.
 .github/*.md
+
+# Stress-test assets
+dev/generate-stress-tests.sh
+stress_test_*.mp3
+new_audio_logo.svg
