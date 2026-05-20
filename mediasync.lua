@@ -13,6 +13,7 @@ local Screen = require("device").screen
 local time = require("ui/time")
 local _ = require("gettext")
 local Geom = require("ui/geometry")
+local InfoMessage = require("ui/widget/infomessage")
 
 local _utils_dir = debug.getinfo(1, "S").source:match("^@(.*/)[^/]*$") or "./"
 local PLUGIN_PATH = _utils_dir
@@ -35,6 +36,11 @@ function MediaSync:new(o)
     o.timing_data = nil
     o.chapters = nil
     o.playback_bar = nil
+    o.playlist_files = nil
+    o.current_playlist_idx = nil
+    o.is_shuffled = false
+    o._original_playlist = nil
+    o.loop_enabled = true
 
     -- Current playback position tracking
     o._current_sentence_idx = 0
@@ -55,9 +61,9 @@ end
 -- Lifecycle
 -- ---------------------------------------------------------------------------
 
-function MediaSync:start(audio_path, timing_data, chapters, cover_path)
+function MediaSync:start(audio_path, timing_data, chapters, cover_path, playlist_files, original_path)
     if self.state == self.STATE.PLAYING or self.state == self.STATE.PAUSED then
-        self:stop()
+        self:stop(true) -- keep chapter menu open during track transitions
     end
 
     if not audio_path or not timing_data or #timing_data == 0 then
@@ -69,6 +75,37 @@ function MediaSync:start(audio_path, timing_data, chapters, cover_path)
     self.timing_data = timing_data
     self.chapters = chapters or {}
     self.cover_path = cover_path
+
+    -- Detect same-playlist BEFORE overwriting self.playlist_files,
+    -- otherwise same_playlist is always true on first load and
+    -- _original_playlist never gets saved.
+    local same_playlist = playlist_files and self.playlist_files == playlist_files
+    self.playlist_files = playlist_files
+
+    -- Only reset shuffle state when starting a brand-new playlist.
+    -- If playlist_files is the same table reference, we're transitioning
+    -- between tracks within the same shuffled playlist.
+    if not same_playlist then
+        self.is_shuffled = false
+        self._original_playlist = nil
+    end
+    self.current_playlist_idx = nil
+    if playlist_files then
+        if not same_playlist then
+            -- Save original order so shuffle can be toggled
+            self._original_playlist = {}
+            for i, f in ipairs(playlist_files) do
+                self._original_playlist[i] = {name = f.name, path = f.path}
+            end
+        end
+        local lookup_path = original_path or audio_path
+        for i, f in ipairs(playlist_files) do
+            if f.path == lookup_path then
+                self.current_playlist_idx = i
+                break
+            end
+        end
+    end
     self._current_sentence_idx = 1
     self._current_word_idx = 1
     self._chain_generation = self._chain_generation + 1
@@ -83,6 +120,16 @@ function MediaSync:start(audio_path, timing_data, chapters, cover_path)
         logger.err("MediaSync: failed to load audio", audio_path)
         self.state = self.STATE.STOPPED
         return false
+    end
+
+    -- Sync playlist menu highlight if it's open
+    if self._chapter_menu and self.current_playlist_idx then
+        pcall(function()
+            if self._chapter_menu.item_table.current ~= self.current_playlist_idx then
+                self._chapter_menu.item_table.current = self.current_playlist_idx
+                self._chapter_menu:updateItems()
+            end
+        end)
     end
 
     -- Show playback bar in scrubber mode
@@ -109,7 +156,7 @@ function MediaSync:start(audio_path, timing_data, chapters, cover_path)
     return true
 end
 
-function MediaSync:stop()
+function MediaSync:stop(keep_chapter_menu)
     local was_playing = self.state ~= self.STATE.STOPPED
     self.state = self.STATE.STOPPED
     self._chain_generation = self._chain_generation + 1
@@ -131,6 +178,15 @@ function MediaSync:stop()
     end
     if self.playback_bar then
         pcall(function() self.playback_bar:hide() end)
+    end
+    if not keep_chapter_menu then
+        if self._chapter_menu_window then
+            pcall(function() UIManager:close(self._chapter_menu_window) end)
+            self._chapter_menu_window = nil
+        end
+        if self._chapter_menu then
+            self._chapter_menu = nil
+        end
     end
 
     if was_playing then
@@ -239,6 +295,13 @@ function MediaSync:prevSentence()
 end
 
 function MediaSync:nextChapter()
+    if self.playlist_files and #self.playlist_files > 0 then
+        local idx = (self.current_playlist_idx or 1) + 1
+        if idx <= #self.playlist_files then
+            self:switchToPlaylistFile(idx)
+        end
+        return
+    end
     if not self.chapters or #self.chapters == 0 then return end
     local current_time = self.media_engine:getPosition()
     for i, ch in ipairs(self.chapters) do
@@ -250,6 +313,13 @@ function MediaSync:nextChapter()
 end
 
 function MediaSync:prevChapter()
+    if self.playlist_files and #self.playlist_files > 0 then
+        local idx = (self.current_playlist_idx or 1) - 1
+        if idx >= 1 then
+            self:switchToPlaylistFile(idx)
+        end
+        return
+    end
     if not self.chapters or #self.chapters == 0 then return end
     local current_time = self.media_engine:getPosition()
     for i = #self.chapters, 1, -1 do
@@ -258,6 +328,80 @@ function MediaSync:prevChapter()
             return
         end
     end
+end
+
+function MediaSync:switchToPlaylistFile(index)
+    if not self.playlist_files or not self.playlist_files[index] then return end
+    self.current_playlist_idx = index
+    local file_path = self.playlist_files[index].path
+    if self.plugin and self.plugin._playAudioFile then
+        self.plugin:_playAudioFile(file_path, self.playlist_files)
+    end
+end
+
+function MediaSync:toggleLoop()
+    self.loop_enabled = not self.loop_enabled
+    if self.playback_bar then
+        pcall(function()
+            self.playback_bar:setLoopActive(self.loop_enabled)
+        end)
+    end
+    UIManager:show(InfoMessage:new{
+        text = self.loop_enabled and _("Loop enabled.") or _("Loop disabled."),
+        timeout = 1,
+    })
+end
+
+function MediaSync:shufflePlaylist()
+    if not self.playlist_files or #self.playlist_files <= 1 then return end
+
+    local was_shuffled = self.is_shuffled
+    if was_shuffled and self._original_playlist then
+        -- Restore original alphabetical order
+        self.playlist_files = {}
+        for i, f in ipairs(self._original_playlist) do
+            self.playlist_files[i] = {name = f.name, path = f.path}
+        end
+        self.is_shuffled = false
+        -- Re-find current track position in restored order
+        local current_path = self.media_engine and self.media_engine.current_path
+        for i, f in ipairs(self.playlist_files) do
+            if f.path == current_path then
+                self.current_playlist_idx = i
+                break
+            end
+        end
+    else
+        -- Shuffle
+        math.randomseed(os.time())
+        local current_path = self.playlist_files[self.current_playlist_idx or 1].path
+        for i = #self.playlist_files, 2, -1 do
+            local j = math.random(i)
+            self.playlist_files[i], self.playlist_files[j] = self.playlist_files[j], self.playlist_files[i]
+        end
+        for i, f in ipairs(self.playlist_files) do
+            if f.path == current_path then
+                self.current_playlist_idx = i
+                break
+            end
+        end
+        self.is_shuffled = true
+    end
+
+    -- Update shuffle button visual state FIRST (before InfoMessage flash)
+    if self.playback_bar then
+        local ok, err = pcall(function()
+            self.playback_bar:setShuffleActive(self.is_shuffled)
+        end)
+        if not ok then
+            logger.warn("MediaSync: setShuffleActive failed:", err)
+        end
+    end
+
+    UIManager:show(InfoMessage:new{
+        text = self.is_shuffled and _("Playlist shuffled.") or _("Shuffle disabled."),
+        timeout = 1,
+    })
 end
 
 -- ---------------------------------------------------------------------------
@@ -464,8 +608,9 @@ function MediaSync:_startPositionPoller(gen)
                 pcall(function()
                     self.playback_bar:updateChapterTitle(ch.title or "")
                 end)
-                -- Update chapter menu highlight if it's open
-                if self._chapter_menu and ch_idx then
+                -- Update chapter menu highlight if it's open (chapter mode only;
+                -- playlist mode uses playlist index, not chapter index)
+                if self._chapter_menu and ch_idx and not self.playlist_files then
                     local menu = self._chapter_menu
                     if menu.item_table.current ~= ch_idx then
                         menu.item_table.current = ch_idx
@@ -490,6 +635,26 @@ end
 function MediaSync:_onPlaybackComplete(gen)
     if self._chain_generation ~= gen then return end
     logger.warn("MediaSync: playback complete")
+    -- In playlist mode, auto-advance to the next track
+    if self.playlist_files and #self.playlist_files > 0 then
+        local next_idx = (self.current_playlist_idx or 1) + 1
+        if next_idx <= #self.playlist_files then
+            logger.warn("MediaSync: auto-advancing to playlist track", next_idx)
+            self:switchToPlaylistFile(next_idx)
+            return
+        elseif self.loop_enabled then
+            -- Loop: wrap back to start (or random if shuffled)
+            if self.is_shuffled then
+                math.randomseed(os.time())
+                next_idx = math.random(#self.playlist_files)
+            else
+                next_idx = 1
+            end
+            logger.warn("MediaSync: looping to playlist track", next_idx)
+            self:switchToPlaylistFile(next_idx)
+            return
+        end
+    end
     self:stop()
 end
 
@@ -497,7 +662,6 @@ function MediaSync:_onPlaybackFail(gen, err)
     if self._chain_generation ~= gen then return end
     logger.err("MediaSync: playback failed:", err)
     self:stop()
-    local InfoMessage = require("ui/widget/infomessage")
     UIManager:show(InfoMessage:new{
         text = _("Audio playback failed: ") .. tostring(err),
         timeout = 3,
@@ -515,9 +679,11 @@ function MediaSync:showPlaybackBar()
     -- For standalone audio (scrubber mode), use full-screen AudiobookPlayer overlay
     local AudiobookPlayer = dofile(PLUGIN_PATH .. "audiobookplayer.lua")
     local title = self.timing_data and self.timing_data[1] and self.timing_data[1].text or _("Audiobook")
-    -- Derive output name from audio file path
+    -- Derive output name: use original playlist filename when available
     local output_name = ""
-    if self.media_engine and self.media_engine.current_path then
+    if self.playlist_files and self.current_playlist_idx then
+        output_name = self.playlist_files[self.current_playlist_idx].name
+    elseif self.media_engine and self.media_engine.current_path then
         output_name = self.media_engine.current_path:match("([^/]+)$") or ""
     end
 
@@ -525,6 +691,10 @@ function MediaSync:showPlaybackBar()
         title = title,
         output_name = output_name,
         cover_image_path = self.cover_path,
+        show_shuffle = self.playlist_files and #self.playlist_files > 0,
+        shuffle_active = self.is_shuffled,
+        show_loop = self.playlist_files and #self.playlist_files > 0,
+        loop_active = self.loop_enabled,
         ui_widget = self.plugin and self.plugin.ui,
         on_play_pause = function()
             if self.state == self.STATE.PLAYING then
@@ -574,6 +744,12 @@ function MediaSync:showPlaybackBar()
             end
             self:setSpeed(next_speed)
         end,
+        on_shuffle = function()
+            self:shufflePlaylist()
+        end,
+        on_loop = function()
+            self:toggleLoop()
+        end,
     }
     player:show()
     self.playback_bar = player
@@ -587,8 +763,11 @@ function MediaSync:hidePlaybackBar()
 end
 
 function MediaSync:showChapterList()
+    if self.playlist_files and #self.playlist_files > 0 then
+        self:showPlaylist()
+        return
+    end
     if not self.chapters or #self.chapters == 0 then
-        local InfoMessage = require("ui/widget/infomessage")
         UIManager:show(InfoMessage:new{
             text = _("No chapters available."),
             timeout = 2,
@@ -635,6 +814,7 @@ function MediaSync:showChapterList()
         dimen = Screen:getSize(),
         centered,
     }
+    self._chapter_menu_window = chapter_window
 
     -- Calculate menu's on-screen rectangle for tap-outside detection
     local menu_w = Screen:getWidth() * 0.8
@@ -646,10 +826,15 @@ function MediaSync:showChapterList()
         h = menu_h,
     }
 
+    -- Back-reference so onTap can clear MediaSync._chapter_menu
+    chapter_window._mediasync = self
     function chapter_window:onTap(arg, ges_ev)
         if ges_ev.pos:notIntersectWith(menu_rect) then
-            self._chapter_menu = nil
-            UIManager:close(chapter_window)
+            if self._mediasync then
+                self._mediasync._chapter_menu = nil
+                self._mediasync._chapter_menu_window = nil
+            end
+            UIManager:close(self)
             return true
         end
         return false
@@ -658,10 +843,82 @@ function MediaSync:showChapterList()
     -- Wire the Menu's X button to close the wrapper and clear the reference
     menu.close_callback = function()
         self._chapter_menu = nil
+        self._chapter_menu_window = nil
         UIManager:close(chapter_window)
     end
 
     UIManager:show(chapter_window)
+end
+
+function MediaSync:showPlaylist()
+    if not self.playlist_files or #self.playlist_files == 0 then
+        return
+    end
+    local Menu = require("ui/widget/menu")
+    local CenterContainer = require("ui/widget/container/centercontainer")
+    local InputContainer = require("ui/widget/container/inputcontainer")
+
+    local menu_items = {}
+    for i, f in ipairs(self.playlist_files) do
+        table.insert(menu_items, {
+            text = f.name,
+            callback = function()
+                -- Keep playlist window open when switching tracks
+                self:switchToPlaylistFile(i)
+            end,
+        })
+    end
+    menu_items.current = self.current_playlist_idx or 1
+
+    local menu = Menu:new{
+        title = _("Playlist"),
+        item_table = menu_items,
+        width = Screen:getWidth() * 0.8,
+        height = Screen:getHeight() * 0.7,
+    }
+    self._chapter_menu = menu
+
+    local centered = CenterContainer:new{
+        dimen = Screen:getSize(),
+        menu,
+    }
+
+    local playlist_window = InputContainer:new{
+        dimen = Screen:getSize(),
+        centered,
+    }
+    self._chapter_menu_window = playlist_window
+
+    local menu_w = Screen:getWidth() * 0.8
+    local menu_h = Screen:getHeight() * 0.7
+    local menu_rect = Geom:new{
+        x = math.floor((Screen:getWidth() - menu_w) / 2),
+        y = math.floor((Screen:getHeight() - menu_h) / 2),
+        w = menu_w,
+        h = menu_h,
+    }
+
+    -- Back-reference so onTap can clear MediaSync._chapter_menu
+    playlist_window._mediasync = self
+    function playlist_window:onTap(arg, ges_ev)
+        if ges_ev.pos:notIntersectWith(menu_rect) then
+            if self._mediasync then
+                self._mediasync._chapter_menu = nil
+                self._mediasync._chapter_menu_window = nil
+            end
+            UIManager:close(self)
+            return true
+        end
+        return false
+    end
+
+    menu.close_callback = function()
+        self._chapter_menu = nil
+        self._chapter_menu_window = nil
+        UIManager:close(playlist_window)
+    end
+
+    UIManager:show(playlist_window)
 end
 
 -- ---------------------------------------------------------------------------

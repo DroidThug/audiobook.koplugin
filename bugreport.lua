@@ -67,7 +67,7 @@ local function collectDeviceInfo()
     local info = {}
     info.platform = Device.getPlatform and Device:getPlatform() or "unknown"
     info.model = Device.getDeviceModel and Device:getDeviceModel() or "unknown"
-    info.is_android = Device:isAndroid() or false
+    info.is_android = Device.isAndroid and Device:isAndroid() or false
     info.is_kindle = Device.isKindle and Device:isKindle() or false
     info.is_kobo = Device.isKobo and Device:isKobo() or false
     info.is_pocketbook = Device.isPocketBook and Device:isPocketBook() or false
@@ -1235,7 +1235,7 @@ function BugReport.generate(plugin)
     local sections = {
         "=== Audiobook Read-Along Bug Report (v" .. version .. ") ===",
         "Generated: " .. timestamp,
-        var_warning and "\n*** " .. var_warning .. " ***\n" or nil,
+        var_warning and "\n*** " .. var_warning .. " ***\n" or "",
         "",
         formatSection("Device", device),
         "",

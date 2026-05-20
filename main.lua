@@ -189,6 +189,13 @@ function Audiobook:_initSubmodules()
         end
     end
 
+    -- ── Bluetooth manager (needed for BT settings even without a document) ──
+    if not self.bt_manager then
+        pcall(function()
+            self.bt_manager = dofile(pp .. "btmanager.lua")
+        end)
+    end
+
     -- ── Clean old cached cover art ──
     pcall(function()
         local MetadataParser = dofile(pp .. "m4bparser.lua")
@@ -290,8 +297,6 @@ function Audiobook:addToMainMenu(menu_items)
         return
     end
 
-    local has_doc = self.ui and self.ui.document
-
     menu_items.audiobook = {
         text = _("Audiobook Read-Along"),
         sorting_hint = "tools",
@@ -299,7 +304,7 @@ function Audiobook:addToMainMenu(menu_items)
             -- ── TTS read-along (document required) ──
             {
                 text = _("Start reading from current page"),
-                enabled_func = function() return has_doc end,
+                enabled_func = function() return (self.ui and self.ui.document) or false end,
                 callback = function()
                     if not self._init_ok then self:_showInitError(); return end
                     self:startReadAlong()
@@ -309,25 +314,34 @@ function Audiobook:addToMainMenu(menu_items)
             {
                 text = _("Play with audiobook"),
                 enabled_func = function()
-                    return has_doc and self._init_ok and self.media_sync ~= nil and self:_hasMediaOverlays()
+                    return (self.ui and self.ui.document and self._init_ok and self.media_sync ~= nil and self:_hasMediaOverlays()) or false
                 end,
                 callback = function()
                     self:startMediaPlayback()
                 end,
             },
             {
-                text = _("Open audio file..."),
+                text = _("Read audiobook"),
                 enabled_func = function()
-                    return self._init_ok and self.media_sync ~= nil
+                    return (self._init_ok and self.media_sync ~= nil) or false
                 end,
                 callback = function()
                     self:openAudioFile()
                 end,
             },
             {
+                text = _("Start music playlist"),
+                enabled_func = function()
+                    return (self._init_ok and self.media_sync ~= nil) or false
+                end,
+                callback = function()
+                    self:openMusicPlaylist()
+                end,
+            },
+            {
                 text = _("Open audio + text..."),
                 enabled_func = function()
-                    return self._init_ok and self.media_sync ~= nil
+                    return (self._init_ok and self.media_sync ~= nil) or false
                 end,
                 callback = function()
                     self:openAudioWithText()
@@ -336,18 +350,19 @@ function Audiobook:addToMainMenu(menu_items)
             {
                 text = _("Alignment"),
                 enabled_func = function()
-                    return self._init_ok and self.media_sync ~= nil
+                    return (self._init_ok and self.media_sync ~= nil) or false
                 end,
                 sub_item_table = {
                     {
                         text = _("Load alignment file"),
+                        enabled_func = function() return (self.ui and self.ui.document) or false end,
                         callback = function()
                             self:loadAlignmentFile()
                         end,
                     },
                     {
                         text = _("Generate sentence alignment"),
-                        enabled_func = function() return has_doc end,
+                        enabled_func = function() return (self.ui and self.ui.document) or false end,
                         callback = function()
                             self:generateAlignment()
                         end,
@@ -411,7 +426,7 @@ function Audiobook:addToMainMenu(menu_items)
                     end
                     return T(_("Voice settings (%1)"), voice_label)
                 end,
-                enabled_func = function() return has_doc and self._init_ok and self.tts_engine ~= nil end,
+                enabled_func = function() return (self.ui and self.ui.document and self._init_ok and self.tts_engine ~= nil) or false end,
                 sub_item_table_func = function()
                     return MenuBuilder.buildVoiceSettingsMenu(self)
                 end,
@@ -437,7 +452,7 @@ function Audiobook:addToMainMenu(menu_items)
                             return MenuBuilder.buildAlsaDeviceMenu(self)
                         end,
                         enabled_func = function()
-                            return self._init_ok and self.tts_engine and self.tts_engine._wav_play_bin ~= nil
+                            return (self._init_ok and self.tts_engine and self.tts_engine._wav_play_bin ~= nil) or false
                         end,
                         help_text = _("PocketBook devices route audio through different paths depending on firmware. The default works on most devices. Change this only if you hear no sound, distorted sound, or playback at 2-3x speed (known issue on PB631). Each option in the submenu has its own help text describing what to try."),
                     },
@@ -453,7 +468,7 @@ function Audiobook:addToMainMenu(menu_items)
                     },
                     {
                         text = _("Hide control bar while playing (experimental)"),
-                        enabled_func = function() return has_doc end,
+                        enabled_func = function() return (self.ui and self.ui.document) or false end,
                         checked_func = function()
                             return self:getSetting("playback_bar_visibility", "always") == "paused_only"
                         end,
@@ -477,14 +492,14 @@ function Audiobook:addToMainMenu(menu_items)
                             }
                             return T(_("Highlight style: %1"), styles[self:getSetting("highlight_style", "background")] or _("Background"))
                         end,
-                        enabled_func = function() return has_doc end,
+                        enabled_func = function() return (self.ui and self.ui.document) or false end,
                         sub_item_table_func = function()
                             return MenuBuilder.buildHighlightStyleMenu(self)
                         end,
                     },
                     {
                         text = _("Auto-advance pages"),
-                        enabled_func = function() return has_doc end,
+                        enabled_func = function() return (self.ui and self.ui.document) or false end,
                         checked_func = function()
                             return self:getSetting("auto_advance", true)
                         end,
@@ -494,7 +509,7 @@ function Audiobook:addToMainMenu(menu_items)
                     },
                     {
                         text = _("Highlight sentences"),
-                        enabled_func = function() return has_doc end,
+                        enabled_func = function() return (self.ui and self.ui.document) or false end,
                         checked_func = function()
                             return self:getSetting("highlight_sentences", true)
                         end,
@@ -521,7 +536,7 @@ function Audiobook:addToMainMenu(menu_items)
                     end
                 end,
                 enabled_func = function()
-                    return self._init_ok and BenchmarkRunner ~= nil
+                    return (self.ui and self.ui.document and self._init_ok and BenchmarkRunner ~= nil) or false
                 end,
                 help_text = _("Runs a standardized TTS benchmark on test sentences using each available engine (espeak-ng, Piper). Saves a report you can share on GitHub to help document device performance. Piper tests may take several minutes on slow devices."),
             },
@@ -851,7 +866,65 @@ function Audiobook:openAudioFile()
     })
 end
 
-function Audiobook:_playAudioFile(file_path)
+--- Show audio files in a folder as a playable playlist.
+--- Pick an audio file via PathChooser, then immediately play it
+-- along with all other audio files in the same folder as a playlist.
+function Audiobook:openMusicPlaylist()
+    if not self._init_ok or not self.media_sync then
+        self:_showInitError()
+        return
+    end
+    local PathChooser = require("ui/widget/pathchooser")
+    local home_dir = require("datastorage").getDataDir() or "/mnt"
+    UIManager:show(PathChooser:new{
+        title = _("Select audio file"),
+        path = home_dir,
+        select_file = true,
+        onConfirm = function(file_path)
+            local folder = file_path:match("^(.*)/[^/]+$")
+            if not folder then return end
+            self:setSetting("playlist_last_folder", folder)
+
+            local lfs = require("libs/libkoreader-lfs")
+            local files = {}
+            for entry in lfs.dir(folder) do
+                if entry ~= "." and entry ~= ".." then
+                    local full = folder .. "/" .. entry
+                    local attr = lfs.attributes(full)
+                    if attr and attr.mode == "file" then
+                        local ext = entry:match("%.([^.]+)$") or ""
+                        ext = ext:lower()
+                        local audio_exts = {
+                            mp3 = true, m4a = true, m4b = true,
+                            ogg = true, opus = true, flac = true,
+                            wav = true, aac = true, wma = true,
+                        }
+                        if audio_exts[ext] then
+                            table.insert(files, {
+                                name = entry,
+                                path = full,
+                            })
+                        end
+                    end
+                end
+            end
+
+            table.sort(files, function(a, b) return a.name:lower() < b.name:lower() end)
+
+            if #files == 0 then
+                UIManager:show(InfoMessage:new{
+                    text = T(_("No audio files found in\n%1"), folder),
+                    timeout = 3,
+                })
+                return
+            end
+
+            self:_playAudioFile(file_path, files)
+        end,
+    })
+end
+
+function Audiobook:_playAudioFile(file_path, playlist_files)
     if not file_path or not self.media_sync then return end
 
     -- Transcode unsupported formats (M4B, OGG, FLAC, etc.) to MP3.
@@ -916,7 +989,7 @@ function Audiobook:_playAudioFile(file_path)
         end_time = duration or 3600,
         text = _("Audio playback"),
     }}
-    self.media_sync:start(playable_path, timing_data, chapters, cover_path)
+    self.media_sync:start(playable_path, timing_data, chapters, cover_path, playlist_files, file_path)
 
     -- Start BT media button listener if enabled
     pcall(function()

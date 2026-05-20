@@ -59,6 +59,12 @@ local AudiobookPlayer = InputContainer:extend{
     on_minimize = nil,
     on_chapter_list = nil,
     on_speed = nil,
+    on_shuffle = nil,
+    show_shuffle = false,
+    shuffle_active = false,
+    on_loop = nil,
+    show_loop = false,
+    loop_active = false,
     -- Reference to the underlying ReaderUI or FileManager widget for event
     -- forwarding when minimized (since UIManager only dispatches to the top
     -- widget, we must manually forward events to the UI below).
@@ -119,28 +125,64 @@ function AudiobookPlayer:setupUI()
         show_parent = self,
     }
 
+    self.shuffle_button = Button:new{
+        text = "⇄",
+        width = button_size,
+        height = button_size,
+        text_font_size = 20,
+        callback = function() self:onShuffle() end,
+        bordersize = self.shuffle_active and Size.border.default or 0,
+        radius = Screen:scaleBySize(4),
+        show_parent = self,
+    }
+
+    self.loop_button = Button:new{
+        text = "⟳",
+        width = button_size,
+        height = button_size,
+        text_font_size = 20,
+        callback = function() self:onLoop() end,
+        bordersize = self.loop_active and Size.border.default or 0,
+        radius = Screen:scaleBySize(4),
+        show_parent = self,
+    }
+
+    -- Count visible buttons for title width calculation
+    local visible_buttons = 4 -- chapter_list, speed, minimize, close
+    if self.show_shuffle then visible_buttons = visible_buttons + 1 end
+    if self.show_loop then visible_buttons = visible_buttons + 1 end
     self.title_widget = TextWidget:new{
         text = self.title or _("Audiobook"),
         face = Font:getFace("cfont", 18),
-        max_width = self.width - button_size * 5 - spacing * 5,
+        max_width = self.width - button_size * visible_buttons - spacing * visible_buttons,
         truncate_left = true,
     }
 
-    local top_row = HorizontalGroup:new{
+    -- Build top row left-to-right explicitly
+    local top_row_items = {
         align = "center",
         self.chapter_list_button,
         HorizontalSpan:new{ width = spacing },
-        CenterContainer:new{
-            dimen = Geom:new{ w = self.title_widget:getSize().w, h = button_size },
-            self.title_widget,
-        },
-        HorizontalSpan:new{ width = spacing },
-        self.speed_button,
-        HorizontalSpan:new{ width = math.floor(spacing / 2) },
-        self.minimize_button,
-        HorizontalSpan:new{ width = math.floor(spacing / 2) },
-        self.close_button,
     }
+    if self.show_shuffle then
+        table.insert(top_row_items, self.shuffle_button)
+        table.insert(top_row_items, HorizontalSpan:new{ width = math.floor(spacing / 2) })
+    end
+    if self.show_loop then
+        table.insert(top_row_items, self.loop_button)
+        table.insert(top_row_items, HorizontalSpan:new{ width = math.floor(spacing / 2) })
+    end
+    table.insert(top_row_items, CenterContainer:new{
+        dimen = Geom:new{ w = self.title_widget:getSize().w, h = button_size },
+        self.title_widget,
+    })
+    table.insert(top_row_items, HorizontalSpan:new{ width = spacing })
+    table.insert(top_row_items, self.speed_button)
+    table.insert(top_row_items, HorizontalSpan:new{ width = math.floor(spacing / 2) })
+    table.insert(top_row_items, self.minimize_button)
+    table.insert(top_row_items, HorizontalSpan:new{ width = math.floor(spacing / 2) })
+    table.insert(top_row_items, self.close_button)
+    local top_row = HorizontalGroup:new(top_row_items)
 
     -- ── Cover art placeholder ──
     -- Responsive: base on smaller screen dimension so it works in both orientations
@@ -434,6 +476,14 @@ function AudiobookPlayer:onChapterList()
     if self.on_chapter_list then self.on_chapter_list() end
 end
 
+function AudiobookPlayer:onShuffle()
+    if self.on_shuffle then self.on_shuffle() end
+end
+
+function AudiobookPlayer:onLoop()
+    if self.on_loop then self.on_loop() end
+end
+
 function AudiobookPlayer:onSeek(pct)
     if self.on_seek then self.on_seek(pct) end
 end
@@ -491,6 +541,36 @@ function AudiobookPlayer:updateChapterTitle(title)
         self.chapter_widget:setText(title)
         UIManager:setDirty(self, function()
             return "ui", self.chapter_widget.dimen
+        end)
+    end
+end
+
+function AudiobookPlayer:setTitle(title)
+    self.title = title or _("Audiobook")
+    if self.title_widget then
+        self.title_widget:setText(self.title)
+        UIManager:setDirty(self, function()
+            return "ui", self.title_widget.dimen
+        end)
+    end
+end
+
+function AudiobookPlayer:setShuffleActive(active)
+    if self.shuffle_button then
+        self.shuffle_button.bordersize = active and Size.border.default or 0
+        self.shuffle_button:init()
+        UIManager:setDirty(self, function()
+            return "ui", self.shuffle_button.dimen
+        end)
+    end
+end
+
+function AudiobookPlayer:setLoopActive(active)
+    if self.loop_button then
+        self.loop_button.bordersize = active and Size.border.default or 0
+        self.loop_button:init()
+        UIManager:setDirty(self, function()
+            return "ui", self.loop_button.dimen
         end)
     end
 end
@@ -696,7 +776,8 @@ function AudiobookPlayer:_getThemeBackground()
     -- Night mode: invert the grayscale value so white becomes black.
     -- KOReader uses 8-bit e-ink colors where 0x00 = white and 0xFF = black.
     if Screen.night_mode then
-        bg_color = 0xFF - bg_color
+        local gray_val = (type(bg_color) == "number") and bg_color or (bg_color.a or 0)
+        bg_color = Blitbuffer.gray(0xFF - gray_val)
     end
 
     return bg_color
@@ -917,6 +998,12 @@ function AudiobookPlayer:handleEvent(event)
                 self.speed_button, self.close_button, self.minimize_button,
                 self.chapter_list_button,
             }
+            if self.show_shuffle and self.shuffle_button then
+                table.insert(buttons, self.shuffle_button)
+            end
+            if self.show_loop and self.loop_button then
+                table.insert(buttons, self.loop_button)
+            end
             for _, btn in ipairs(buttons) do
                 if self:_isTapOnWidget(ges.pos, btn) then
                     return InputContainer.handleEvent(self, event)

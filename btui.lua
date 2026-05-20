@@ -44,6 +44,9 @@ end
 -- Shows connected device name when available.
 function BtUI.btMenuLabel(plugin)
     local bt = plugin.bt_manager
+    if not bt then
+        return _("Bluetooth (unavailable)")
+    end
     -- On Kindle, BT is managed by the OS; show simple status
     if bt:getStackType() == "kindle" then
         local powered = bt:isPowered()
@@ -71,6 +74,14 @@ end
 function BtUI.buildBluetoothMenu(plugin)
     local bt = plugin.bt_manager
     local menu = {}
+
+    if not bt then
+        table.insert(menu, {
+            text = _("Bluetooth unavailable"),
+            enabled = false,
+        })
+        return menu
+    end
 
     -- On Kindle, BT is managed by the Amazon firmware.
     -- We can toggle power via lipc but cannot scan/pair/connect.

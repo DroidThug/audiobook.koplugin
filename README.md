@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="new_audio_logo.svg" alt="Audiobook Read-Along logo" width="200">
+</p>
+
 <h1 align="center">
   Audiobook Read-Along Plugin for KOReader
 </h1>
