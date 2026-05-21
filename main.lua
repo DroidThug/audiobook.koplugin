@@ -312,16 +312,16 @@ function Audiobook:addToMainMenu(menu_items)
             },
             -- ── Media playback (audio files & EPUB overlays) ──
             {
-                text = _("Play with audiobook"),
+                text = _("Play with audiobook (Highly Experimental)"),
                 enabled_func = function()
-                    return (self.ui and self.ui.document and self._init_ok and self.media_sync ~= nil and self:_hasMediaOverlays()) or false
+                    return (self.ui and self.ui.document and self._init_ok and self.media_sync ~= nil) or false
                 end,
                 callback = function()
                     self:startMediaPlayback()
                 end,
             },
             {
-                text = _("Read audiobook"),
+                text = _("Open audiobook..."),
                 enabled_func = function()
                     return (self._init_ok and self.media_sync ~= nil) or false
                 end,
@@ -337,37 +337,6 @@ function Audiobook:addToMainMenu(menu_items)
                 callback = function()
                     self:openMusicPlaylist()
                 end,
-            },
-            {
-                text = _("Open audio + text..."),
-                enabled_func = function()
-                    return (self._init_ok and self.media_sync ~= nil) or false
-                end,
-                callback = function()
-                    self:openAudioWithText()
-                end,
-            },
-            {
-                text = _("Alignment"),
-                enabled_func = function()
-                    return (self._init_ok and self.media_sync ~= nil) or false
-                end,
-                sub_item_table = {
-                    {
-                        text = _("Load alignment file"),
-                        enabled_func = function() return (self.ui and self.ui.document) or false end,
-                        callback = function()
-                            self:loadAlignmentFile()
-                        end,
-                    },
-                    {
-                        text = _("Generate sentence alignment"),
-                        enabled_func = function() return (self.ui and self.ui.document) or false end,
-                        callback = function()
-                            self:generateAlignment()
-                        end,
-                    },
-                },
             },
             -- ── Bluetooth settings ──
             {
@@ -516,6 +485,62 @@ function Audiobook:addToMainMenu(menu_items)
                         callback = function()
                             self:toggleSetting("highlight_sentences", true)
                         end,
+                    },
+                    {
+                        text = _("Sleep timer"),
+                        sub_item_table = {
+                            {
+                                text = _("Off"),
+                                checked_func = function()
+                                    return self:getSetting("sleep_timer_minutes", 0) == 0
+                                end,
+                                callback = function()
+                                    self:_cancelSleepTimer()
+                                    self:setSetting("sleep_timer_minutes", 0)
+                                end,
+                            },
+                            {
+                                text = _("15 min"),
+                                checked_func = function()
+                                    return self:getSetting("sleep_timer_minutes", 0) == 15
+                                end,
+                                callback = function()
+                                    self:setSetting("sleep_timer_minutes", 15)
+                                    self:_startSleepTimer(15)
+                                end,
+                            },
+                            {
+                                text = _("30 min"),
+                                checked_func = function()
+                                    return self:getSetting("sleep_timer_minutes", 0) == 30
+                                end,
+                                callback = function()
+                                    self:setSetting("sleep_timer_minutes", 30)
+                                    self:_startSleepTimer(30)
+                                end,
+                            },
+                            {
+                                text = _("45 min"),
+                                checked_func = function()
+                                    return self:getSetting("sleep_timer_minutes", 0) == 45
+                                end,
+                                callback = function()
+                                    self:setSetting("sleep_timer_minutes", 45)
+                                    self:_startSleepTimer(45)
+                                end,
+                            },
+                            {
+                                text = _("60 min"),
+                                checked_func = function()
+                                    return self:getSetting("sleep_timer_minutes", 0) == 60
+                                end,
+                                callback = function()
+                                    self:setSetting("sleep_timer_minutes", 60)
+                                    self:_startSleepTimer(60)
+                                end,
+                            },
+                        },
+                        help_text = _("Automatically pause playback after the selected time. Useful for listening before sleep."),
                     },
                 },
             },
@@ -758,7 +783,7 @@ function Audiobook:_hasMediaOverlays()
     if not self.ui.rolling then return false end
     -- Check if the current EPUB has Media Overlays in its manifest.
     -- We do a lightweight check by looking for .smil files in the EPUB zip.
-    local doc_path = self.ui.document.file_path
+    local doc_path = self.ui.document.file_path or self.ui.document.file
     if not doc_path then return false end
     local ext = doc_path:match("%.([^.]+)$") or ""
     if ext:lower() ~= "epub" then return false end
@@ -780,7 +805,7 @@ function Audiobook:startMediaPlayback()
         return
     end
 
-    local doc_path = self.ui and self.ui.document and self.ui.document.file_path
+    local doc_path = self.ui and self.ui.document and (self.ui.document.file_path or self.ui.document.file)
     if not doc_path then
         UIManager:show(InfoMessage:new{
             text = _("No document is currently open."),
@@ -789,64 +814,109 @@ function Audiobook:startMediaPlayback()
         return
     end
 
+    -- Try SMIL Media Overlays first
+    if self:_hasMediaOverlays() then
+        UIManager:show(InfoMessage:new{
+            text = _("Loading Media Overlays..."),
+            timeout = 1,
+        })
+        UIManager:scheduleIn(0.5, function()
+            self:_startSmilPlayback(doc_path)
+        end)
+        return
+    end
+
+    -- No SMIL: try to auto-detect a matching audiobook file
+    local matching_audio = self:_findMatchingAudiobook(doc_path)
+    if matching_audio then
+        local ConfirmBox = require("ui/widget/confirmbox")
+        UIManager:show(ConfirmBox:new{
+            text = T(_("No embedded narration found for this book.\n\nFound matching audiobook:\n%1\n\nPlay it?"), matching_audio:match("([^/]+)$") or matching_audio),
+            ok_text = _("Play"),
+            cancel_text = _("Cancel"),
+            ok_callback = function()
+                self:_playAudioFile(matching_audio)
+            end,
+        })
+        return
+    end
+
+    -- Nothing found
     UIManager:show(InfoMessage:new{
-        text = _("Loading Media Overlays..."),
-        timeout = 1,
+        text = _("This book has no embedded narration.\n\nPlace an audiobook file with the same name in the same folder, or use Open audiobook to play a separate file."),
+        timeout = 5,
     })
+end
 
-    UIManager:scheduleIn(0.5, function()
-        local ok, EpubMediaOverlay = pcall(dofile, PLUGIN_PATH .. "epubmediaoverlay.lua")
-        if not ok or not EpubMediaOverlay then
-            UIManager:show(InfoMessage:new{
-                text = _("Failed to load EPUB Media Overlay parser."),
-                timeout = 3,
-            })
-            return
-        end
+function Audiobook:_startSmilPlayback(doc_path)
+    local ok, EpubMediaOverlay = pcall(dofile, PLUGIN_PATH .. "epubmediaoverlay.lua")
+    if not ok or not EpubMediaOverlay then
+        UIManager:show(InfoMessage:new{
+            text = _("Failed to load EPUB Media Overlay parser."),
+            timeout = 3,
+        })
+        return
+    end
 
-        local parser = EpubMediaOverlay:new()
-        local timing_data, err = parser:loadFromEpub(doc_path, PLUGIN_PATH:sub(1, -2))
-        if not timing_data then
-            UIManager:show(InfoMessage:new{
-                text = _("No Media Overlays found: ") .. tostring(err),
-                timeout = 3,
-            })
-            return
-        end
+    local parser = EpubMediaOverlay:new()
+    local timing_data, err = parser:loadFromEpub(doc_path, PLUGIN_PATH:sub(1, -2))
+    if not timing_data then
+        UIManager:show(InfoMessage:new{
+            text = _("No Media Overlays found: ") .. tostring(err),
+            timeout = 3,
+        })
+        return
+    end
 
-        -- Build chapter list from timing_data if no separate chapters
-        local chapters = {}
-        -- Try to load m4b-style chapters if audio is m4b
-        if timing_data[1] and timing_data[1].audio_path then
-            local ext = timing_data[1].audio_path:match("%.([^.]+)$") or ""
-            if ext:lower() == "m4b" then
-                local ok_m4b, M4bParser = pcall(dofile, PLUGIN_PATH .. "m4bparser.lua")
-                if ok_m4b and M4bParser then
-                    local m4b = M4bParser:new()
-                    chapters = m4b:parse(timing_data[1].audio_path)
-                end
+    -- Build chapter list from timing_data if no separate chapters
+    local chapters = {}
+    if timing_data[1] and timing_data[1].audio_path then
+        local ext = timing_data[1].audio_path:match("%.([^.]+)$") or ""
+        if ext:lower() == "m4b" then
+            local ok_m4b, M4bParser = pcall(dofile, PLUGIN_PATH .. "m4bparser.lua")
+            if ok_m4b and M4bParser then
+                local m4b = M4bParser:new()
+                chapters = m4b:parse(timing_data[1].audio_path)
             end
         end
+    end
 
-        -- Find the first audio file with a real path
-        local audio_path = nil
-        for _, entry in ipairs(timing_data) do
-            if entry.audio_path then
-                audio_path = entry.audio_path
-                break
-            end
+    -- Find the first audio file with a real path
+    local audio_path = nil
+    for _, entry in ipairs(timing_data) do
+        if entry.audio_path then
+            audio_path = entry.audio_path
+            break
         end
+    end
 
-        if not audio_path then
-            UIManager:show(InfoMessage:new{
-                text = _("Could not extract audio from EPUB."),
-                timeout = 3,
-            })
-            return
+    if not audio_path then
+        UIManager:show(InfoMessage:new{
+            text = _("Could not extract audio from EPUB."),
+            timeout = 3,
+        })
+        return
+    end
+
+    self.media_sync:start(audio_path, timing_data, chapters)
+end
+
+function Audiobook:_findMatchingAudiobook(doc_path)
+    if not doc_path then return nil end
+    local folder = doc_path:match("^(.*)/[^/]+$") or "."
+    local basename = doc_path:match("([^/]+)%.[^./]+$") or ""
+    if basename == "" then return nil end
+
+    local audio_exts = { "m4b", "mp3", "m4a", "ogg", "opus", "flac", "wav" }
+    for _, ext in ipairs(audio_exts) do
+        local candidate = folder .. "/" .. basename .. "." .. ext
+        local f = io.open(candidate, "r")
+        if f then
+            f:close()
+            return candidate
         end
-
-        self.media_sync:start(audio_path, timing_data, chapters)
-    end)
+    end
+    return nil
 end
 
 function Audiobook:openAudioFile()
@@ -927,9 +997,36 @@ end
 function Audiobook:_playAudioFile(file_path, playlist_files)
     if not file_path or not self.media_sync then return end
 
+    -- Check for saved position and prompt to resume
+    local saved_pos, saved_time = self:_getSavedPosition(file_path)
+    if saved_pos and saved_pos > 30 then
+        local ConfirmBox = require("ui/widget/confirmbox")
+        UIManager:show(ConfirmBox:new{
+            text = T(_("Resume from %1?\n\nLast played: %2"),
+                self:_formatAudioTime(saved_pos),
+                os.date("%Y-%m-%d %H:%M", saved_time)),
+            ok_text = _("Resume"),
+            cancel_text = _("From start"),
+            ok_callback = function()
+                self:_doPlayAudioFile(file_path, playlist_files, saved_pos)
+            end,
+            cancel_callback = function()
+                self:_clearPosition(file_path)
+                self:_doPlayAudioFile(file_path, playlist_files, 0)
+            end,
+        })
+        return
+    end
+
+    self:_doPlayAudioFile(file_path, playlist_files, 0)
+end
+
+function Audiobook:_doPlayAudioFile(file_path, playlist_files, start_position)
+    if not file_path or not self.media_sync then return end
+    local playable_path = file_path
+
     -- Transcode unsupported formats (M4B, OGG, FLAC, etc.) to MP3.
     -- The transcoded MP3 preserves chapters and cover art.
-    local playable_path = file_path
     if self.transcoder and not self.transcoder:isPlayable(file_path) then
         local cached = self.transcoder:getPlayablePath(file_path)
         if cached then
@@ -991,6 +1088,15 @@ function Audiobook:_playAudioFile(file_path, playlist_files)
     }}
     self.media_sync:start(playable_path, timing_data, chapters, cover_path, playlist_files, file_path)
 
+    -- Seek to saved position if resuming
+    if start_position and start_position > 0 then
+        UIManager:scheduleIn(0.5, function()
+            if self.media_sync then
+                self.media_sync:seekToTime(start_position)
+            end
+        end)
+    end
+
     -- Start BT media button listener if enabled
     pcall(function()
         if self:getSetting("bt_media_control", true) and BtMediaControl then
@@ -999,251 +1105,128 @@ function Audiobook:_playAudioFile(file_path, playlist_files)
     end)
 end
 
-function Audiobook:openAudioWithText()
-    if not self._init_ok or not self.media_sync then
-        self:_showInitError()
-        return
+function Audiobook:_formatAudioTime(seconds)
+    seconds = math.floor(seconds or 0)
+    local mins = math.floor(seconds / 60)
+    local secs = seconds % 60
+    if mins >= 60 then
+        local hours = math.floor(mins / 60)
+        mins = mins % 60
+        return string.format("%d:%02d:%02d", hours, mins, secs)
     end
-
-    local PathChooser = require("ui/widget/pathchooser")
-    local home_dir = require("datastorage").getDataDir() or "/mnt"
-
-    -- Step 1: pick audio file
-    UIManager:show(PathChooser:new{
-        title = _("Select audio file"),
-        path = home_dir,
-        select_file = true,
-        onConfirm = function(audio_path)
-            -- Step 2: pick text file
-            UIManager:show(PathChooser:new{
-                title = _("Select text file (plain text)"),
-                path = home_dir,
-                select_file = true,
-                onConfirm = function(text_path)
-                    self:_alignAndPlayAudioText(audio_path, text_path)
-                end,
-            })
-        end,
-    })
+    return string.format("%d:%02d", mins, secs)
 end
 
-function Audiobook:_alignAndPlayAudioText(audio_path, text_path)
-    if not audio_path or not text_path then return end
+-- ---------------------------------------------------------------------------
+-- Playback position persistence
+-- ---------------------------------------------------------------------------
 
-    -- Read text file
-    local f = io.open(text_path, "r")
-    if not f then
-        UIManager:show(InfoMessage:new{
-            text = _("Could not read text file."),
-            timeout = 3,
-        })
-        return
+function Audiobook:_getAudioPositionKey(file_path)
+    -- Use a simple hash of the path as the key to avoid special chars
+    local hash = 5381
+    for i = 1, #file_path do
+        hash = ((hash * 32) + hash) + file_path:byte(i)
+        hash = hash % 4294967296
     end
-    local text = f:read("*a") or ""
-    f:close()
-
-    if text == "" then
-        UIManager:show(InfoMessage:new{
-            text = _("Text file is empty."),
-            timeout = 3,
-        })
-        return
-    end
-
-    UIManager:show(InfoMessage:new{
-        text = _("Generating alignment..."),
-        timeout = 1,
-    })
-
-    UIManager:scheduleIn(0.5, function()
-        local ok, MediaAligner = pcall(dofile, PLUGIN_PATH .. "mediaaligner.lua")
-        if not ok or not MediaAligner then
-            UIManager:show(InfoMessage:new{
-                text = _("Failed to load alignment module."),
-                timeout = 3,
-            })
-            return
-        end
-
-        local aligner = MediaAligner:new{plugin_dir = PLUGIN_PATH:sub(1, -2)}
-        local output_path = text_path:gsub("%.[^./]+$", "") .. "_alignment.json"
-        local result, err = aligner:alignTextAudio(text, audio_path, output_path)
-
-        if not result then
-            UIManager:show(InfoMessage:new{
-                text = _("Alignment failed: ") .. tostring(err),
-                timeout = 3,
-            })
-            return
-        end
-
-        -- Load the generated alignment and start playback
-        self:_loadAlignmentAndPlay(audio_path, output_path)
-    end)
+    return string.format("pos_%08x", hash)
 end
 
-function Audiobook:loadAlignmentFile()
-    if not self._init_ok or not self.media_sync then
-        self:_showInitError()
-        return
+function Audiobook:_getSavedPosition(file_path)
+    local positions = self:getSetting("audio_positions", {})
+    local key = self:_getAudioPositionKey(file_path)
+    local entry = positions[key]
+    if entry and entry.path == file_path then
+        return entry.position, entry.timestamp
     end
+    return nil, nil
+end
 
-    local PathChooser = require("ui/widget/pathchooser")
-    local home_dir = require("datastorage").getDataDir() or "/mnt"
-    UIManager:show(PathChooser:new{
-        title = _("Select alignment JSON file"),
-        path = home_dir,
-        select_file = true,
-        onConfirm = function(json_path)
-            -- Derive audio path from JSON filename or prompt user
-            local audio_path = json_path:gsub("_alignment%.json$", ".m4b")
-            if not audio_path or audio_path == json_path then
-                audio_path = json_path:gsub("_alignment%.json$", ".mp3")
+function Audiobook:_savePosition(file_path, position)
+    if not file_path or not position then return end
+    local positions = self:getSetting("audio_positions", {})
+    local key = self:_getAudioPositionKey(file_path)
+    positions[key] = {
+        path = file_path,
+        position = position,
+        timestamp = os.time(),
+    }
+    -- Prune old entries (keep last 50)
+    local count = 0
+    for _ in pairs(positions) do count = count + 1 end
+    if count > 50 then
+        local oldest_key, oldest_time = nil, math.huge
+        for k, v in pairs(positions) do
+            if v.timestamp and v.timestamp < oldest_time then
+                oldest_time = v.timestamp
+                oldest_key = k
             end
-            if not audio_path or audio_path == json_path then
-                -- Ask user to pick audio file
-                UIManager:show(PathChooser:new{
-                    title = _("Select matching audio file"),
-                    path = home_dir,
-                    select_file = true,
-                    onConfirm = function(a_path)
-                        self:_loadAlignmentAndPlay(a_path, json_path)
-                    end,
-                })
-                return
-            end
-            self:_loadAlignmentAndPlay(audio_path, json_path)
-        end,
-    })
-end
-
-function Audiobook:_loadAlignmentAndPlay(audio_path, json_path)
-    if not audio_path or not json_path then return end
-
-    local f = io.open(json_path, "r")
-    if not f then
-        UIManager:show(InfoMessage:new{
-            text = _("Could not read alignment file."),
-            timeout = 3,
-        })
-        return
-    end
-    local json_str = f:read("*a") or ""
-    f:close()
-
-    if json_str == "" then
-        UIManager:show(InfoMessage:new{
-            text = _("Alignment file is empty."),
-            timeout = 3,
-        })
-        return
-    end
-
-    -- Parse JSON (lightweight)
-    local ok, alignment = pcall(function()
-        -- Try KOReader's built-in JSON first
-        local json = require("json")
-        return json.decode(json_str)
-    end)
-    if not ok or not alignment then
-        -- Fallback: basic manual parsing for our known format
-        UIManager:show(InfoMessage:new{
-            text = _("Failed to parse alignment JSON."),
-            timeout = 3,
-        })
-        return
-    end
-
-    if not alignment.sentences or #alignment.sentences == 0 then
-        UIManager:show(InfoMessage:new{
-            text = _("Alignment file contains no sentences."),
-            timeout = 3,
-        })
-        return
-    end
-
-    self.media_sync:start(audio_path, alignment.sentences, {})
-end
-
-function Audiobook:generateAlignment()
-    if not self._init_ok or not self.media_sync then
-        self:_showInitError()
-        return
-    end
-
-    -- We need text. Try to get it from the current EPUB page first.
-    local text = self:getCurrentPageText()
-    if not text or text == "" then
-        UIManager:show(InfoMessage:new{
-            text = _("No text available. Open an EPUB and try again, or use Open audio + text..."),
-            timeout = 3,
-        })
-        return
-    end
-
-    local PathChooser = require("ui/widget/pathchooser")
-    local home_dir = require("datastorage").getDataDir() or "/mnt"
-    UIManager:show(PathChooser:new{
-        title = _("Select audio file to align"),
-        path = home_dir,
-        select_file = true,
-        onConfirm = function(audio_path)
-            self:_alignAndPlayAudioText(audio_path, nil, text)
-        end,
-    })
-end
-
--- Overloaded helper: accepts either a text file path or raw text
-function Audiobook:_alignAndPlayAudioText(audio_path, text_path, raw_text)
-    if not audio_path then return end
-
-    local text = raw_text
-    if text_path then
-        local f = io.open(text_path, "r")
-        if f then
-            text = f:read("*a") or ""
-            f:close()
         end
+        if oldest_key then positions[oldest_key] = nil end
     end
+    self:setSetting("audio_positions", positions)
+end
 
-    if not text or text == "" then
-        UIManager:show(InfoMessage:new{
-            text = _("No text available for alignment."),
-            timeout = 3,
-        })
-        return
-    end
+function Audiobook:_clearPosition(file_path)
+    if not file_path then return end
+    local positions = self:getSetting("audio_positions", {})
+    local key = self:_getAudioPositionKey(file_path)
+    positions[key] = nil
+    self:setSetting("audio_positions", positions)
+end
 
+-- ---------------------------------------------------------------------------
+-- Sleep timer
+-- ---------------------------------------------------------------------------
+
+function Audiobook:_startSleepTimer(minutes)
+    if not minutes or minutes <= 0 then return end
+    self:_cancelSleepTimer()
+    self._sleep_timer_minutes = minutes
+    self._sleep_timer_end = os.time() + (minutes * 60)
     UIManager:show(InfoMessage:new{
-        text = _("Generating alignment..."),
-        timeout = 1,
+        text = T(_("Sleep timer set: %1 min"), minutes),
+        timeout = 2,
     })
+    self:_scheduleSleepTimerCheck()
+end
 
-    UIManager:scheduleIn(0.5, function()
-        local ok, MediaAligner = pcall(dofile, PLUGIN_PATH .. "mediaaligner.lua")
-        if not ok or not MediaAligner then
+function Audiobook:_cancelSleepTimer()
+    self._sleep_timer_end = nil
+    self._sleep_timer_minutes = nil
+    if self._sleep_timer_check then
+        UIManager:unschedule(self._sleep_timer_check)
+        self._sleep_timer_check = nil
+    end
+end
+
+function Audiobook:_scheduleSleepTimerCheck()
+    if not self._sleep_timer_end then return end
+    local function check()
+        if not self._sleep_timer_end then return end
+        local remaining = self._sleep_timer_end - os.time()
+        if remaining <= 0 then
+            self:_cancelSleepTimer()
+            self:stopReadAlong()
             UIManager:show(InfoMessage:new{
-                text = _("Failed to load alignment module."),
+                text = _("Sleep timer: playback paused."),
                 timeout = 3,
             })
             return
         end
-
-        local aligner = MediaAligner:new{plugin_dir = PLUGIN_PATH:sub(1, -2)}
-        local base = audio_path:gsub("%.[^./]+$", "")
-        local output_path = base .. "_alignment.json"
-        local result, err = aligner:alignTextAudio(text, audio_path, output_path)
-
-        if not result then
-            UIManager:show(InfoMessage:new{
-                text = _("Alignment failed: ") .. tostring(err),
-                timeout = 3,
-            })
-            return
+        -- Update playback bar if it shows timer
+        if self.media_sync and self.media_sync.playback_bar then
+            pcall(function()
+                self.media_sync.playback_bar:updateSleepTimer(remaining)
+            end)
         end
+        self._sleep_timer_check = UIManager:scheduleIn(5, check)
+    end
+    self._sleep_timer_check = UIManager:scheduleIn(5, check)
+end
 
-        self:_loadAlignmentAndPlay(audio_path, output_path)
-    end)
+function Audiobook:getSleepTimerRemaining()
+    if not self._sleep_timer_end then return 0 end
+    return math.max(0, self._sleep_timer_end - os.time())
 end
 
 function Audiobook:startReadAlongFromWord(word, context)
@@ -1428,8 +1411,18 @@ end
 function Audiobook:stopReadAlong()
     if not self._init_ok then return end
     logger.warn("Audiobook: stopReadAlong() called")
-    -- Stop media playback if active
+    -- Save media playback position before stopping
     if self.media_sync and self.media_sync.state ~= "stopped" then
+        local ok_pos, pos = pcall(function()
+            return self.media_sync.media_engine and self.media_sync.media_engine:getPosition()
+        end)
+        local ok_path, path = pcall(function()
+            return self.media_sync.media_engine and self.media_sync.media_engine.current_path
+        end)
+        if ok_pos and ok_path and pos and path and pos > 10 then
+            self:_savePosition(path, pos)
+            logger.warn("Audiobook: saved position", pos, "for", path)
+        end
         pcall(function() self.media_sync:stop() end)
     end
     pcall(function() BtUI.stopWatcher(self) end)

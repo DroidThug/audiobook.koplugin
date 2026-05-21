@@ -36,6 +36,12 @@
 
 Text-to-speech for [KOReader](https://github.com/koreader/koreader) with synchronized word highlighting, automatic page turns, and Bluetooth audio support. Works offline on Kobo, Kindle, Android, and Linux.
 
+**Also available:**
+
+* [Audio] Play music files (MP3, FLAC, OGG, and more)
+* [Books] Play audiobooks with scrubber seek, chapter navigation, and sleep timer
+* [Sync] Storyteller compatibility; EPUB 3 Media Overlays support (work in progress)
+
 ## Quick start
 
 ### 1. Download and copy the plugin
