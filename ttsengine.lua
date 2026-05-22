@@ -293,6 +293,56 @@ Delegates to shared Utils module.
 function TTSEngine:commandExists(cmd)
     return Utils.commandExists(cmd)
 end
+
+--- Detect whether this device is a PocketBook.
+-- KOReader's Device:isPocketBook() is reliable on most builds, but some
+-- firmware versions do not set the device flag correctly.  Use fallback
+-- heuristics (/ebrmain, hostname, koreader install path) to catch them.
+-- @treturn bool
+function TTSEngine:isPocketBook()
+    if Device.isPocketBook and Device:isPocketBook() then
+        return true
+    end
+    local d = io.open("/ebrmain/config/device.cfg", "r")
+    if d then d:close(); return true end
+    local h = io.open("/etc/hostname", "r")
+    if h then
+        local name = h:read("*l") or ""
+        h:close()
+        if name:lower():find("pocketbook") then return true end
+    end
+    local k = io.open("/mnt/ext1/applications/koreader", "r")
+    if k then k:close(); return true end
+    return false
+end
+
+--- Try to load the PocketBook InkView PlayFile FFI library.
+-- Returns true and sets audio_player_type if InkView is available.
+-- @treturn bool
+function TTSEngine:_tryInkView()
+    if not _inkview_audio then
+        local ok, lib = pcall(ffi.load, "inkview")
+        if ok then
+            local pf_ok = pcall(function() local _ = lib.PlayFile end)
+            local gs_ok = pcall(function() local _ = lib.GetPlayerState end)
+            if pf_ok and gs_ok then
+                _inkview_audio = lib
+            else
+                logger.warn("TTSEngine: InkView loaded but PlayFile/GetPlayerState not exported")
+            end
+        else
+            logger.dbg("TTSEngine: libinkview.so not available:", lib)
+        end
+    end
+    if _inkview_audio then
+        self.audio_player_type = "pb-inkview"
+        self._pb_has_tts_sm = false
+        logger.warn("TTSEngine: Using InkView PlayFile (PB audio daemon)")
+        return true
+    end
+    return false
+end
+
 --[[--
 Get menu items for engine selection.
 @return table Menu items
@@ -1203,8 +1253,8 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             msg = _("No audio output available.\n\nKindle has no built-in speaker. Audio needs Bluetooth headphones connected via Kindle Settings.\n\nPlease generate a bug report (Audiobook > Generate bug report) and share it on the GitHub issue -- it will help identify the correct audio path for this Kindle model.")
         elseif Device:isKobo() then
             msg = _("No audio output available.\n\nKobo has no built-in speaker.\n\nPlease pair Bluetooth headphones:\nSettings → Bluetooth → Pair\n\nThen try again.")
-        elseif Device.isPocketBook and Device:isPocketBook() then
-            msg = _("No audio output available.\n\nPlease generate a bug report (Audiobook > Generate bug report) and share it on the GitHub issue -- it will help identify the correct audio path for this PocketBook model.")
+        elseif self:isPocketBook() then
+            msg = _("No audio output available.\n\nNo working audio path was found on this PocketBook.\n\nTry changing the audio device:\nAudiobook > Audio device settings > System player (InkView)\n\nIf that does not help, generate a bug report (Audiobook > Generate bug report) and share it on GitHub.")
         else
             msg = _("No audio output available.\n\nNo supported audio player found (aplay, paplay, mpv, mplayer).\n\nIf using Bluetooth, make sure headphones are paired and connected.")
         end
@@ -1275,25 +1325,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
     -- ALSA open/drain/close.  Block playback unless BT audio is connected.
     -- Devices without BT hardware (PB740, PB631) use wired audio through
     -- tts_sm successfully, so skip the check for those.
-    local is_pb = Device.isPocketBook and Device:isPocketBook()
-    -- Fallback PB detection: some KOReader builds may not set the device
-    -- type correctly.  Try multiple indicators.
-    if not is_pb then
-        local d = io.open("/ebrmain/config/device.cfg", "r")
-        if d then d:close(); is_pb = true end
-    end
-    if not is_pb then
-        local h = io.open("/etc/hostname", "r")
-        if h then
-            local name = h:read("*l") or ""
-            h:close()
-            if name:lower():find("pocketbook") then is_pb = true end
-        end
-    end
-    if not is_pb then
-        local d = io.open("/mnt/ext1/applications/koreader", "r")
-        if d then d:close(); is_pb = true end
-    end
+    local is_pb = self:isPocketBook()
     -- Detect BT adapter via multiple signals.  /sys/class/bluetooth/hci0
     -- only appears when the BT daemon is actively running, so it misses
     -- PB devices that ship with BT hardware while the daemon is stopped
@@ -3200,28 +3232,10 @@ function TTSEngine:findAudioPlayer()
     -- any direct ALSA access kills the built-in speaker until reboot.
     -- Triggered when the user selects "System player (InkView)" in the
     -- PocketBook audio device menu.
-    if Device.isPocketBook and Device:isPocketBook() then
+    if self:isPocketBook() then
         local alsa_device = self.plugin and self.plugin:getSetting("pb_alsa_device", "")
         if alsa_device == "inkview" then
-            if not _inkview_audio then
-                local ok, lib = pcall(ffi.load, "inkview")
-                if ok then
-                    -- Verify PlayFile is exported by this firmware
-                    local pf_ok = pcall(function() local _ = lib.PlayFile end)
-                    local gs_ok = pcall(function() local _ = lib.GetPlayerState end)
-                    if pf_ok and gs_ok then
-                        _inkview_audio = lib
-                    else
-                        logger.warn("TTSEngine: InkView loaded but PlayFile/GetPlayerState not exported")
-                    end
-                else
-                    logger.warn("TTSEngine: libinkview.so not available:", lib)
-                end
-            end
-            if _inkview_audio then
-                self.audio_player_type = "pb-inkview"
-                self._pb_has_tts_sm = false  -- not relevant for InkView path
-                logger.warn("TTSEngine: Using InkView PlayFile (PB audio daemon)")
+            if self:_tryInkView() then
                 return "pb-inkview"
             else
                 logger.warn("TTSEngine: InkView not available, falling through to wav-play")
@@ -3381,6 +3395,17 @@ function TTSEngine:findAudioPlayer()
         -- Do NOT pass -q: we need stderr output for diagnostics.
         -- Errors are captured via the process-watcher stderr log below.
         return wav_play_cmd
+    end
+
+    -- On PocketBook, ALSA may not be exposed at all (Era Color, some
+    -- firmware revisions).  InkView PlayFile is the only viable path.
+    -- Try it automatically when no ALSA player was found, so users do
+    -- not need to discover the menu option manually.
+    if self:isPocketBook() then
+        logger.warn("TTSEngine: No ALSA player on PocketBook; trying InkView fallback")
+        if self:_tryInkView() then
+            return "pb-inkview"
+        end
     end
 
     logger.warn("TTSEngine: No audio player found. has_soundcard=", has_soundcard,
@@ -4000,7 +4025,7 @@ function TTSEngine:_startProcessWatcher(bt_retry_allowed, skip_on_fail)
                 -- a runaway loop that freezes single-core devices.
                 local RAPID_EXIT_MS = 200
                 local is_kindle_dev = Device:isKindle()
-                local is_pb_dev = Device.isPocketBook and Device:isPocketBook()
+                local is_pb_dev = engine:isPocketBook()
                 if elapsed_ms < RAPID_EXIT_MS and (engine._no_real_audio_output or is_kindle_dev or is_pb_dev) then
                     engine._rapid_fail_count = (engine._rapid_fail_count or 0) + 1
                     logger.warn("TTSEngine: rapid audio exit (" .. elapsed_ms

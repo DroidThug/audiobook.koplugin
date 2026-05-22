@@ -29,4 +29,7 @@ tests/generate_test_files.py
 tests/README.md
 
 # Accidental artifacts
+os
+subprocess
+zipfile
 EOF
