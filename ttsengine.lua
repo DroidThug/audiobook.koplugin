@@ -101,11 +101,21 @@ function TTSEngine:new(o)
     -- hanging pipeline on every KOReader restart (issue #22, PW5).
     if o.plugin then
         o._gst_play_broken = o.plugin:getSetting("_gst_play_broken") or false
+        o._ttssrc_broken = o.plugin:getSetting("_ttssrc_broken") or false
     end
     -- Startup garbage collection: remove stale temp files left behind by
     -- previous crashed or force-quit sessions (issue #22).
     if Device:isKindle() then
-        os.execute("rm -f /var/tmp/audiobook_*.wav /var/tmp/audiobook_*.xml /var/tmp/audiobook_*.done /var/tmp/piper_server_* /var/tmp/.gst_play_last.log /var/tmp/.ttssrc_* /var/tmp/audiomgrd.err 2>/dev/null")
+        os.execute("rm -f /var/tmp/audiobook_*.wav /var/tmp/audiobook_*.xml /var/tmp/audiobook_*.done /var/tmp/piper_server_* /var/tmp/.gst_play_last.log /var/tmp/.ttssrc_* /var/tmp/audiomgrd.err /var/tmp/*.tmp 2>/dev/null")
+        -- Truncate audiomgrd's deleted stderr log via /proc fd.
+        -- audiomgrd holds the file open after deletion, so rm -f cannot
+        -- reclaim the space. Truncating via /proc frees it (issue #22).
+        local am_pid_h = io.popen("cat /var/run/audiomgrd.pid 2>/dev/null")
+        local am_pid = am_pid_h and am_pid_h:read("*a"):match("%d+")
+        if am_pid_h then am_pid_h:close() end
+        if am_pid then
+            os.execute(": > /proc/" .. am_pid .. "/fd/2 2>/dev/null")
+        end
     end
     o:detectBackend()
     return o
@@ -1560,26 +1570,48 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         self.playback_latency_ms = 500
         logger.warn("TTSEngine: Kindle native TTS play:", text:sub(1, 60),
             "est_dur=", dur_ms, "ms")
-        -- Check /var free space -- Ivona TTS needs temp space for synthesis.
-        -- A full /var causes playermgr to silently ignore PlayParameter.
-        if not self._var_space_checked then
-            self._var_space_checked = true
+        -- Tiered /var free space check (issue #22).
+        -- /var is a 64MB tmpfs on Kindle. System daemons (audiomgrd) hold
+        -- deleted files open, so rm -f cannot reclaim the space. We check
+        -- frequently when approaching full, and back off when healthy.
+        local do_check = false
+        if not self._var_check_counter then
+            self._var_check_counter = 0
+        end
+        self._var_check_counter = self._var_check_counter + 1
+        if self._var_last_pct and self._var_last_pct >= 80 then
+            do_check = true
+        elseif self._var_check_counter % 5 == 0 then
+            do_check = true
+        end
+        if do_check then
             local df_h = io.popen("df /var 2>/dev/null | tail -1")
             if df_h then
                 local df_line = df_h:read("*a") or ""; df_h:close()
                 local _fs, _blocks, _used, avail, pct = df_line:match("^(%S+)%s+(%S+)%s+(%S+)%s+(%S+)%s+(%S+)")
                 local use_pct = tonumber(pct and pct:match("(%d+)"))
                 local avail_kb = tonumber(avail)
+                self._var_last_pct = use_pct
                 if use_pct and (use_pct >= 90 or (avail_kb and avail_kb < 5120)) then
                     logger.warn("TTSEngine: /var is", use_pct, "% full (", avail_kb, "KB free) -- running cleanup")
-                    -- Aggressive cleanup of known temp file patterns from previous
-                    -- sessions (crashes, force-quits) that leak into /var/tmp.
+                    -- Aggressive cleanup of known temp file patterns.
                     os.execute("rm -f /var/tmp/audiobook_*.wav /var/tmp/audiobook_*.xml /var/tmp/audiobook_*.done /var/tmp/piper_server_* /var/tmp/.gst_play_last.log /var/tmp/.ttssrc_* /var/tmp/audiomgrd.err /var/tmp/*.tmp 2>/dev/null")
+                    -- Truncate audiomgrd's deleted stderr log via /proc fd.
+                    -- audiomgrd holds the file open after deletion, so rm -f
+                    -- cannot reclaim the space. Truncating via /proc frees it.
+                    local am_pid_h = io.popen("cat /var/run/audiomgrd.pid 2>/dev/null")
+                    local am_pid = am_pid_h and am_pid_h:read("*a"):match("%d+")
+                    if am_pid_h then am_pid_h:close() end
+                    if am_pid then
+                        os.execute(": > /proc/" .. am_pid .. "/fd/2 2>/dev/null")
+                        logger.warn("TTSEngine: truncated audiomgrd stderr (pid=", am_pid, ")")
+                    end
                     -- Re-check after cleanup; abort only if still critically full.
                     local df_h2 = io.popen("df /var 2>/dev/null | tail -1")
                     if df_h2 then
                         local df_line2 = df_h2:read("*a") or ""; df_h2:close()
                         local use_pct2 = tonumber(df_line2:match("(%d+)%%"))
+                        self._var_last_pct = use_pct2
                         if use_pct2 and use_pct2 >= 95 then
                             logger.warn("TTSEngine: /var still", use_pct2, "% full after cleanup")
                             self._var_full = true
@@ -1685,6 +1717,26 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                             return
                         else
                             logger.err("TTSEngine: kindle-gst-play --ttssrc failed, code=", exit_code)
+                            -- Exit codes 126/127 mean the binary is not executable or not found.
+                            -- These are permanent configuration errors, not transient failures.
+                            -- Disable immediately instead of waiting for 2 failures (issue #22).
+                            if exit_code == 126 or exit_code == 127 then
+                                logger.warn("TTSEngine: --ttssrc binary not executable (code ", exit_code, "), disabling permanently")
+                                engine._kindle_gst_play_bin = nil
+                                engine._ttssrc_broken = true
+                                if engine.plugin then
+                                    engine.plugin:setSetting("_ttssrc_broken", true)
+                                    logger.warn("TTSEngine: persisted _ttssrc_broken=true")
+                                end
+                                engine.is_speaking = false
+                                engine.play_generation = (engine.play_generation or 0) + 1
+                                engine:cleanup()
+                                UIManager:show(InfoMessage:new{
+                                    text = _("Kindle native TTS failed.\n\nThe text-to-speech helper binary could not be executed. Please generate a bug report and share it on GitHub."),
+                                    timeout = 10,
+                                })
+                                return
+                            end
                             engine._ttssrc_consec_fails = (engine._ttssrc_consec_fails or 0) + 1
                             if engine._ttssrc_consec_fails >= 2 then
                                 engine._kindle_gst_play_bin = nil
@@ -1897,7 +1949,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                         -- playermgr never transitions TTS_State out of 0.
                         -- Waiting for a second failure wastes ~10s of silence.
                         -- Issue #18.
-                        if not engine._kindle_gst_play_bin then
+                        if not engine._kindle_gst_play_bin and not engine._ttssrc_broken then
                             local plugin_dir = engine.plugin_dir or "."
                             local gst_play_bin = plugin_dir .. "/kindle/gst-play"
                             local gf = io.open(gst_play_bin, "r")
