@@ -814,7 +814,15 @@ function BTManager:isBluealsaRunning()
     local h = io.popen("ps w 2>/dev/null | grep 'bluealsa' | grep -v grep")
     local r = h and h:read("*a") or ""
     if h then h:close() end
-    return r:match("bluealsa") ~= nil
+    if r:match("bluealsa") then
+        return true
+    end
+    -- Fallback: some BusyBox ps implementations truncate the command
+    -- line.  Verify the ALSA PCM device is registered instead.
+    local a = io.popen("aplay -L 2>/dev/null | grep 'bluealsa'")
+    local ar = a and a:read("*a") or ""
+    if a then a:close() end
+    return ar:match("bluealsa") ~= nil
 end
 
 --- Start the BlueALSA daemon for BT audio bridging.
@@ -918,9 +926,36 @@ function BTManager:startBluealsa()
 
     logger.warn("BTManager: starting bluealsa:", cmd)
     os.execute(cmd)
-    os.execute("sleep 1")
 
-    local running = self:isBluealsaRunning()
+    -- Give the daemon time to register with D-Bus and ALSA.
+    -- Single-core Kobos need more than 1 second; poll for up to 6 s.
+    local running = false
+    for attempt = 1, 3 do
+        os.execute("sleep 2")
+        running = self:isBluealsaRunning()
+        if running then
+            logger.warn("BTManager: bluealsa ready after", attempt * 2, "s")
+            break
+        else
+            logger.warn("BTManager: bluealsa not ready after attempt", attempt)
+        end
+    end
+
+    if not running then
+        local lf = io.open(ba_log, "r")
+        if lf then
+            local log_content = lf:read("*a") or ""
+            lf:close()
+            if log_content ~= "" then
+                logger.err("BTManager: bluealsa startup log:", log_content:gsub("\n", " "))
+            else
+                logger.err("BTManager: bluealsa startup log is empty (daemon exited silently)")
+            end
+        else
+            logger.err("BTManager: bluealsa startup log not found at", ba_log)
+        end
+    end
+
     logger.warn("BTManager: bluealsa started:", running)
     return running
 end

@@ -9,6 +9,7 @@ as their first parameter to access settings, bt_manager, etc.
 @module btui
 --]]
 
+local Device = require("device")
 local InfoMessage = require("ui/widget/infomessage")
 local UIManager = require("ui/uimanager")
 local logger = require("logger")
@@ -150,10 +151,23 @@ function BtUI.buildBluetoothMenu(plugin)
                     timeout = 1,
                 })
                 local ok = bt:powerOn()
-                UIManager:show(InfoMessage:new{
-                    text = ok and _("Bluetooth is on.") or _("Failed to power on Bluetooth."),
-                    timeout = 2,
-                })
+                if ok then
+                    UIManager:show(InfoMessage:new{
+                        text = _("Bluetooth is on."),
+                        timeout = 2,
+                    })
+                else
+                    local msg
+                    if Device.isKobo and Device:isKobo() and bt:getStackType() == "bluez" then
+                        msg = _("Failed to power on Bluetooth.\n\nOn some Kobo models, the Bluetooth hardware must first be initialized by the stock reading software. Please exit KOReader, pair your headphones in the Kobo library, then return to KOReader.\n\nIf Bluetooth was already working in the Kobo library, generate a bug report (Audiobook > Generate bug report) and share it on GitHub.")
+                    else
+                        msg = _("Failed to power on Bluetooth.")
+                    end
+                    UIManager:show(InfoMessage:new{
+                        text = msg,
+                        timeout = 8,
+                    })
+                end
             end
         end,
     })
@@ -255,6 +269,8 @@ function BtUI.btQuickConnect(plugin, dev, touchmenu_instance)
             -- may have been started by connect().
             local engine = plugin.tts_engine
             if engine then
+                engine._cached_player = nil
+                engine._no_real_audio_output = false
                 engine.player_cmd = engine:findAudioPlayer()
             end
 
@@ -394,9 +410,15 @@ function BtUI.btScanAndShow(plugin)
     if not bt:isPowered() then
         local ok = bt:powerOn()
         if not ok then
+            local msg
+            if Device.isKobo and Device:isKobo() and bt:getStackType() == "bluez" then
+                msg = _("Could not power on Bluetooth.\n\nOn some Kobo models, the Bluetooth hardware must first be initialized by the stock reading software. Please exit KOReader, pair your headphones in the Kobo library, then return to KOReader.")
+            else
+                msg = _("Could not power on Bluetooth.")
+            end
             UIManager:show(InfoMessage:new{
-                text = _("Could not power on Bluetooth."),
-                timeout = 3,
+                text = msg,
+                timeout = 8,
             })
             return
         end
