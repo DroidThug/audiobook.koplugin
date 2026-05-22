@@ -102,6 +102,11 @@ function TTSEngine:new(o)
     if o.plugin then
         o._gst_play_broken = o.plugin:getSetting("_gst_play_broken") or false
     end
+    -- Startup garbage collection: remove stale temp files left behind by
+    -- previous crashed or force-quit sessions (issue #22).
+    if Device:isKindle() then
+        os.execute("rm -f /var/tmp/audiobook_*.wav /var/tmp/audiobook_*.xml /var/tmp/audiobook_*.done /var/tmp/piper_server_* /var/tmp/.gst_play_last.log /var/tmp/.ttssrc_* /var/tmp/audiomgrd.err 2>/dev/null")
+    end
     o:detectBackend()
     return o
 end
@@ -436,19 +441,29 @@ function TTSEngine:synthesizeCommand(text, callback)
         local df_h = io.popen("df /var 2>/dev/null | tail -1")
         if df_h then
             local df_line = df_h:read("*a") or ""; df_h:close()
-            local use_pct = tonumber(df_line:match("(%d+)%%"))
-            if use_pct and use_pct >= 95 then
-                logger.warn("TTSEngine: /var is", use_pct, "% full -- synthesis will fail")
-                -- Try to free a little space, but warn regardless.
-                -- On Kindle /tmp is a symlink to /var/tmp; when /var is full
-                -- even a tiny WAV file may fail to write.
-                os.execute("rm -f /var/tmp/audiomgrd.err /var/tmp/*.tmp 2>/dev/null")
-                UIManager:show(InfoMessage:new{
-                    text = _("Temporary storage is full (" .. use_pct .. "% used).\n\nTTS synthesis needs space in /tmp to create audio files.\n\nPlease reboot your Kindle to clear temporary files, then try again."),
-                    timeout = 12,
-                })
-                if callback then callback(false, nil) end
-                return false
+            local _fs, _blocks, _used, avail, pct = df_line:match("^(%S+)%s+(%S+)%s+(%S+)%s+(%S+)%s+(%S+)")
+            local use_pct = tonumber(pct and pct:match("(%d+)"))
+            local avail_kb = tonumber(avail)
+            if use_pct and (use_pct >= 90 or (avail_kb and avail_kb < 5120)) then
+                logger.warn("TTSEngine: /var is", use_pct, "% full (", avail_kb, "KB free) -- running cleanup")
+                -- Aggressive cleanup of known temp file patterns from previous
+                -- sessions (crashes, force-quits) that leak into /var/tmp.
+                os.execute("rm -f /var/tmp/audiobook_*.wav /var/tmp/audiobook_*.xml /var/tmp/audiobook_*.done /var/tmp/piper_server_* /var/tmp/.gst_play_last.log /var/tmp/.ttssrc_* /var/tmp/audiomgrd.err /var/tmp/*.tmp 2>/dev/null")
+                -- Re-check after cleanup; abort only if still critically full.
+                local df_h2 = io.popen("df /var 2>/dev/null | tail -1")
+                if df_h2 then
+                    local df_line2 = df_h2:read("*a") or ""; df_h2:close()
+                    local use_pct2 = tonumber(df_line2:match("(%d+)%%"))
+                    if use_pct2 and use_pct2 >= 95 then
+                        logger.warn("TTSEngine: /var still", use_pct2, "% full after cleanup")
+                        UIManager:show(InfoMessage:new{
+                            text = _("Temporary storage is critically full (" .. use_pct .. "% used).\n\nTTS synthesis needs space in /tmp to create audio files.\n\nPlease reboot your Kindle to clear temporary files, then try again."),
+                            timeout = 12,
+                        })
+                        if callback then callback(false, nil) end
+                        return false
+                    end
+                end
             end
         end
     end
@@ -1520,19 +1535,31 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             local df_h = io.popen("df /var 2>/dev/null | tail -1")
             if df_h then
                 local df_line = df_h:read("*a") or ""; df_h:close()
-                local use_pct = tonumber(df_line:match("(%d+)%%"))
-                if use_pct and use_pct >= 95 then
-                    logger.warn("TTSEngine: /var is", use_pct, "% full -- native TTS will fail")
-                    self._var_full = true
-                    -- Try to free a little space, but warn regardless
-                    os.execute("rm -f /var/tmp/audiomgrd.err /var/tmp/*.tmp 2>/dev/null")
-                    UIManager:show(InfoMessage:new{
-                        text = _("/var is full (" .. use_pct .. "% used).\n\nThe Kindle's native TTS engine needs temporary space in /var to synthesize speech. With /var full, playback will silently fail.\n\nPlease reboot your Kindle to clear /var, then try again."),
-                        timeout = 15,
-                    })
-                    self.is_speaking = false
-                    self:onPlaybackComplete()
-                    return true
+                local _fs, _blocks, _used, avail, pct = df_line:match("^(%S+)%s+(%S+)%s+(%S+)%s+(%S+)%s+(%S+)")
+                local use_pct = tonumber(pct and pct:match("(%d+)"))
+                local avail_kb = tonumber(avail)
+                if use_pct and (use_pct >= 90 or (avail_kb and avail_kb < 5120)) then
+                    logger.warn("TTSEngine: /var is", use_pct, "% full (", avail_kb, "KB free) -- running cleanup")
+                    -- Aggressive cleanup of known temp file patterns from previous
+                    -- sessions (crashes, force-quits) that leak into /var/tmp.
+                    os.execute("rm -f /var/tmp/audiobook_*.wav /var/tmp/audiobook_*.xml /var/tmp/audiobook_*.done /var/tmp/piper_server_* /var/tmp/.gst_play_last.log /var/tmp/.ttssrc_* /var/tmp/audiomgrd.err /var/tmp/*.tmp 2>/dev/null")
+                    -- Re-check after cleanup; abort only if still critically full.
+                    local df_h2 = io.popen("df /var 2>/dev/null | tail -1")
+                    if df_h2 then
+                        local df_line2 = df_h2:read("*a") or ""; df_h2:close()
+                        local use_pct2 = tonumber(df_line2:match("(%d+)%%"))
+                        if use_pct2 and use_pct2 >= 95 then
+                            logger.warn("TTSEngine: /var still", use_pct2, "% full after cleanup")
+                            self._var_full = true
+                            UIManager:show(InfoMessage:new{
+                                text = _("/var is critically full (" .. use_pct .. "% used).\n\nThe Kindle's native TTS engine needs temporary space in /var to synthesize speech. With /var full, playback will silently fail.\n\nPlease reboot your Kindle to clear /var, then try again."),
+                                timeout = 15,
+                            })
+                            self.is_speaking = false
+                            self:onPlaybackComplete()
+                            return true
+                        end
+                    end
                 end
             end
         end
@@ -2874,11 +2901,24 @@ function TTSEngine:findAudioPlayer()
                             if has_plugin_error then
                                 logger.warn("TTSEngine: kindle-gst-play probe found plugin load error:", probe:gsub("\n", " "))
                             elseif probe:match("mixersink=found") then
-                                self.audio_player_type = "kindle-gst-play"
-                                self._kindle_gst_play_bin = gst_play_cmd
-                                self._no_real_audio_output = false
-                                logger.warn("TTSEngine: Found kindle-gst-play with mixersink, probe:", probe:gsub("\n", " "))
-                                return "kindle-gst-play"
+                                -- Preemptive skip on PW5-like stripped firmware:
+                                -- If wavparse, audioconvert, and audioresample are
+                                -- all missing, the gst-play WAV pipeline will hang.
+                                local has_wavparse = not probe:match("wavparse=not_found")
+                                local has_audioconvert = not probe:match("audioconvert=not_found")
+                                local has_audioresample = not probe:match("audioresample=not_found")
+                                if not has_wavparse and not has_audioconvert and not has_audioresample then
+                                    logger.warn("TTSEngine: PW5 signature detected (wavparse+audioconvert+audioresample missing), skipping kindle-gst-play WAV mode")
+                                    -- Keep the binary reference for --ttssrc fallback
+                                    self._kindle_gst_play_bin = gst_play_cmd
+                                    -- Fall through to kindle-native-tts-fallback below
+                                else
+                                    self.audio_player_type = "kindle-gst-play"
+                                    self._kindle_gst_play_bin = gst_play_cmd
+                                    self._no_real_audio_output = false
+                                    logger.warn("TTSEngine: Found kindle-gst-play with mixersink, probe:", probe:gsub("\n", " "))
+                                    return "kindle-gst-play"
+                                end
                             else
                                 logger.warn("TTSEngine: kindle-gst-play probe failed:", probe:gsub("\n", " "))
                             end

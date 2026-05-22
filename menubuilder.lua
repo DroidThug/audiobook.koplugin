@@ -168,9 +168,20 @@ function MenuBuilder.buildVoiceSettingsMenu(plugin)
         table.insert(menu, {
             text = _("Download Piper voice…"),
             sub_item_table_func = function()
-                local _dir = debug.getinfo(1, "S").source:match("^@(.*/)[^/]*$") or "./"
-                local Downloader = dofile(_dir .. "downloader.lua")
-                return MenuBuilder.buildPiperDownloadMenu(plugin, Downloader)
+                local ok, result = pcall(function()
+                    local _dir = debug.getinfo(1, "S").source:match("^@(.*/)[^/]*$") or "./"
+                    local Downloader = dofile(_dir .. "downloader.lua")
+                    return MenuBuilder.buildPiperDownloadMenu(plugin, Downloader)
+                end)
+                if ok then
+                    return result
+                else
+                    logger.err("MenuBuilder: buildPiperDownloadMenu crashed:", result)
+                    return {{
+                        text = _("Could not load voice download menu."),
+                        enabled = false,
+                    }}
+                end
             end,
         })
     else

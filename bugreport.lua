@@ -1157,7 +1157,8 @@ fi
     -- The TTS orchestrator and audiomgrd can create files there during
     -- probing; on a 64MB /var tmpfs this can fill the filesystem and
     -- break subsequent TTS attempts (issue #23).
-    os.execute("rm -f /var/tmp/audiomgrd.err /var/tmp/*.tmp 2>/dev/null")
+    -- Also remove plugin temp files (WAV, FIFO, logs) from previous sessions.
+    os.execute("rm -f /var/tmp/audiobook_*.wav /var/tmp/audiobook_*.xml /var/tmp/audiobook_*.done /var/tmp/piper_server_* /var/tmp/.gst_play_last.log /var/tmp/.ttssrc_* /var/tmp/audiomgrd.err /var/tmp/*.tmp 2>/dev/null")
 
     return info
 end
