@@ -27,7 +27,7 @@ function AndroidTts:new(o)
     o._initialized = false
     o._android = nil
     o._cache_dir = nil
-    o.plugin_dir = o.plugin_dir or "."
+    o.plugin_dir = (o.plugin_dir or "."):gsub("//+", "/"):gsub("/+$", "")
 
     return o
 end
@@ -68,12 +68,20 @@ function AndroidTts:init()
     end
     self._android = android
 
-    -- Check that the .dex helper file exists
+    -- Check that the .dex helper file exists (with fallback to this file's dir)
     local dex_path = self.plugin_dir .. "/android/tts_helper.dex"
     local f = io.open(dex_path, "r")
     if not f then
-        logger.err("AndroidTts: tts_helper.dex not found at", dex_path)
-        return false
+        local fallback_dir = debug.getinfo(1, "S").source:match("^@(.*/)[^/]*$") or "."
+        fallback_dir = fallback_dir:gsub("//+", "/"):gsub("/+$", "")
+        dex_path = fallback_dir .. "/android/tts_helper.dex"
+        f = io.open(dex_path, "r")
+        if not f then
+            logger.err("AndroidTts: tts_helper.dex not found. Checked plugin_dir:", self.plugin_dir, "and fallback:", fallback_dir)
+            return false
+        end
+        -- Update plugin_dir so subsequent path lookups also work
+        self.plugin_dir = fallback_dir
     end
     f:close()
 

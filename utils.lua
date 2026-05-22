@@ -56,4 +56,15 @@ function Utils.countSyllables(word)
     return math.max(count, 1)
 end
 
+--- Normalize a directory path: collapse double slashes, strip trailing slashes.
+-- @param path string|nil
+-- @return string  Normalized path without trailing slash
+function Utils.normalizeDirPath(path)
+    if not path then return "." end
+    path = path:gsub("//+", "/")
+    path = path:gsub("/+$", "")
+    if path == "" then return "." end
+    return path
+end
+
 return Utils

@@ -156,7 +156,7 @@ function TTSEngine:detectBackend()
     -- and go straight to system PATH detection.
     if not is_android then
         -- Detect all available bundled engines first, then pick the best default.
-        local plugin_dir = self.plugin_dir or "/mnt/onboard/.adds/koreader/plugins/audiobook.koplugin"
+        local plugin_dir = Utils.normalizeDirPath(self.plugin_dir or "/mnt/onboard/.adds/koreader/plugins/audiobook.koplugin")
         logger.warn("TTSEngine: detectBackend plugin_dir =", plugin_dir)
         -- Check for bundled espeak-ng (rename .bin -> original if needed)
         local bundled_base = plugin_dir .. "/espeak-ng"
@@ -241,7 +241,7 @@ function TTSEngine:detectBackend()
                 logger.warn("TTSEngine: Android TTS init timed out or failed")
             end
         else
-            logger.warn("TTSEngine: Android TTS helper .dex not available")
+            logger.warn("TTSEngine: Android TTS helper .dex not available at", Utils.normalizeDirPath(self.plugin_dir or "."))
         end
     end
     -- Kindle native TTS: Amazon's Ivona SDK via tts.orchestrator/playermgr.
@@ -260,11 +260,11 @@ function TTSEngine:detectBackend()
     end
     self.backend = nil
     if is_android then
-        self.backend_error = _("No TTS engine available on this device.\n\nThe plugin needs the Android TTS helper (.dex) which is not yet included.\n\nAs a workaround, install espeak-ng via Termux:\n  pkg install espeak-ng\n\nThen add Termux to your PATH before launching KOReader.")
+        self.backend_error = _("No TTS engine available on this device.\n\nThe Android TTS helper (.dex) was not found at the expected path.\n\nPlease verify that tts_helper.dex exists inside the plugin's android/ folder.\n\nAs a workaround, install espeak-ng via Termux:\n  pkg install espeak-ng\n\nThen add Termux to your PATH before launching KOReader.")
     else
         -- Check if the user has .onnx voice models but no binaries.
         -- This usually means a source-code install or incomplete extraction.
-        local plugin_dir = self.plugin_dir or "."
+        local plugin_dir = Utils.normalizeDirPath(self.plugin_dir or ".")
         local has_onnx = false
         local lh = io.popen("ls '" .. plugin_dir .. "'/piper/*.onnx 2>/dev/null")
         if lh then
@@ -1457,7 +1457,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             and not is_fallback
         if is_real_wav then
             if not self._kindle_gst_play_bin then
-                local plugin_dir = self.plugin_dir or "."
+                local plugin_dir = Utils.normalizeDirPath(self.plugin_dir or ".")
                 local gst_play_bin = plugin_dir .. "/kindle/gst-play"
                 local gf = io.open(gst_play_bin, "r")
                 if gf then
@@ -1545,7 +1545,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         -- gracefully (the /var-full warning was already shown above).
         if self._var_full and not self._gst_play_broken then
             if not self._kindle_gst_play_bin then
-                local plugin_dir = self.plugin_dir or "."
+                local plugin_dir = Utils.normalizeDirPath(self.plugin_dir or ".")
                 local gst_play_bin = plugin_dir .. "/kindle/gst-play"
                 local gf = io.open(gst_play_bin, "r")
                 if gf then
@@ -2849,7 +2849,7 @@ function TTSEngine:findAudioPlayer()
                         logger.warn("TTSEngine: kindle-gst-play available for --ttssrc mode")
                     end
                 elseif not self._gst_play_broken then
-                    local plugin_dir = self.plugin_dir or "."
+                    local plugin_dir = Utils.normalizeDirPath(self.plugin_dir or ".")
                     local gst_play_bin = plugin_dir .. "/kindle/gst-play"
                     local gf = io.open(gst_play_bin, "r")
                     if gf then
@@ -4394,7 +4394,7 @@ function TTSEngine:setBackend(backend)
         self.backend_cmd = self.piper_cmd or "piper"
     elseif backend == self.BACKENDS.ESPEAK then
         -- Restore bundled espeak-ng path if available
-        local plugin_dir = self.plugin_dir or "/mnt/onboard/.adds/koreader/plugins/audiobook.koplugin"
+        local plugin_dir = Utils.normalizeDirPath(self.plugin_dir or "/mnt/onboard/.adds/koreader/plugins/audiobook.koplugin")
         local bundled_bin = plugin_dir .. "/espeak-ng/bin/espeak-ng"
         local f = io.open(bundled_bin, "r")
         if f then

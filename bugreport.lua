@@ -14,6 +14,7 @@ local _ = require("gettext")
 
 local _utils_dir = debug.getinfo(1, "S").source:match("^@(.*/)[^/]*$") or "./"
 local Utils = dofile(_utils_dir .. "utils.lua")
+_utils_dir = Utils.normalizeDirPath(_utils_dir) .. "/"
 
 local BugReport = {}
 

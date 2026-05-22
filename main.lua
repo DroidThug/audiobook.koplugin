@@ -47,6 +47,8 @@ function Audiobook:init()
         local _utils_dir = self.path and (self.path .. "/")
             or debug.getinfo(2, "S").source:match("^@(.*/)[^/]*$")
             or "./"
+        -- Collapse double slashes and ensure exactly one trailing slash.
+        _utils_dir = _utils_dir:gsub("//+", "/"):gsub("/+$", "") .. "/"
         PLUGIN_PATH = _utils_dir
 
         -- Load each submodule independently so a failure in one
@@ -148,7 +150,7 @@ function Audiobook:_initSubmodules()
             self.text_parser = TextParser:new()
             self.tts_engine = TTSEngine:new{
                 plugin = self,
-                plugin_dir = pp:sub(1, -2),
+                plugin_dir = Utils.normalizeDirPath(pp),
             }
             local saved_backend = self:getSetting("tts_backend", nil)
             if saved_backend then
