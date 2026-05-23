@@ -634,11 +634,14 @@ function TTSEngine:synthesizeCommand(text, callback)
     -- Piper TTS is slow (~8-11s per sentence on Kobo ARM).
     -- Run it asynchronously so the UI stays responsive.
     if self.backend == self.BACKENDS.PIPER then
-        -- Wrap: run synthesis in background, write a marker file when done
+        -- Wrap: run synthesis in background, write a marker file when done.
+        -- Capture stderr to a log file so we can detect ONNX Runtime errors
+        -- (e.g. "Protobuf parsing failed") and provide better diagnostics.
         local done_marker = audio_file .. ".done"
+        local piper_log = "/tmp/.piper_last.log"
         local bg_cmd = string.format(
-            '(%s; echo $? > "%s") &',
-            cmd, done_marker
+            '(%s > "%s" 2>&1; echo $? > "%s") &',
+            cmd, piper_log, done_marker
         )
         logger.dbg("TTSEngine: Launching Piper async:", bg_cmd)
         os.execute(bg_cmd)
@@ -669,6 +672,7 @@ function TTSEngine:synthesizeCommand(text, callback)
                         engine.current_audio_file = audio_file
                         engine:generateTimingEstimates(text)
                         logger.dbg("TTSEngine: Piper async done, file size:", size)
+                        os.remove(piper_log)
                         -- Chain: launch next queued prefetch now that the process slot is free
                         engine:_launchNextPiperPrefetch()
                         if callback then
@@ -678,6 +682,31 @@ function TTSEngine:synthesizeCommand(text, callback)
                     end
                 end
                 logger.err("TTSEngine: Piper async failed, exit_code:", exit_code)
+                -- Check for ONNX Runtime incompatibility (Protobuf parsing failed).
+                -- Auto-fallback to espeak-ng so the user still gets audio.
+                local log_f = io.open(piper_log, "r")
+                local log_text = log_f and log_f:read("*a") or ""
+                if log_f then log_f:close() end
+                if log_text:match("Protobuf parsing failed")
+                    or log_text:match("ONNX") then
+                    engine._piper_onnx_broken = true
+                    logger.warn("TTSEngine: Piper ONNX error detected, auto-falling back to espeak-ng")
+                    os.remove(piper_log)
+                    -- Switch to espeak-ng for this session
+                    engine.backend = engine.BACKENDS.ESPEAK
+                    engine.backend_cmd = engine.espeak_cmd
+                    engine.backend_name = "espeak-ng"
+                    UIManager:show(InfoMessage:new{
+                        text = _(
+                            "Piper voice model is incompatible with this device (ONNX Runtime error).\n\n"
+                            .. "Switching to espeak-ng. You can select a different voice in Audiobook settings."
+                        ),
+                        timeout = 6,
+                    })
+                    -- Retry synthesis with espeak-ng
+                    return engine:synthesizeCommand(text, callback)
+                end
+                os.remove(piper_log)
                 engine:_launchNextPiperPrefetch()
                 if callback then
                     callback(false, nil)
@@ -692,6 +721,7 @@ function TTSEngine:synthesizeCommand(text, callback)
                 -- Clean up
                 if piper_text_file then os.remove(piper_text_file) end
                 os.remove(done_marker)
+                os.remove(piper_log)
                 engine:_launchNextPiperPrefetch()
                 if callback then
                     callback(false, nil)
@@ -1288,8 +1318,33 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
     -- through aplay for every sentence wastes CPU and can crash the device.
     if self._no_real_audio_output then
         local bt_connected = false
+        -- Kindle does not use BlueZ; BT audio is managed by audiomgrd.
+        -- Query audiomgrd directly via LIPC to detect system-level BT connections.
+        if Device:isKindle() and not bt_connected then
+            local h = io.popen("lipc-get-prop com.lab126.audiomgrd audioOutputConnected 2>/dev/null")
+            if h then
+                local val = h:read("*a") or ""
+                h:close()
+                if val:match("1") then
+                    bt_connected = true
+                    logger.warn("TTSEngine: Kindle BT audio connected (audiomgrd)")
+                end
+            end
+            -- Also check audioCurrentOutput == 1 (A2DP / BT output)
+            if not bt_connected then
+                local h2 = io.popen("lipc-get-prop com.lab126.audiomgrd audioCurrentOutput 2>/dev/null")
+                if h2 then
+                    local val2 = h2:read("*a") or ""
+                    h2:close()
+                    if val2:match("1") then
+                        bt_connected = true
+                        logger.warn("TTSEngine: Kindle BT output selected (audiomgrd)")
+                    end
+                end
+            end
+        end
         local btm = self.plugin and self.plugin.bt_manager
-        if btm then
+        if btm and not bt_connected then
             local ok, devices = pcall(btm.listAudioDevices, btm)
             if ok and devices then
                 for _, dev in ipairs(devices) do
@@ -1980,11 +2035,11 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                                 end
                             end
                         end
-                        -- Do NOT fall back to gst-play WAV mode if it is known
-                        -- broken on this device (Colorsoft or previously
-                        -- detected hang).
-                        local is_colorsoft = Device.model and Device.model == "KindleColorSoft"
-                        if not is_colorsoft and not engine._gst_play_broken
+                        -- Do NOT fall back to gst-play WAV mode if ttssrc is
+                        -- available (it is more reliable than WAV on stripped
+                        -- GStreamer firmware) or if gst-play is known broken.
+                        local use_ttssrc = engine._ttssrc_available
+                        if not use_ttssrc and not engine._gst_play_broken
                             and engine._kindle_gst_play_bin and engine.current_audio_file then
                             logger.warn("TTSEngine: native TTS failed, falling back to kindle-gst-play (issue #18)")
                             engine.audio_player_type = "kindle-gst-play"
@@ -1994,12 +2049,13 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                             engine:play()
                             return
                         end
-                        -- v0.1.9.7: On Colorsoft, playermgr is non-functional.
+                        -- v0.1.9.7: On Colorsoft (and any device where ttssrc
+                        -- is available), playermgr may be non-functional.
                         -- Fall back to kindle-ttssrc which bypasses playermgr
                         -- entirely (issue #23).
-                        if is_colorsoft and engine._kindle_gst_play_bin
+                        if use_ttssrc and engine._kindle_gst_play_bin
                             and not engine._ttssrc_broken then
-                            logger.warn("TTSEngine: native TTS failed on Colorsoft, falling back to kindle-ttssrc (issue #23)")
+                            logger.warn("TTSEngine: native TTS failed, falling back to kindle-ttssrc (issue #23)")
                             engine.audio_player_type = "kindle-ttssrc"
                             engine._no_real_audio_output = false
                             engine.is_speaking = false
@@ -3082,6 +3138,7 @@ function TTSEngine:findAudioPlayer()
                     -- v0.1.6.5: Keep kindle-gst-play for --ttssrc mode.
                     -- ttssrc bypasses playermgr entirely (which is non-functional
                     -- on Colorsoft) and routes text directly to the Ivona SDK.
+                    local plugin_dir = Utils.normalizeDirPath(self.plugin_dir or ".")
                     local gst_play_bin = plugin_dir .. "/kindle/gst-play"
                     local gf = io.open(gst_play_bin, "r")
                     if gf then
@@ -3104,6 +3161,7 @@ function TTSEngine:findAudioPlayer()
                                 local probe = ph:read("*a") or ""
                                 ph:close()
                                 if probe:match("ttssrc=found") and probe:match("mixersink=found") then
+                                    self._ttssrc_available = true
                                     self.audio_player_type = "kindle-ttssrc"
                                     self._no_real_audio_output = false
                                     logger.warn("TTSEngine: Colorsoft ttssrc+mixersink confirmed, selecting kindle-ttssrc")
@@ -3142,6 +3200,13 @@ function TTSEngine:findAudioPlayer()
                             if has_plugin_error then
                                 logger.warn("TTSEngine: kindle-gst-play probe found plugin load error:", probe:gsub("\n", " "))
                             elseif probe:match("mixersink=found") then
+                                -- Detect ttssrc availability for robust fallback on
+                                -- devices where playermgr is non-functional (issue #23).
+                                -- We check here so the fallback works even when
+                                -- Device.model does not match "KindleColorSoft".
+                                if probe:match("ttssrc=found") then
+                                    self._ttssrc_available = true
+                                end
                                 -- Preemptive skip on PW5-like stripped firmware:
                                 -- If wavparse, audioconvert, and audioresample are
                                 -- all missing, the gst-play WAV pipeline will hang.
