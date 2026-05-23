@@ -1507,7 +1507,10 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         -- NOTE: kindle-native-tts-fallback INTENTIONALLY uses Ivona even
         -- when a WAV exists (that's the whole point -- the WAV player is
         -- broken on stripped GStreamer firmware like PW5 / Colorsoft).
+        -- kindle-ttssrc (Colorsoft) also bypasses WAV playback and uses
+        -- the native Ivona voice, so treat it like a fallback path.
         local is_fallback = self.audio_player_type == "kindle-native-tts-fallback"
+            or self.audio_player_type == "kindle-ttssrc"
         local is_real_wav = self.current_audio_file
             and self.current_audio_file ~= "/tmp/.kindle_native_tts"
             and self.current_audio_file:match("%.wav$")
@@ -1977,8 +1980,9 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                                 end
                             end
                         end
-                        -- Do NOT fall back to gst-play if it is known broken on
-                        -- this device (Colorsoft or previously detected hang).
+                        -- Do NOT fall back to gst-play WAV mode if it is known
+                        -- broken on this device (Colorsoft or previously
+                        -- detected hang).
                         local is_colorsoft = Device.model and Device.model == "KindleColorSoft"
                         if not is_colorsoft and not engine._gst_play_broken
                             and engine._kindle_gst_play_bin and engine.current_audio_file then
@@ -1986,6 +1990,18 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                             engine.audio_player_type = "kindle-gst-play"
                             engine._no_real_audio_output = false
                             -- Replay the current audio file via gst-play
+                            engine.is_speaking = false
+                            engine:play()
+                            return
+                        end
+                        -- v0.1.9.7: On Colorsoft, playermgr is non-functional.
+                        -- Fall back to kindle-ttssrc which bypasses playermgr
+                        -- entirely (issue #23).
+                        if is_colorsoft and engine._kindle_gst_play_bin
+                            and not engine._ttssrc_broken then
+                            logger.warn("TTSEngine: native TTS failed on Colorsoft, falling back to kindle-ttssrc (issue #23)")
+                            engine.audio_player_type = "kindle-ttssrc"
+                            engine._no_real_audio_output = false
                             engine.is_speaking = false
                             engine:play()
                             return
@@ -2018,6 +2034,108 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         UIManager:scheduleIn(0.1, pollNativeTtsDone)
         return true
     end
+
+    -- === KINDLE TTSSRC PATH (Colorsoft, issue #23) ===
+    -- When playermgr is non-functional (Colorsoft firmware 5.18.x),
+    -- bypass it entirely and feed text directly to the ttssrc GStreamer
+    -- element.  ttssrc → Ivona SDK → mixersink → audiomgrd → BT.
+    -- This reuses the gst-play helper with --ttssrc flag.
+    if self.audio_player_type == "kindle-ttssrc" then
+        local text = self._native_tts_text
+        if not text or text == "" then
+            logger.err("TTSEngine: kindle-ttssrc -- no text to speak")
+            self:onPlaybackComplete()
+            return true
+        end
+        self._concat_durations = nil
+        self.play_generation = (self.play_generation or 0) + 1
+        local my_gen = self.play_generation
+        local dur_ms = self._current_audio_duration_ms or 5000
+        self._expected_play_duration_ms = dur_ms
+        self.playback_latency_ms = 300
+        logger.warn("TTSEngine: kindle-ttssrc:", text:sub(1, 60),
+            "est_dur=", dur_ms, "ms")
+        -- Request audio focus
+        os.execute("lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>/dev/null")
+        -- Shell-safe single-quote escaping
+        local function shellEsc(s) return "'" .. s:gsub("'", "'\\''") .. "'" end
+        local gst_log = "/tmp/.gst_play_last.log"
+        local cmd = string.format(
+            '%s --ttssrc %s >%s 2>&1 & echo $!',
+            self._kindle_gst_play_bin, shellEsc(text), gst_log)
+        local h = io.popen(cmd)
+        local pid_str = h and h:read("*a") or ""
+        if h then h:close() end
+        local pid = tonumber(pid_str:match("(%d+)"))
+        self._gst_play_pid = pid
+        logger.warn("TTSEngine: kindle-ttssrc launched, PID=", pid)
+        self._audio_launched_at = UIManager:getTime()
+        self:startTimingLoop()
+        -- Poll /proc/<pid> for process completion (same as kindle-gst-play)
+        local engine = self
+        local poll_count = 0
+        local max_polls = math.max(300, math.floor(dur_ms * 3 / 100))
+        local function pollTtsSrcDone()
+            if (engine.play_generation or 0) ~= my_gen then return end
+            if not engine.is_speaking then return end
+            if engine.is_paused then
+                UIManager:scheduleIn(0.3, pollTtsSrcDone)
+                return
+            end
+            poll_count = poll_count + 1
+            local proc_fh = pid and io.open("/proc/" .. pid .. "/status", "r")
+            if proc_fh then
+                proc_fh:close()
+                if poll_count >= max_polls then
+                    logger.warn("TTSEngine: kindle-ttssrc timed out after",
+                        poll_count * 0.1, "s -- killing")
+                    os.execute("kill " .. pid .. " 2>/dev/null")
+                    engine._gst_play_pid = nil
+                    engine:onPlaybackComplete()
+                else
+                    UIManager:scheduleIn(0.1, pollTtsSrcDone)
+                end
+            else
+                local log_text = ""
+                local log_fh = io.open("/tmp/.gst_play_last.log", "r")
+                if log_fh then
+                    log_text = log_fh:read("*a") or ""
+                    log_fh:close()
+                    if log_text ~= "" then
+                        logger.warn("TTSEngine: kindle-ttssrc stderr:", log_text:sub(1, 500))
+                    end
+                end
+                local has_error = log_text:match("Failed to load plugin")
+                    or log_text:match("undefined symbol")
+                    or log_text:match("[Ee]rror")
+                if has_error then
+                    logger.err("TTSEngine: kindle-ttssrc exited with error")
+                    engine._gst_play_pid = nil
+                    engine.is_speaking = false
+                    engine.play_generation = (engine.play_generation or 0) + 1
+                    engine:cleanup()
+                    engine._ttssrc_broken = true
+                    if engine.plugin then
+                        engine.plugin:setSetting("_ttssrc_broken", true)
+                    end
+                    UIManager:show(InfoMessage:new{
+                        text = _("Audio playback failed on this Kindle model.\n\nThe ttssrc TTS pipeline could not start. Please generate a bug report and share it on the GitHub issue."),
+                        timeout = 10,
+                    })
+                    if engine.on_fail_callback then
+                        engine.on_fail_callback()
+                    end
+                    return
+                end
+                logger.warn("TTSEngine: kindle-ttssrc finished, polls=", poll_count)
+                engine._gst_play_pid = nil
+                engine:onPlaybackComplete()
+            end
+        end
+        UIManager:scheduleIn(0.2, pollTtsSrcDone)
+        return true
+    end
+
     -- Calculate real audio duration from WAV file.
     -- If _unpadded_duration_ms is set, the WAV was padded with trailing
     -- silence by SyncController.  Use the original (speech-only) duration
@@ -2886,9 +3004,15 @@ function TTSEngine:findAudioPlayer()
     -- a WAV-producing backend (Piper, espeak), skip Ivona and fall through to
     -- a real audio player (kindle-lipc / kindle-gst-play) so the WAV can be
     -- decoded and routed to the speaker/BT.
+    --
+    -- v0.1.9.7: On Colorsoft, playermgr is non-functional (issue #23).
+    -- Skip the playermgr-based native TTS path and fall through to the
+    -- kindle-ttssrc path which bypasses playermgr entirely.
+    local is_colorsoft = Device:isKindle() and Device.model == "KindleColorSoft"
     if Device:isKindle() and self:commandExists("lipc-set-prop")
         and self:commandExists("lipc-get-prop")
-        and self.backend == self.BACKENDS.KINDLE_NATIVE then
+        and self.backend == self.BACKENDS.KINDLE_NATIVE
+        and not is_colorsoft then
         local h = io.popen("lipc-get-prop com.lab126.tts.orchestrator orchestratorStarted 2>/dev/null")
         if h then
             local val = h:read("*a") or ""; h:close()
@@ -2953,7 +3077,6 @@ function TTSEngine:findAudioPlayer()
                 -- runtime during a previous playback attempt).
                 -- Also pre-emptively skip on Kindle Colorsoft where the
                 -- pipeline starts but cannot produce audio (issue #23).
-                local is_colorsoft = Device.model and Device.model == "KindleColorSoft"
                 if is_colorsoft then
                     logger.warn("TTSEngine: skipping kindle-gst-play WAV mode on Kindle Colorsoft (known broken)")
                     -- v0.1.6.5: Keep kindle-gst-play for --ttssrc mode.
@@ -2971,6 +3094,27 @@ function TTSEngine:findAudioPlayer()
                         end
                         self._kindle_gst_play_bin = gst_play_cmd
                         logger.warn("TTSEngine: kindle-gst-play available for --ttssrc mode")
+                        -- v0.1.9.7: On Colorsoft, playermgr is non-functional (issue #23).
+                        -- Verify ttssrc is available and use it directly instead of
+                        -- falling through to kindle-native-tts-fallback (which relies
+                        -- on playermgr and will silently fail).
+                        if not self._ttssrc_broken then
+                            local ph = io.popen(gst_play_cmd .. " --probe 2>&1")
+                            if ph then
+                                local probe = ph:read("*a") or ""
+                                ph:close()
+                                if probe:match("ttssrc=found") and probe:match("mixersink=found") then
+                                    self.audio_player_type = "kindle-ttssrc"
+                                    self._no_real_audio_output = false
+                                    logger.warn("TTSEngine: Colorsoft ttssrc+mixersink confirmed, selecting kindle-ttssrc")
+                                    return "kindle-ttssrc"
+                                else
+                                    logger.warn("TTSEngine: Colorsoft ttssrc probe failed:", probe:gsub("\n", " "))
+                                end
+                            end
+                        else
+                            logger.warn("TTSEngine: kindle-ttssrc skipped (marked broken on this device)")
+                        end
                     end
                 elseif not self._gst_play_broken then
                     local plugin_dir = Utils.normalizeDirPath(self.plugin_dir or ".")
@@ -4332,8 +4476,10 @@ function TTSEngine:stop()
         os.execute("lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null")
     end
 
-    -- Stop kindle-gst-play process if active
-    if self.audio_player_type == "kindle-gst-play" and self._gst_play_pid then
+    -- Stop kindle-gst-play / kindle-ttssrc process if active
+    if (self.audio_player_type == "kindle-gst-play"
+            or self.audio_player_type == "kindle-ttssrc")
+        and self._gst_play_pid then
         os.execute("kill " .. self._gst_play_pid .. " 2>/dev/null")
         self._gst_play_pid = nil
     end
