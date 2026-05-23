@@ -106,7 +106,7 @@ function TTSEngine:new(o)
     -- Startup garbage collection: remove stale temp files left behind by
     -- previous crashed or force-quit sessions (issue #22).
     if Device:isKindle() then
-        os.execute("rm -f /var/tmp/audiobook_*.wav /var/tmp/audiobook_*.xml /var/tmp/audiobook_*.done /var/tmp/piper_server_* /var/tmp/.gst_play_last.log /var/tmp/.ttssrc_* /var/tmp/audiomgrd.err /var/tmp/*.tmp 2>/dev/null")
+        os.execute("rm -f /var/tmp/audiobook_*.wav /var/tmp/audiobook_*.xml /var/tmp/audiobook_*.txt /var/tmp/audiobook_*.done /var/tmp/piper_server_* /var/tmp/.gst_play_last.log /var/tmp/.ttssrc_* /var/tmp/audiomgrd.err /var/tmp/*.tmp 2>/dev/null")
         -- Truncate audiomgrd's deleted stderr log via /proc fd.
         -- audiomgrd holds the file open after deletion, so rm -f cannot
         -- reclaim the space. Truncating via /proc frees it (issue #22).
@@ -508,7 +508,7 @@ function TTSEngine:synthesizeCommand(text, callback)
                 logger.warn("TTSEngine: /var is", use_pct, "% full (", avail_kb, "KB free) -- running cleanup")
                 -- Aggressive cleanup of known temp file patterns from previous
                 -- sessions (crashes, force-quits) that leak into /var/tmp.
-                os.execute("rm -f /var/tmp/audiobook_*.wav /var/tmp/audiobook_*.xml /var/tmp/audiobook_*.done /var/tmp/piper_server_* /var/tmp/.gst_play_last.log /var/tmp/.ttssrc_* /var/tmp/audiomgrd.err /var/tmp/*.tmp 2>/dev/null")
+                os.execute("rm -f /var/tmp/audiobook_*.wav /var/tmp/audiobook_*.xml /var/tmp/audiobook_*.txt /var/tmp/audiobook_*.done /var/tmp/piper_server_* /var/tmp/.gst_play_last.log /var/tmp/.ttssrc_* /var/tmp/audiomgrd.err /var/tmp/*.tmp 2>/dev/null")
                 -- Re-check after cleanup; abort only if still critically full.
                 local df_h2 = io.popen("df /var 2>/dev/null | tail -1")
                 if df_h2 then
@@ -1550,14 +1550,27 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         -- Notify once per session when using the degraded fallback.
         if is_fallback and not self._native_fallback_warned then
             self._native_fallback_warned = true
-            UIManager:show(InfoMessage:new{
-                text = _(
+            local fallback_text
+            if self._kindle_wav_playback_limited then
+                local backend_name = self.backend_name or self.backend or "selected"
+                fallback_text = _(
+                    "Using Kindle's built-in voice.\n\n"
+                    .. backend_name .. " TTS is selected, but this Kindle model "
+                    .. "cannot play WAV files because GStreamer is stripped. "
+                    .. "Audio will use the built-in Kindle voice instead.\n\n"
+                    .. "Word highlighting may be slightly less precise with the built-in voice."
+                )
+            else
+                fallback_text = _(
                     "Using Kindle's built-in voice.\n\n"
                     .. "Your Kindle model's audio system cannot play the selected voice "
                     .. "(espeak-ng or Piper).  Falling back to the Kindle's native "
                     .. "Ivona TTS, which works on all Kindle models.\n\n"
                     .. "Word highlighting may be slightly less precise with the built-in voice."
-                ),
+                )
+            end
+            UIManager:show(InfoMessage:new{
+                text = fallback_text,
                 timeout = 8,
             })
         end
@@ -1595,7 +1608,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                 if use_pct and (use_pct >= 90 or (avail_kb and avail_kb < 5120)) then
                     logger.warn("TTSEngine: /var is", use_pct, "% full (", avail_kb, "KB free) -- running cleanup")
                     -- Aggressive cleanup of known temp file patterns.
-                    os.execute("rm -f /var/tmp/audiobook_*.wav /var/tmp/audiobook_*.xml /var/tmp/audiobook_*.done /var/tmp/piper_server_* /var/tmp/.gst_play_last.log /var/tmp/.ttssrc_* /var/tmp/audiomgrd.err /var/tmp/*.tmp 2>/dev/null")
+                    os.execute("rm -f /var/tmp/audiobook_*.wav /var/tmp/audiobook_*.xml /var/tmp/audiobook_*.txt /var/tmp/audiobook_*.done /var/tmp/piper_server_* /var/tmp/.gst_play_last.log /var/tmp/.ttssrc_* /var/tmp/audiomgrd.err /var/tmp/*.tmp 2>/dev/null")
                     -- Truncate audiomgrd's deleted stderr log via /proc fd.
                     -- audiomgrd holds the file open after deletion, so rm -f
                     -- cannot reclaim the space. Truncating via /proc frees it.
@@ -2995,6 +3008,12 @@ function TTSEngine:findAudioPlayer()
                                     logger.warn("TTSEngine: PW5 signature detected (wavparse+audioconvert+audioresample missing), skipping kindle-gst-play WAV mode")
                                     -- Keep the binary reference for --ttssrc fallback
                                     self._kindle_gst_play_bin = gst_play_cmd
+                                    -- Flag that this Kindle cannot play WAV files produced by
+                                    -- external TTS backends (Piper, espeak).  Used to show a
+                                    -- clearer pre-synthesis warning in main.lua.
+                                    if self.backend ~= self.BACKENDS.KINDLE_NATIVE then
+                                        self._kindle_wav_playback_limited = true
+                                    end
                                     -- Fall through to kindle-native-tts-fallback below
                                 else
                                     self.audio_player_type = "kindle-gst-play"

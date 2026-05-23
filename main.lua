@@ -754,6 +754,22 @@ function Audiobook:startReadAlong(text, start_pos)
         end
     end)
 
+    -- v0.1.9.6: Pre-synthesis warning when Piper (or another WAV-producing
+    -- backend) is selected on a stripped-GStreamer Kindle.  The fallback to
+    -- native Ivona TTS happens automatically, but users should know *before*
+    -- synthesis starts so they aren't surprised by the voice change.
+    if self.tts_engine._kindle_wav_playback_limited
+        and self.tts_engine.backend == self.tts_engine.BACKENDS.PIPER then
+        UIManager:show(InfoMessage:new{
+            text = _(
+                "Piper TTS is selected, but this Kindle model cannot play WAV files.\n\n"
+                .. "Audio will use the built-in Kindle voice instead. "
+                .. "Word highlighting may be slightly less precise."
+            ),
+            timeout = 6,
+        })
+    end
+
     -- Early no-audio warning: if the probe found no usable audio player
     -- and there is no BT device connected, warn before synthesis runs.
     if self.tts_engine._no_real_audio_output and not self.tts_engine._cached_player then

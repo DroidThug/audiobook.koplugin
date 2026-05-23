@@ -63,6 +63,35 @@ local function fileExists(path)
     return false
 end
 
+--- Check /var free space.  Returns use_pct (0-100) and free_kb, or nil.
+local function checkVarSpace()
+    local df_h = io.popen("df /var 2>/dev/null | tail -1")
+    if not df_h then return nil, nil end
+    local line = df_h:read("*a") or ""
+    df_h:close()
+    local _fs, _blocks, _used, avail, pct = line:match("^(%S+)%s+(%S+)%s+(%S+)%s+(%S+)%s+(%S+)")
+    local use_pct = tonumber(pct and pct:match("(%d+)"))
+    local free_kb = tonumber(avail)
+    return use_pct, free_kb
+end
+
+--- Scan /proc/*/fd/ for deleted files in /var/ that still consume space.
+-- These are "invisible" to du but count against df.  On Kindle the main
+-- culprit is audiomgrd holding /var/tmp/audiomgrd.err open after deletion.
+local function scanDeletedVarFiles()
+    local cmd = [[for pid in $(ls /proc | grep -E '^[0-9]+$'); do
+  for fd in /proc/$pid/fd/*; do
+    link=$(readlink $fd 2>/dev/null)
+    if echo "$link" | grep -qE '^/var/.*\(deleted\)'; then
+      comm=$(cat /proc/$pid/comm 2>/dev/null || echo '?')
+      size=$(ls -l $fd 2>/dev/null | awk '{print $5}')
+      echo "$pid ($comm): $size bytes - $link"
+    fi
+  done
+done | head -20]]
+    return shellCapture(cmd, 8)
+end
+
 --- Collect device and OS information.
 local function collectDeviceInfo()
     local info = {}
@@ -216,8 +245,15 @@ local function collectPluginInfo(plugin)
 end
 
 --- Collect system audio and TTS tool availability.
-local function collectAudioInfo(plugin)
+-- @param plugin table
+-- @param skip_intensive boolean  When true, skip probes that write temp
+--     files, spawn background processes, or call FFI (issue #28).
+local function collectAudioInfo(plugin, skip_intensive)
     local info = {}
+
+    if skip_intensive then
+        info._skipped_intensive = "true"
+    end
 
     -- TTS command availability
     local tts_cmds = {"espeak-ng", "espeak", "piper", "pico2wave", "flite", "festival"}
@@ -558,7 +594,9 @@ local function collectAudioInfo(plugin)
         -- 4 LIPC strategies + 2 aplay strategies.
         -- NOTE: first line MUST be a real command (not a variable assignment)
         -- because shellCapture prepends 'timeout N' which wraps only line 1.
-        info.kindle_lipc_test = shellCapture([[dd if=/dev/zero bs=44100 count=1 2>/dev/null | {
+        if not skip_intensive then
+            info.kindle_lipc_test = shellCapture([[trap 'rm -f /tmp/.lipc_test.wav' EXIT
+dd if=/dev/zero bs=44100 count=1 2>/dev/null | {
   printf 'RIFF'
   printf '\x24\xac\x00\x00'
   printf 'WAVE'
@@ -610,6 +648,9 @@ echo "audioOutput=$(lipc-get-prop com.lab126.audiomgrd audioCurrentOutput 2>&1)"
 echo "outputConn=$(lipc-get-prop com.lab126.audiomgrd audioOutputConnected 2>&1)"
 rm -f /tmp/.lipc_test.wav
 ]], 20) or "failed"
+        else
+            info.kindle_lipc_test = "skipped (/var nearly full)"
+        end
         -- audiomgrd error log (audiomgrd logs to /var/tmp/audiomgrd.err)
         info.kindle_audiomgrd_err = shellCapture("tail -20 /var/tmp/audiomgrd.err", 3) or "n/a"
         -- GStreamer plugins available on device
@@ -649,7 +690,8 @@ echo "pactl=$(which pactl 2>/dev/null || echo not_found)"
         -- Try to make the native TTS speak, which routes through the
         -- working audio pipeline (ttssrc → mixersink → audiomgrd → BT).
         -- Also test: can we write raw PCM to a pipe that audiomgrd reads?
-        info.kindle_tts_test = shellCapture([[echo "--- tts.orchestrator probe ---"
+        if not skip_intensive then
+            info.kindle_tts_test = shellCapture([[echo "--- tts.orchestrator probe ---"
 echo "tts_orch_props=$(lipc-probe com.lab126.tts.orchestrator 2>&1 | head -30)"
 echo "--- try native TTS speak ---"
 echo "tts_speak=$(lipc-set-prop com.lab126.tts.orchestrator speak 'test' 2>&1)"
@@ -665,6 +707,9 @@ echo "dev_snd_after=$(ls /dev/snd/ 2>/dev/null | grep pcm)"
 echo "--- A2DP socket state ---"
 echo "a2dp_socks=$(cat /proc/net/unix 2>/dev/null | grep a2dp)"
 ]], 15) or "failed"
+        else
+            info.kindle_tts_test = "skipped (/var nearly full)"
+        end
 
         -- v0.1.5.32: Deeper TTS + audio path exploration.
         -- GStreamer 0.10 is stripped (no wavparse). tts.orchestrator is
@@ -793,7 +838,9 @@ lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
         -- If mixersink accepts S16LE @ 22050 without a parser, this works.
         -- v0.1.6.4: Also note when /var is full (raw_size=0 means the test
         -- file could not be written, which blocks ALL audio on the device).
-        info.kindle_raw_pcm_test = shellCapture([[dd if=/dev/zero bs=44100 count=1 2>/dev/null | {
+        if not skip_intensive then
+            info.kindle_raw_pcm_test = shellCapture([[trap 'rm -f /tmp/.pcm_test.wav /tmp/.pcm_test.raw' EXIT
+dd if=/dev/zero bs=44100 count=1 2>/dev/null | {
   printf 'RIFF'
   printf '\x24\xac\x00\x00'
   printf 'WAVE'
@@ -834,16 +881,23 @@ echo "inplayback_raw_uri=$(lipc-get-prop com.lab126.playermgr InPlayback 2>&1)"
 lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
 rm -f /tmp/.pcm_test.wav /tmp/.pcm_test.raw
 ]], 20) or "failed"
+        else
+            info.kindle_raw_pcm_test = "skipped (/var nearly full)"
+        end
 
-        -- v0.1.6.5: kindle-gst-play --ttssrc test.
-        -- On Colorsoft, playermgr is non-functional but ttssrc bypasses it.
-        local plugin_dir = info.plugin_dir or "plugins/audiobook.koplugin/"
-        local gst_play_bin = plugin_dir .. "kindle/gst-play"
-        info.kindle_gst_ttssrc_test = shellCapture(
-            "echo '--- kindle-gst-play --ttssrc ---'; "
-            .. "'" .. gst_play_bin .. "' --ttssrc 'hello world' 2>&1; "
-            .. "echo 'exit_code=$?'",
-            15) or "failed"
+        if not skip_intensive then
+            -- v0.1.6.5: kindle-gst-play --ttssrc test.
+            -- On Colorsoft, playermgr is non-functional but ttssrc bypasses it.
+            local plugin_dir = info.plugin_dir or "plugins/audiobook.koplugin/"
+            local gst_play_bin = plugin_dir .. "kindle/gst-play"
+            info.kindle_gst_ttssrc_test = shellCapture(
+                "echo '--- kindle-gst-play --ttssrc ---'; "
+                .. "'" .. gst_play_bin .. "' --ttssrc 'hello world' 2>&1; "
+                .. "echo 'exit_code=$?'",
+                15) or "failed"
+        else
+            info.kindle_gst_ttssrc_test = "skipped (/var nearly full)"
+        end
 
         -- v0.1.6.5: Try different audiomgrd setFocus values.
         -- Colorsoft may need a specific client name to grant audio focus.
@@ -858,12 +912,16 @@ echo "--- setFocus com.lab126.koreader.tts ---"
 lipc-set-prop com.lab126.audiomgrd setFocus 'com.lab126.koreader.tts' 2>&1
 ]], 10) or "failed"
 
-        -- v0.1.6.5: Raw PCM via gst-launch-0.10 with explicit caps.
-        -- If mixersink accepts raw audio without wavparse, this works.
-        info.kindle_gst_raw_pipeline_test = shellCapture([[dd if=/dev/zero bs=44100 count=1 2>/dev/null | {
-  printf 'RIFF\x24\xac\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x22\x56\x00\x00\x44\xac\x00\x00\x02\x00\x10\x00data\x04\xac\x00\x00'
+        if not skip_intensive then
+            -- v0.1.6.5: Raw PCM via gst-launch-0.10 with explicit caps.
+            -- If mixersink accepts raw audio without wavparse, this works.
+            info.kindle_gst_raw_pipeline_test = shellCapture([[trap 'rm -f /tmp/.gst_raw_test.wav /tmp/.gst_raw_test.raw' EXIT
+
+dd if=/dev/zero bs=44100 count=1 2>/dev/null | {
+  printf 'RIFF$¬  WAVEfmt      "V  D¬    data¬  '
   cat
 } > /tmp/.gst_raw_test.wav 2>/dev/null
+
 dd if=/tmp/.gst_raw_test.wav of=/tmp/.gst_raw_test.raw bs=1 skip=44 2>/dev/null
 if [ -s /tmp/.gst_raw_test.raw ]; then
   echo "--- filesrc + capsfilter raw PCM ---"
@@ -875,6 +933,9 @@ else
 fi
 rm -f /tmp/.gst_raw_test.wav /tmp/.gst_raw_test.raw
 ]], 15) or "failed"
+        else
+            info.kindle_gst_raw_pipeline_test = "skipped (/var nearly full)"
+        end
 
         -- amixer: check ALSA mixer controls (audiomgrd may expose some)
         info.kindle_amixer = shellCapture("amixer 2>&1 | head -20", 3) or "n/a"
@@ -926,31 +987,36 @@ echo "strace=$(which strace 2>/dev/null || echo not_found)"
         -- v0.1.5.34 FIX: lipc-wait-event requires an event-name argument.
         -- v0.1.5.33 omitted it ("Both event source and event name are
         -- expected").  Use '*' wildcard to capture all events.
-        info.kindle_wait_events = shellCapture([[echo "--- tts.orchestrator events (5s) ---"
+        if not skip_intensive then
+            info.kindle_wait_events = shellCapture([[echo "--- tts.orchestrator events (5s) ---"
 lipc-wait-event -s 5 -m com.lab126.tts.orchestrator '*' 2>&1 &
-WPID=$!
+WPID=
 sleep 1 2>/dev/null || usleep 1000000 2>/dev/null
 echo '{ language_code = "en" }' | lipc-hash-prop com.lab126.tts.orchestrator checkVoice 2>/dev/null
 echo '{ Voice = "joanna", LanguageCode = "en_us" }' | lipc-hash-prop com.lab126.tts.orchestrator voices 2>/dev/null
 lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>/dev/null
 sleep 4 2>/dev/null || usleep 4000000 2>/dev/null
-wait $WPID 2>/dev/null
+wait  2>/dev/null
 echo "--- playermgr events (5s) ---"
 lipc-wait-event -s 5 -m com.lab126.playermgr '*' 2>&1 &
-WPID=$!
+WPID=
 sleep 1 2>/dev/null || usleep 1000000 2>/dev/null
 lipc-set-prop com.lab126.playermgr Open 'tts://hello world' 2>/dev/null
 lipc-set-prop com.lab126.playermgr Play '' 2>/dev/null
 sleep 4 2>/dev/null || usleep 4000000 2>/dev/null
-wait $WPID 2>/dev/null
+wait  2>/dev/null
 echo "--- audiomgrd events (5s) ---"
 lipc-wait-event -s 5 -m com.lab126.audiomgrd '*' 2>&1 &
-WPID=$!
+WPID=
 sleep 1 2>/dev/null || usleep 1000000 2>/dev/null
 lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>/dev/null
 sleep 4 2>/dev/null || usleep 4000000 2>/dev/null
-wait $WPID 2>/dev/null
+wait  2>/dev/null
 ]], 20) or "n/a"
+        else
+            info.kindle_wait_events = "skipped (/var nearly full)"
+        end
+
 
         -- v0.1.5.33: voice config files on the device
         info.kindle_tts_voice_configs = shellCapture([[echo "--- /usr/lib/tts/ ---"
@@ -1001,87 +1067,96 @@ lipc-probe -l 2>/dev/null | grep -iE 'voice|tts|a11y|access|speak|screen.?read|p
         -- v0.1.5.37: liblipc.so FFI diagnostic -- test if a named LIPC
         -- connection can trigger PlayParameter (the CLI tools use anonymous
         -- connections which playermgr may ignore).
-        info.kindle_lipc_ffi_test = (function()
-            local ok, result = pcall(function()
-            local lines = {}
-            local function log(s) lines[#lines + 1] = s end
-            -- 1) Check liblipc.so exists
-            local lib_path = nil
-            for _, p in ipairs({"/usr/lib/liblipc.so", "/usr/lib/liblipc.so.0"}) do
-                local f = io.open(p, "r")
-                if f then f:close(); lib_path = p; break end
-            end
-            log("liblipc_path=" .. (lib_path or "not found"))
-            if not lib_path then return table.concat(lines, "\n") end
-            -- 2) Dump key exported symbols
-            local nm = shellCapture("nm -D " .. lib_path .. " 2>/dev/null | grep -i 'Lipc\\|lipc' | head -30", 5)
-            log("symbols=" .. (nm or "nm failed"))
-            -- 3) Try FFI load + named connection + PlayParameter
-            local ffi_ok, ffi = pcall(require, "ffi")
-            if not ffi_ok then log("ffi=not available"); return table.concat(lines, "\n") end
-            -- Declare LIPC functions (wrapped in pcall to tolerate duplicate cdef)
-            pcall(function() ffi.cdef[[
-                typedef struct _LIPC LIPC;
-                LIPC *LipcOpenEx(const char *service_name, int *code);
-                LIPC *LipcOpenNoName(int *code);
-                int LipcClose(LIPC *lipc);
-                int LipcSetStringProperty(LIPC *lipc, const char *source, const char *prop, const char *value);
-                int LipcGetIntProperty(LIPC *lipc, const char *source, const char *prop, int *value);
-                int LipcGetStringProperty(LIPC *lipc, const char *source, const char *prop, char **value);
-                void LipcFreeString(char *str);
-            ]] end)
-            local load_ok, lipc_lib = pcall(ffi.load, "lipc")
-            if not load_ok then log("ffi_load=failed: " .. tostring(lipc_lib)); return table.concat(lines, "\n") end
-            log("ffi_load=ok")
-            -- 3a) Anonymous connection (same as lipc-set-prop)
-            local code = ffi.new("int[1]")
-            local h_anon = lipc_lib.LipcOpenNoName(code)
-            log("anon_open=" .. tostring(code[0]) .. " handle=" .. tostring(h_anon ~= nil and h_anon or "nil"))
-            if h_anon ~= nil and code[0] == 0 then
-                local rc = lipc_lib.LipcSetStringProperty(h_anon,
-                    "com.lab126.playermgr", "PlayParameter",
-                    '{"type":"TTS","data":{"paramName":"textsource","paramValue":"FFI anonymous test."}}')
-                log("anon_set_pp=" .. tostring(rc))
-                -- Brief wait then check TTS_State
-                os.execute("sleep 2 2>/dev/null || usleep 2000000 2>/dev/null")
-                local st = ffi.new("int[1]")
-                lipc_lib.LipcGetIntProperty(h_anon, "com.lab126.playermgr", "TTS_State", st)
-                log("anon_tts_state=" .. tostring(st[0]))
-                local ip = ffi.new("int[1]")
-                lipc_lib.LipcGetIntProperty(h_anon, "com.lab126.playermgr", "InPlayback", ip)
-                log("anon_inplayback=" .. tostring(ip[0]))
-                lipc_lib.LipcSetStringProperty(h_anon, "com.lab126.playermgr", "Stop", "")
-                lipc_lib.LipcClose(h_anon)
-            end
-            -- 3b) Named connection (might be what VoiceView does)
-            -- Use a different name than the engine's cached handle to avoid
-            -- LIPC error 17 (ALREADY_REGISTERED) when the engine is running.
-            code[0] = 0
-            local h_named = lipc_lib.LipcOpenEx("com.lab126.koreader.diag", code)
-            log("named_open=" .. tostring(code[0]) .. " handle=" .. tostring(h_named ~= nil and h_named or "nil"))
-            if h_named ~= nil and code[0] == 0 then
-                -- Set audio focus via named connection
-                lipc_lib.LipcSetStringProperty(h_named,
-                    "com.lab126.audiomgrd", "setFocus", "tts")
-                local rc = lipc_lib.LipcSetStringProperty(h_named,
-                    "com.lab126.playermgr", "PlayParameter",
-                    '{"type":"TTS","data":{"paramName":"textsource","paramValue":"FFI named test."}}')
-                log("named_set_pp=" .. tostring(rc))
-                os.execute("sleep 2 2>/dev/null || usleep 2000000 2>/dev/null")
-                local st = ffi.new("int[1]")
-                lipc_lib.LipcGetIntProperty(h_named, "com.lab126.playermgr", "TTS_State", st)
-                log("named_tts_state=" .. tostring(st[0]))
-                local ip = ffi.new("int[1]")
-                lipc_lib.LipcGetIntProperty(h_named, "com.lab126.playermgr", "InPlayback", ip)
-                log("named_inplayback=" .. tostring(ip[0]))
-                lipc_lib.LipcSetStringProperty(h_named, "com.lab126.playermgr", "Stop", "")
-                lipc_lib.LipcClose(h_named)
-            end
-            return table.concat(lines, "\n")
-            end)
-            if not ok then return "pcall_error: " .. tostring(result) end
-            return result
-        end)()
+        if not skip_intensive then
+            info.kindle_lipc_ffi_test = (function()
+                local ok, result = pcall(function()
+                local lines = {}
+                local function log(s) lines[#lines + 1] = s end
+                -- 1) Check liblipc.so exists
+                local lib_path = nil
+                for _, p in ipairs({"/usr/lib/liblipc.so", "/usr/lib/liblipc.so.0"}) do
+                    local f = io.open(p, "r")
+                    if f then f:close(); lib_path = p; break end
+                end
+                log("liblipc_path=" .. (lib_path or "not found"))
+                if not lib_path then return table.concat(lines, "
+") end
+                -- 2) Dump key exported symbols
+                local nm = shellCapture("nm -D " .. lib_path .. " 2>/dev/null | grep -i 'Lipc\|lipc' | head -30", 5)
+                log("symbols=" .. (nm or "nm failed"))
+                -- 3) Try FFI load + named connection + PlayParameter
+                local ffi_ok, ffi = pcall(require, "ffi")
+                if not ffi_ok then log("ffi=not available"); return table.concat(lines, "
+") end
+                -- Declare LIPC functions (wrapped in pcall to tolerate duplicate cdef)
+                pcall(function() ffi.cdef[[
+                    typedef struct _LIPC LIPC;
+                    LIPC *LipcOpenEx(const char *service_name, int *code);
+                    LIPC *LipcOpenNoName(int *code);
+                    int LipcClose(LIPC *lipc);
+                    int LipcSetStringProperty(LIPC *lipc, const char *source, const char *prop, const char *value);
+                    int LipcGetIntProperty(LIPC *lipc, const char *source, const char *prop, int *value);
+                    int LipcGetStringProperty(LIPC *lipc, const char *source, const char *prop, char **value);
+                    void LipcFreeString(char *str);
+                ]] end)
+                local load_ok, lipc_lib = pcall(ffi.load, "lipc")
+                if not load_ok then log("ffi_load=failed: " .. tostring(lipc_lib)); return table.concat(lines, "
+") end
+                log("ffi_load=ok")
+                -- 3a) Anonymous connection (same as lipc-set-prop)
+                local code = ffi.new("int[1]")
+                local h_anon = lipc_lib.LipcOpenNoName(code)
+                log("anon_open=" .. tostring(code[0]) .. " handle=" .. tostring(h_anon ~= nil and h_anon or "nil"))
+                if h_anon ~= nil and code[0] == 0 then
+                    local rc = lipc_lib.LipcSetStringProperty(h_anon,
+                        "com.lab126.playermgr", "PlayParameter",
+                        '{"type":"TTS","data":{"paramName":"textsource","paramValue":"FFI anonymous test."}}')
+                    log("anon_set_pp=" .. tostring(rc))
+                    -- Brief wait then check TTS_State
+                    os.execute("sleep 2 2>/dev/null || usleep 2000000 2>/dev/null")
+                    local st = ffi.new("int[1]")
+                    lipc_lib.LipcGetIntProperty(h_anon, "com.lab126.playermgr", "TTS_State", st)
+                    log("anon_tts_state=" .. tostring(st[0]))
+                    local ip = ffi.new("int[1]")
+                    lipc_lib.LipcGetIntProperty(h_anon, "com.lab126.playermgr", "InPlayback", ip)
+                    log("anon_inplayback=" .. tostring(ip[0]))
+                    lipc_lib.LipcSetStringProperty(h_anon, "com.lab126.playermgr", "Stop", "")
+                    lipc_lib.LipcClose(h_anon)
+                end
+                -- 3b) Named connection (might be what VoiceView does)
+                -- Use a different name than the engine's cached handle to avoid
+                -- LIPC error 17 (ALREADY_REGISTERED) when the engine is running.
+                code[0] = 0
+                local h_named = lipc_lib.LipcOpenEx("com.lab126.koreader.diag", code)
+                log("named_open=" .. tostring(code[0]) .. " handle=" .. tostring(h_named ~= nil and h_named or "nil"))
+                if h_named ~= nil and code[0] == 0 then
+                    -- Set audio focus via named connection
+                    lipc_lib.LipcSetStringProperty(h_named,
+                        "com.lab126.audiomgrd", "setFocus", "tts")
+                    local rc = lipc_lib.LipcSetStringProperty(h_named,
+                        "com.lab126.playermgr", "PlayParameter",
+                        '{"type":"TTS","data":{"paramName":"textsource","paramValue":"FFI named test."}}')
+                    log("named_set_pp=" .. tostring(rc))
+                    os.execute("sleep 2 2>/dev/null || usleep 2000000 2>/dev/null")
+                    local st = ffi.new("int[1]")
+                    lipc_lib.LipcGetIntProperty(h_named, "com.lab126.playermgr", "TTS_State", st)
+                    log("named_tts_state=" .. tostring(st[0]))
+                    local ip = ffi.new("int[1]")
+                    lipc_lib.LipcGetIntProperty(h_named, "com.lab126.playermgr", "InPlayback", ip)
+                    log("named_inplayback=" .. tostring(ip[0]))
+                    lipc_lib.LipcSetStringProperty(h_named, "com.lab126.playermgr", "Stop", "")
+                    lipc_lib.LipcClose(h_named)
+                end
+                return table.concat(lines, "
+")
+                end)
+                if not ok then return "pcall_error: " .. tostring(result) end
+                return result
+            end)()
+        else
+            info.kindle_lipc_ffi_test = "skipped (/var nearly full)"
+        end
+
 
         -- v0.1.5.34: check if running as root (needed for GStreamer plugin dir)
         -- Only report yes/no, not the actual username (privacy).
@@ -1153,12 +1228,17 @@ fi
             "cat /tmp/.gst_play_last.log 2>/dev/null", 2) or "none"
     end
 
+    -- Root-cause diagnostic: find deleted files in /var/ still held open
+    -- by processes.  These consume space invisible to du but visible to df.
+    -- On Kindle the primary culprit is audiomgrd's stderr log.
+    info.kindle_deleted_var_files = scanDeletedVarFiles() or "none_found"
+
     -- Clean up temp files that benchmark tests may have left in /var/tmp.
     -- The TTS orchestrator and audiomgrd can create files there during
     -- probing; on a 64MB /var tmpfs this can fill the filesystem and
     -- break subsequent TTS attempts (issue #23).
     -- Also remove plugin temp files (WAV, FIFO, logs) from previous sessions.
-    os.execute("rm -f /var/tmp/audiobook_*.wav /var/tmp/audiobook_*.xml /var/tmp/audiobook_*.done /var/tmp/piper_server_* /var/tmp/.gst_play_last.log /var/tmp/.ttssrc_* /var/tmp/audiomgrd.err /var/tmp/*.tmp 2>/dev/null")
+    os.execute("rm -f /var/tmp/audiobook_*.wav /var/tmp/audiobook_*.xml /var/tmp/audiobook_*.txt /var/tmp/audiobook_*.done /var/tmp/piper_server_* /var/tmp/.gst_play_last.log /var/tmp/.ttssrc_* /var/tmp/audiomgrd.err /var/tmp/*.tmp 2>/dev/null")
 
     return info
 end
@@ -1206,32 +1286,46 @@ local function formatSection(title, data, indent)
 end
 
 --- Generate the full bug report as a plain-text string.
+-- Each collector is wrapped in pcall so one failing section does not
+-- crash the entire report (issue #28).
 -- @param plugin table  The Audiobook plugin instance
 -- @return string  The formatted bug report text
 function BugReport.generate(plugin)
-    local device = collectDeviceInfo()
-    local koreader = collectKoreaderInfo()
-    local pluginInfo = collectPluginInfo(plugin)
-    local audio = collectAudioInfo(plugin)
-    local resources = collectResourceInfo()
+    -- Check /var free space up front.  If critically full, skip probes
+    -- that write temp files or spawn background processes.
+    local var_pct, _free_kb = checkVarSpace()
+    local skip_intensive = var_pct and var_pct >= 90
+    local var_warning = nil
+    if var_pct and var_pct >= 95 then
+        var_warning = "WARNING: /var is " .. var_pct .. "% full."
+            .. " This is the most common cause of silent TTS failures on Kindle."
+            .. " Please reboot the device to clear /var, then test again."
+    elseif skip_intensive then
+        var_warning = "WARNING: /var is " .. var_pct
+            .. "% full.  Intensive probes were skipped to avoid a crash."
+    end
+
+    local ok_device, device = pcall(collectDeviceInfo)
+    if not ok_device then device = {section_error = tostring(device)} end
+
+    local ok_koreader, koreader = pcall(collectKoreaderInfo)
+    if not ok_koreader then koreader = {section_error = tostring(koreader)} end
+
+    local ok_plugin, pluginInfo = pcall(collectPluginInfo, plugin)
+    if not ok_plugin then pluginInfo = {section_error = tostring(pluginInfo)} end
+
+    local ok_audio, audio = pcall(collectAudioInfo, plugin, skip_intensive)
+    if not ok_audio then audio = {section_error = tostring(audio)} end
+
+    local ok_resources, resources = pcall(collectResourceInfo)
+    if not ok_resources then resources = {section_error = tostring(resources)} end
+
     local timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
 
     local version = "unknown"
     local ok_meta, meta = pcall(dofile, _utils_dir .. "_meta.lua")
     if ok_meta and meta then
         version = meta.version or version
-    end
-
-    -- v0.1.6.4: Prominently warn when /var is full -- this is the #1 cause
-    -- of silent audio failures on Kindle (issues #22, #23).
-    local var_warning = nil
-    if resources and resources.disk_var then
-        local var_pct = tonumber(resources.disk_var:match("(%d+)%%"))
-        if var_pct and var_pct >= 95 then
-            var_warning = "WARNING: /var is " .. var_pct .. "% full."
-                .. " This is the most common cause of silent TTS failures on Kindle."
-                .. " Please reboot the device to clear /var, then test again."
-        end
     end
 
     local sections = {
@@ -1256,14 +1350,11 @@ function BugReport.generate(plugin)
 end
 
 --- Generate and save the bug report to a file the user can access.
--- Saves to the book storage root (visible when device is connected via USB).
+-- Writes sections incrementally to reduce peak memory usage (issue #28).
 -- @param plugin table  The Audiobook plugin instance
 -- @return string|nil  Path to the saved report, or nil on failure
 function BugReport.generateAndSave(plugin)
-    local report = BugReport.generate(plugin)
-
     -- Pick a user-accessible save location.
-    -- Prefer the device's main visible storage so the file is easy to find.
     local save_dir
     if Device.isKobo and Device:isKobo() then
         save_dir = "/mnt/onboard"
@@ -1282,39 +1373,58 @@ function BugReport.generateAndSave(plugin)
 
     local f, err = io.open(filepath, "w")
     if not f then
-        -- Fallback to /tmp
         filepath = "/tmp/" .. filename
         f, err = io.open(filepath, "w")
     end
-
     if not f then
         logger.err("BugReport: Cannot save report:", err)
         return nil
     end
 
-    f:write(report)
+    -- Stream-write: generate and write in chunks instead of one giant string.
+    local ok, report = pcall(BugReport.generate, plugin)
+    if ok and report then
+        -- Write in ~4KB chunks to keep memory footprint low.
+        local chunk_size = 4096
+        local pos = 1
+        while pos <= #report do
+            f:write(report:sub(pos, pos + chunk_size - 1))
+            pos = pos + chunk_size
+        end
+    else
+        f:write("Bug report generation failed:\n" .. tostring(report) .. "\n")
+    end
+
     f:close()
     logger.dbg("BugReport: Saved to", filepath)
     return filepath
 end
 
 --- Menu callback: generate report and show result to user.
+-- Wrapped in pcall so any crash during generation is caught gracefully
+-- instead of crashing KOReader (issue #28).
 -- @param plugin table  The Audiobook plugin instance
 function BugReport.menuCallback(plugin)
-    local filepath = BugReport.generateAndSave(plugin)
-    if filepath then
+    local ok, filepath = pcall(BugReport.generateAndSave, plugin)
+    if ok and filepath then
         local display_path = sanitizePath(filepath)
         UIManager:show(InfoMessage:new{
             text = _("Bug report saved to:\n\n") .. display_path ..
                 _("\n\nConnect your device via USB to retrieve the file. Please share it when reporting issues on GitHub."),
             timeout = 15,
         })
-    else
-        -- As last resort, show the report text directly so user can screenshot
-        local report = BugReport.generate(plugin)
+    elseif ok then
+        -- generateAndSave returned nil (could not open file)
         UIManager:show(InfoMessage:new{
-            text = _("Could not save report file.\n\nTake a screenshot of this:\n\n") .. report:sub(1, 1500),
-            timeout = 30,
+            text = _("Could not save bug report file.\n\nPlease check that /tmp or /var has free space, then try again."),
+            timeout = 10,
+        })
+    else
+        -- pcall caught an error -- show a safe fallback
+        logger.err("BugReport: menuCallback crashed:", tostring(filepath))
+        UIManager:show(InfoMessage:new{
+            text = _("Bug report generation failed.\n\nThis usually means temporary storage (/var) is full. Please reboot your Kindle and try again."),
+            timeout = 12,
         })
     end
 end
