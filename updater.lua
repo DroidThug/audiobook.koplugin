@@ -217,6 +217,16 @@ function Updater._performUpdate(plugin, release)
             created_ext_tmp = not already_exists
         end
     end
+    -- On Kobo /tmp is a small tmpfs (~470 MB) that fills up quickly.
+    -- Use the plugin directory's parent for temp files so backups and
+    -- downloads live on the internal SD card and cross-filesystem moves
+    -- are avoided (issue #23).
+    if Device:isKobo() then
+        local parent = _dir:gsub("/$", ""):match("^(.+)/[^/]+$")
+        if parent then
+            tmp_dir = parent
+        end
+    end
     -- Verify the chosen temp directory is actually writable.
     local test_file = tmp_dir .. "/.audiobook_update_test"
     local test_fh = io.open(test_file, "w")
