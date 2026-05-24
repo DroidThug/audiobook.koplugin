@@ -105,6 +105,66 @@ Downloader.PIPER_VOICES = {
     { id = "ro_RO-mihai-medium",   name = "Mihai (Romanian, medium)",      size_mb = 60,  url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/ro/ro_RO/mihai/medium/ro_RO-mihai-medium.onnx" },
 }
 
+-- Known MBROLA voices from the numediart/MBROLA-voices repository.
+-- Each voice is a single binary database file.
+-- Bundled voices (included in release) are marked bundled = true.
+Downloader.MBROLA_VOICES = {
+    -- Bundled (included in release package)
+    { id = "us1", name = "US English Male 1",     size_mb = 5.4,  bundled = true,  lang = "en" },
+    { id = "us2", name = "US English Female 1",   size_mb = 5.4,  bundled = true,  lang = "en" },
+    { id = "fr1", name = "French Male 1",         size_mb = 4.9,  bundled = true,  lang = "fr" },
+    { id = "de1", name = "German Male 1",         size_mb = 10.9, bundled = true,  lang = "de" },
+    { id = "es1", name = "Spanish Male 1",        size_mb = 2.7,  bundled = true,  lang = "es" },
+    { id = "cn1", name = "Chinese (Mandarin) Female 1", size_mb = 4.2, bundled = true, lang = "zh" },
+    { id = "pt1", name = "Portuguese Male 1",     size_mb = 5.4,  bundled = true,  lang = "pt" },
+    -- Downloadable extras
+    { id = "us3", name = "US English Female 2",   size_mb = 5.4,  bundled = false, lang = "en" },
+    { id = "en1", name = "UK English Male 1",     size_mb = 5.4,  bundled = false, lang = "en" },
+    { id = "fr2", name = "French Female 1",       size_mb = 5.0,  bundled = false, lang = "fr" },
+    { id = "fr3", name = "French Male 2",         size_mb = 4.8,  bundled = false, lang = "fr" },
+    { id = "fr4", name = "French Female 2",       size_mb = 5.0,  bundled = false, lang = "fr" },
+    { id = "fr5", name = "French Male 3",         size_mb = 4.9,  bundled = false, lang = "fr" },
+    { id = "fr6", name = "French Female 3",       size_mb = 4.8,  bundled = false, lang = "fr" },
+    { id = "fr7", name = "French Male 4",         size_mb = 4.5,  bundled = false, lang = "fr" },
+    { id = "de2", name = "German Male 2",         size_mb = 10.0, bundled = false, lang = "de" },
+    { id = "de3", name = "German Male 3",         size_mb = 10.9, bundled = false, lang = "de" },
+    { id = "de4", name = "German Male 4",         size_mb = 21.2, bundled = false, lang = "de" },
+    { id = "de5", name = "German Male 5",         size_mb = 13.6, bundled = false, lang = "de" },
+    { id = "de6", name = "German Male 6",         size_mb = 54.1, bundled = false, lang = "de" },
+    { id = "de7", name = "German Female 1",       size_mb = 54.0, bundled = false, lang = "de" },
+    { id = "es2", name = "Spanish Male 2",        size_mb = 3.0,  bundled = false, lang = "es" },
+    { id = "es3", name = "Spanish Female 1",      size_mb = 2.2,  bundled = false, lang = "es" },
+    { id = "es4", name = "Spanish Female 2",      size_mb = 3.4,  bundled = false, lang = "es" },
+    { id = "it1", name = "Italian Male 1",        size_mb = 6.0,  bundled = false, lang = "it" },
+    { id = "it2", name = "Italian Female 1",      size_mb = 5.8,  bundled = false, lang = "it" },
+    { id = "it3", name = "Italian Male 2",        size_mb = 6.2,  bundled = false, lang = "it" },
+    { id = "it4", name = "Italian Female 2",      size_mb = 5.9,  bundled = false, lang = "it" },
+    { id = "br1", name = "Brazilian Portuguese Male 1",   size_mb = 5.4, bundled = false, lang = "pt" },
+    { id = "br2", name = "Brazilian Portuguese Female 1", size_mb = 5.4, bundled = false, lang = "pt" },
+    { id = "br3", name = "Brazilian Portuguese Male 2",   size_mb = 9.8, bundled = false, lang = "pt" },
+    { id = "nl1", name = "Dutch Male 1",          size_mb = 5.4,  bundled = false, lang = "nl" },
+    { id = "nl2", name = "Dutch Female 1",        size_mb = 5.4,  bundled = false, lang = "nl" },
+    { id = "nl3", name = "Dutch Male 2",          size_mb = 5.5,  bundled = false, lang = "nl" },
+    { id = "pl1", name = "Polish Male 1",         size_mb = 5.4,  bundled = false, lang = "pl" },
+    { id = "pl2", name = "Polish Female 1",       size_mb = 5.4,  bundled = false, lang = "pl" },
+    { id = "cz1", name = "Czech Male 1",          size_mb = 2.7,  bundled = false, lang = "cs" },
+    { id = "cz2", name = "Czech Female 1",        size_mb = 9.3,  bundled = false, lang = "cs" },
+    { id = "gr1", name = "Greek Male 1",          size_mb = 3.1,  bundled = false, lang = "el" },
+    { id = "gr2", name = "Greek Female 1",        size_mb = 3.3,  bundled = false, lang = "el" },
+    { id = "jp1", name = "Japanese Male 1",       size_mb = 1.9,  bundled = false, lang = "ja" },
+    { id = "jp2", name = "Japanese Female 1",     size_mb = 2.9,  bundled = false, lang = "ja" },
+    { id = "jp3", name = "Japanese Female 2",     size_mb = 1.9,  bundled = false, lang = "ja" },
+    { id = "ru1", name = "Russian Male 1",        size_mb = 5.4,  bundled = false, lang = "ru" },
+    { id = "ar1", name = "Arabic Male 1",         size_mb = 6.3,  bundled = false, lang = "ar" },
+    { id = "ar2", name = "Arabic Female 1",       size_mb = 6.3,  bundled = false, lang = "ar" },
+    { id = "sv1", name = "Swedish Male 1",        size_mb = 5.4,  bundled = false, lang = "sv" },
+    { id = "sv2", name = "Swedish Female 1",      size_mb = 5.4,  bundled = false, lang = "sv" },
+    { id = "tr1", name = "Turkish Male 1",        size_mb = 5.4,  bundled = false, lang = "tr" },
+    { id = "tr2", name = "Turkish Female 1",      size_mb = 5.4,  bundled = false, lang = "tr" },
+}
+
+Downloader.MBROLA_BASE_URL = "https://raw.githubusercontent.com/numediart/MBROLA-voices/master/data"
+
 --[[--
 Detect which download tool is available.
 @return string|nil  "curl", "wget", or nil
@@ -529,6 +589,84 @@ function Downloader:refreshVoiceList(plugin_dir, callback)
     end
 
     if callback then callback(true, voices) end
+end
+
+--[[--
+Return the MBROLA voice database directory for a given plugin dir.
+@param plugin_dir string
+@return string
+--]]
+function Downloader:_mbrolaDir(plugin_dir)
+    return plugin_dir .. "/espeak-ng/share/mbrola"
+end
+
+--[[--
+Return the full list of MBROLA voices (bundled + downloadable).
+@param plugin_dir string
+@return table  Array of voice entries {id, name, size_mb, bundled, lang, installed}
+--]]
+function Downloader:getMbrolaVoiceList(plugin_dir)
+    local list = {}
+    for _, v in ipairs(self.MBROLA_VOICES) do
+        local entry = {}
+        for k, val in pairs(v) do entry[k] = val end
+        entry.installed = self:hasMbrolaVoice(v.id, plugin_dir)
+        table.insert(list, entry)
+    end
+    return list
+end
+
+--[[--
+Check whether a specific MBROLA voice database is installed.
+@param voice_id string  e.g. "us1"
+@param plugin_dir string
+@return boolean
+--]]
+function Downloader:hasMbrolaVoice(voice_id, plugin_dir)
+    local path = self:_mbrolaDir(plugin_dir) .. "/" .. voice_id .. "/" .. voice_id
+    local f = io.open(path, "rb")
+    if f then
+        f:close()
+        return true
+    end
+    return false
+end
+
+--[[--
+Download a single MBROLA voice database file.
+@param voice_id string  e.g. "us1"
+@param plugin_dir string
+@param on_progress function(done_bytes, total_bytes)
+@param on_complete function(success, err_msg)
+--]]
+function Downloader:downloadMbrolaVoice(voice_id, plugin_dir, on_progress, on_complete)
+    local voice = nil
+    for _, v in ipairs(self.MBROLA_VOICES) do
+        if v.id == voice_id then
+            voice = v
+            break
+        end
+    end
+    if not voice then
+        if on_complete then on_complete(false, _("Unknown MBROLA voice.")) end
+        return
+    end
+
+    local mbrola_dir = self:_mbrolaDir(plugin_dir)
+    local voice_subdir = mbrola_dir .. "/" .. voice_id
+    os.execute(string.format('mkdir -p "%s"', voice_subdir))
+
+    local url = self.MBROLA_BASE_URL .. "/" .. voice_id .. "/" .. voice_id
+    local dest = voice_subdir .. "/" .. voice_id
+
+    self:download(url, dest, on_progress, function(ok, err)
+        if ok then
+            logger.warn("Downloader: MBROLA voice", voice_id, "installed")
+        else
+            logger.err("Downloader: MBROLA voice", voice_id, "failed:", err)
+        end
+        if on_complete then on_complete(ok, err) end
+    end)
 end
 
 return Downloader

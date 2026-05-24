@@ -191,6 +191,44 @@ function MenuBuilder.buildVoiceSettingsMenu(plugin)
             end,
             sub_item_table = MenuBuilder.buildVoiceMenu(plugin),
         })
+        -- MBROLA voice selection (espeak-ng backend only)
+        table.insert(menu, {
+            text_func = function()
+                local mb = plugin:getSetting("tts_mbrola_voice", "")
+                if mb ~= "" then
+                    return T(_("MBROLA voice: %1"), plugin:getSetting("tts_mbrola_voice_label", mb))
+                end
+                return _("MBROLA voice: (not selected)")
+            end,
+            sub_item_table_func = function()
+                local ok, result = pcall(function()
+                    return MenuBuilder.buildMbrolaVoiceMenu(plugin)
+                end)
+                if ok then
+                    return result
+                else
+                    logger.err("MenuBuilder: buildMbrolaVoiceMenu crashed:", result)
+                    return {{ text = _("Could not load MBROLA voice menu."), enabled = false }}
+                end
+            end,
+        })
+        -- Download additional MBROLA voices
+        table.insert(menu, {
+            text = _("Download MBROLA voice…"),
+            sub_item_table_func = function()
+                local ok, result = pcall(function()
+                    local _dir = debug.getinfo(1, "S").source:match("^@(.*/)[^/]*$") or "./"
+                    local Downloader = dofile(_dir .. "downloader.lua")
+                    return MenuBuilder.buildMbrolaDownloadMenu(plugin, Downloader)
+                end)
+                if ok then
+                    return result
+                else
+                    logger.err("MenuBuilder: buildMbrolaDownloadMenu crashed:", result)
+                    return {{ text = _("Could not load MBROLA download menu."), enabled = false }}
+                end
+            end,
+        })
     end
 
     return menu
@@ -842,6 +880,190 @@ function MenuBuilder.buildPiperDownloadMenu(plugin, Downloader)
                     end
                 )
             end,
+        })
+    end
+
+    return menu
+end
+
+--[[--
+Build the MBROLA voice selection menu.
+Lists bundled and installed MBROLA voices. Selecting one switches
+espeak-ng to use the MBROLA voice (e.g. mb-us1).
+--]]
+function MenuBuilder.buildMbrolaVoiceMenu(plugin)
+    local menu = {}
+    local plugin_dir = plugin.plugin_dir or "."
+    local _dir = debug.getinfo(1, "S").source:match("^@(.*/)[^/]*$") or "./"
+    local Downloader = dofile(_dir .. "downloader.lua")
+    local voices = Downloader:getMbrolaVoiceList(plugin_dir)
+    local current_mb = plugin:getSetting("tts_mbrola_voice", "")
+
+    -- Option to disable MBROLA and use regular espeak-ng voice
+    table.insert(menu, {
+        text = _("Disable MBROLA (use regular espeak-ng voice)"),
+        checked_func = function()
+            return current_mb == ""
+        end,
+        callback = function()
+            plugin:setSetting("tts_mbrola_voice", "")
+            plugin:setSetting("tts_mbrola_voice_label", "")
+            -- Restore regular espeak-ng voice
+            local base = plugin:getSetting("tts_voice", "en")
+            local var = plugin:getSetting("tts_voice_variant", "")
+            local full = base
+            if var ~= "" then full = base .. "+" .. var end
+            plugin.tts_engine:setVoice(full)
+            UIManager:show(InfoMessage:new{
+                text = _("MBROLA disabled. Using regular espeak-ng voice."),
+                timeout = 2,
+            })
+        end,
+    })
+    table.insert(menu, {
+        text = _("─"),
+        enabled = false,
+    })
+
+    -- Group voices by language
+    local lang_labels = {
+        en = _("English"), fr = _("French"), de = _("German"),
+        es = _("Spanish"), it = _("Italian"), pt = _("Portuguese"),
+        nl = _("Dutch"), pl = _("Polish"), cs = _("Czech"),
+        el = _("Greek"), ja = _("Japanese"), zh = _("Chinese"),
+        ru = _("Russian"), ar = _("Arabic"), sv = _("Swedish"),
+        tr = _("Turkish"),
+    }
+
+    local voices_by_lang = {}
+    for _, v in ipairs(voices) do
+        if v.bundled or v.installed then
+            local lang = v.lang or "other"
+            voices_by_lang[lang] = voices_by_lang[lang] or {}
+            table.insert(voices_by_lang[lang], v)
+        end
+    end
+
+    local sorted_langs = {}
+    for lang, _ in pairs(voices_by_lang) do
+        table.insert(sorted_langs, lang)
+    end
+    table.sort(sorted_langs)
+
+    for _, lang in ipairs(sorted_langs) do
+        local lang_voices = voices_by_lang[lang]
+        table.sort(lang_voices, function(a, b) return a.id < b.id end)
+
+        for _, v in ipairs(lang_voices) do
+            local voice_id = v.id
+            local label = v.name
+            if v.bundled then
+                label = label .. _(" (bundled)")
+            end
+            table.insert(menu, {
+                text_func = function()
+                    local sel = plugin:getSetting("tts_mbrola_voice", "")
+                    local mark = (sel == voice_id) and " ✓" or ""
+                    return label .. mark
+                end,
+                callback = function()
+                    local mb_voice = "mb-" .. voice_id
+                    plugin:setSetting("tts_mbrola_voice", voice_id)
+                    plugin:setSetting("tts_mbrola_voice_label", v.name)
+                    plugin.tts_engine:setVoice(mb_voice)
+                    UIManager:show(InfoMessage:new{
+                        text = T(_("MBROLA voice selected:\n%1"), v.name),
+                        timeout = 2,
+                    })
+                end,
+            })
+        end
+        table.insert(menu, { text = _("─"), enabled = false })
+    end
+
+    -- Remove trailing separator
+    if #menu > 0 and menu[#menu].enabled == false then
+        table.remove(menu)
+    end
+
+    return menu
+end
+
+--[[--
+Build the MBROLA voice download menu.
+Lists downloadable MBROLA voices with size and install status.
+--]]
+function MenuBuilder.buildMbrolaDownloadMenu(plugin, Downloader)
+    local menu = {}
+    local plugin_dir = plugin.plugin_dir
+    if not plugin_dir then
+        local esp = plugin.tts_engine and plugin.tts_engine.espeak_data_path
+        if esp then
+            plugin_dir = esp:match("^(.+)/espeak%-ng/share$")
+        end
+    end
+    plugin_dir = plugin_dir or "."
+    local voices = Downloader:getMbrolaVoiceList(plugin_dir)
+
+    for _, v in ipairs(voices) do
+        if v.bundled then
+            -- Bundled voices are already included; skip in download menu
+            goto continue
+        end
+        local voice_id = v.id
+        local voice_name = v.name
+        local size_str = string.format(" · %.1f MB", v.size_mb)
+
+        table.insert(menu, {
+            text_func = function()
+                local inst = Downloader:hasMbrolaVoice(voice_id, plugin_dir)
+                local status = inst and _(" ✓ installed") or _("")
+                return voice_name .. size_str .. status
+            end,
+            enabled_func = function()
+                return not Downloader:hasMbrolaVoice(voice_id, plugin_dir)
+            end,
+            callback = function()
+                if Downloader:hasMbrolaVoice(voice_id, plugin_dir) then return end
+                local info = InfoMessage:new{
+                    text = _("Downloading ") .. voice_name .. _("…\n(~")
+                        .. string.format("%.1f", v.size_mb) .. _(" MB)"),
+                    timeout = 0,
+                }
+                UIManager:show(info)
+                Downloader:downloadMbrolaVoice(voice_id, plugin_dir,
+                    function(done, total)
+                        -- progress callback (optional)
+                    end,
+                    function(ok, err)
+                        UIManager:close(info)
+                        if ok then
+                            -- Auto-select the downloaded voice
+                            plugin:setSetting("tts_mbrola_voice", voice_id)
+                            plugin:setSetting("tts_mbrola_voice_label", voice_name)
+                            plugin.tts_engine:setVoice("mb-" .. voice_id)
+                            UIManager:show(InfoMessage:new{
+                                text = _("Voice installed:\n") .. voice_name
+                                    .. _("\n\nIt is now selected as your active MBROLA voice."),
+                                timeout = 3,
+                            })
+                        else
+                            UIManager:show(InfoMessage:new{
+                                text = _("Download failed:\n") .. (err or _("unknown error")),
+                                timeout = 5,
+                            })
+                        end
+                    end
+                )
+            end,
+        })
+        ::continue::
+    end
+
+    if #menu == 0 then
+        table.insert(menu, {
+            text = _("All available MBROLA voices are already installed."),
+            enabled = false,
         })
     end
 

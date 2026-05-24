@@ -133,6 +133,90 @@ fi
 
 chmod +x "$ESPEAK_DEST/bin/espeak-ng"
 
+# ── MBROLA support (bundled with espeak-ng when mbrolaSupport=true) ───
+echo ""
+echo "=== Bundling MBROLA binary and default voices ==="
+
+# Find mbrola binary in the Nix closure of espeak-ng
+MBROLA_BIN=$(find $(nix-store --query --references "$ESPEAK_OUT" 2>/dev/null) -maxdepth 2 -name "mbrola" -type f 2>/dev/null | head -1)
+if [ -n "$MBROLA_BIN" ]; then
+    cp "$MBROLA_BIN" "$ESPEAK_DEST/bin/mbrola"
+    chmod +x "$ESPEAK_DEST/bin/mbrola"
+    echo "Bundled mbrola binary"
+else
+    echo "WARNING: Could not find mbrola binary in Nix store"
+fi
+
+# Copy MBROLA voice definition files (stubs in espeak-ng-data/voices/mb/)
+if [ -d "$ESPEAK_OUT/share/espeak-ng-data/voices/mb" ]; then
+    mkdir -p "$ESPEAK_DEST/share/espeak-ng-data/voices/mb"
+    cp -r "$ESPEAK_OUT/share/espeak-ng-data/voices/mb/"* "$ESPEAK_DEST/share/espeak-ng-data/voices/mb/"
+    echo "Bundled MBROLA voice definitions"
+fi
+
+# Download default MBROLA voice databases
+MBROLA_DATA_DEST="$ESPEAK_DEST/share/mbrola"
+mkdir -p "$MBROLA_DATA_DEST"
+MBROLA_BASE_URL="https://raw.githubusercontent.com/numediart/MBROLA-voices/master/data"
+
+# Default bundled voices: 2 US English, 1 French, 1 German, 1 Spanish, 1 Chinese, 1 Portuguese
+DEFAULT_MBROLA_VOICES="us1 us2 fr1 de1 es1 cn1 pt1"
+for voice in $DEFAULT_MBROLA_VOICES; do
+    voice_dir="$MBROLA_DATA_DEST/$voice"
+    mkdir -p "$voice_dir"
+    if [ ! -f "$voice_dir/$voice" ]; then
+        echo "Downloading MBROLA voice: $voice ..."
+        curl -sL --max-time 60 -o "$voice_dir/$voice" "$MBROLA_BASE_URL/$voice/$voice"
+        if [ -f "$voice_dir/$voice" ] && [ -s "$voice_dir/$voice" ]; then
+            echo "  + $voice ($(wc -c < "$voice_dir/$voice" | awk '{print $1}') bytes)"
+        else
+            echo "  ERROR: Failed to download $voice"
+            rm -f "$voice_dir/$voice"
+        fi
+    else
+        echo "  + $voice (cached)"
+    fi
+done
+
+# Create mbrola wrapper script that resolves voice database paths.
+# espeak-ng calls mbrola with just a voice name (e.g. "us1"); the wrapper
+# translates that to the full path inside the plugin directory so the
+# real mbrola binary can find the database on embedded devices.
+cat > "$ESPEAK_DEST/bin/mbrola-wrapper" <<'WRAPPER_EOF'
+#!/bin/sh
+# MBROLA wrapper for audiobook.koplugin
+# Resolves relative voice database names to the plugin's mbrola directory.
+
+REAL_MBROLA="$(dirname "$0")/mbrola.bin"
+PLUGIN_SHARE="$(dirname "$0")/../share"
+
+# Rebuild args, resolving the first positional (non-flag) argument
+ARGS=""
+voice_done=0
+for a in "$@"; do
+    if [ "$voice_done" = "0" ]; then
+        case "$a" in
+            -*) ;;
+            *)
+                if ! echo "$a" | grep -q '/'; then
+                    vp="$PLUGIN_SHARE/mbrola/$a/$a"
+                    if [ -f "$vp" ]; then
+                        a="$vp"
+                    fi
+                fi
+                voice_done=1
+                ;;
+        esac
+    fi
+    # Escape single quotes for safe eval
+    esc_a=$(printf '%s' "$a" | sed "s/'/'\\\\''/g")
+    ARGS="$ARGS '$esc_a'"
+done
+
+eval exec "'$REAL_MBROLA'" $ARGS
+WRAPPER_EOF
+chmod +x "$ESPEAK_DEST/bin/mbrola-wrapper"
+
 # ── BlueALSA (BT audio bridge for BlueZ Kobo) ─────────────────────────
 echo ""
 echo "=== Building BlueALSA for armv7l via Nix cross-compilation ==="
@@ -318,12 +402,20 @@ du -sh "$PLUGIN_DEST"
 # on first run (see ttsengine.lua detectBackend).
 echo ""
 echo "=== Renaming ELF binaries to .bin (Windows extraction workaround) ==="
-for elf in "$ESPEAK_DEST/bin/espeak-ng" "$PIPER_DEST/piper" "$PIPER_DEST/piper_phonemize" "$PIPER_DEST/espeak-ng" "$BLUEALSA_DEST/bin/bluealsa" "$PLUGIN_DEST/wav-play/wav-play"; do
+for elf in "$ESPEAK_DEST/bin/espeak-ng" "$ESPEAK_DEST/bin/mbrola" "$PIPER_DEST/piper" "$PIPER_DEST/piper_phonemize" "$PIPER_DEST/espeak-ng" "$BLUEALSA_DEST/bin/bluealsa" "$PLUGIN_DEST/wav-play/wav-play"; do
     if [ -f "$elf" ]; then
         mv "$elf" "${elf}.bin"
         echo "  $(basename "$elf") -> $(basename "$elf").bin"
     fi
 done
+
+# Rename mbrola wrapper script to 'mbrola' so espeak-ng finds it in PATH.
+# The real mbrola binary was renamed to mbrola.bin above; the wrapper
+# resolves voice database paths and then calls mbrola.bin.
+if [ -f "$ESPEAK_DEST/bin/mbrola-wrapper" ]; then
+    mv "$ESPEAK_DEST/bin/mbrola-wrapper" "$ESPEAK_DEST/bin/mbrola"
+    echo "  mbrola-wrapper -> mbrola (path-resolving wrapper)"
+fi
 
 echo ""
 echo "=== Deploy to Kobo ==="

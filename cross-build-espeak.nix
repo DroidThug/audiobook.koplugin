@@ -23,7 +23,7 @@ in
   # Disable all the heavy/failing optional dependencies
   pcaudiolibSupport = false;   # No audio output lib (we write to wav files)
   sonicSupport = false;        # No sonic speed adjustment
-  mbrolaSupport = false;       # No MBROLA voice support
+  mbrolaSupport = true;        # Enable MBROLA voice support
 }).overrideAttrs (old: {
   # Remove the postInstall that wraps with alsa-plugins (fails cross-compile
   # and unnecessary for Kobo where we only use --stdout / -w file.wav)

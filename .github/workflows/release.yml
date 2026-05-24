@@ -64,8 +64,11 @@ jobs:
           echo "=== Lua files ==="
           ls -la kobo-tts-bundle/audiobook.koplugin/*.lua
           echo ""
-          echo "=== espeak-ng binary ==="
+          echo "=== espeak-ng binary + MBROLA ==="
           ls -la kobo-tts-bundle/audiobook.koplugin/espeak-ng/bin/
+          echo ""
+          echo "=== MBROLA voice databases ==="
+          ls -la kobo-tts-bundle/audiobook.koplugin/espeak-ng/share/mbrola/ 2>/dev/null || true
           echo ""
           echo "=== Piper binary + voice ==="
           ls -la kobo-tts-bundle/audiobook.koplugin/piper/piper.bin
@@ -107,6 +110,7 @@ jobs:
             ### Included
             - Plugin (all Lua files)
             - Bundled espeak-ng (cross-compiled for Kobo armv7l)
+            - Bundled MBROLA voice support + 7 default voices (US English, French, German, Spanish, Chinese, Portuguese)
             - Bundled Piper neural TTS + en_US-danny-low voice
             - Bundled BlueALSA (BT audio bridge for BlueZ Kobo devices)
             - Bundled kindle-gst-play (GStreamer WAV player for Cat 2 Kindles)

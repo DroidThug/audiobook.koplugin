@@ -181,6 +181,7 @@ function TTSEngine:detectBackend()
             found_espeak = true
             self.backend_cmd = bundled_bin
             self.espeak_bin = bundled_bin  -- keep reference for fallback even when Piper is active
+            self.espeak_bin_path = bundled_base .. "/bin"
             self.espeak_lib_path = bundled_base .. "/lib"
             self.espeak_data_path = bundled_base .. "/share"
             self.espeak_linker = bundled_base .. "/lib/ld-linux-armhf.so.3"
@@ -539,14 +540,22 @@ function TTSEngine:synthesizeCommand(text, callback)
         local exec_prefix = ""
         local esp_data = self:_resolveEspeakDataPath()
         if self.espeak_linker then
+            local path_prefix = ""
+            if self.espeak_bin_path then
+                path_prefix = string.format("PATH=%s:$PATH ", self.espeak_bin_path)
+            end
             exec_prefix = string.format(
-                "ESPEAK_DATA_PATH=%s %s --library-path %s ",
-                esp_data, self.espeak_linker, self.espeak_lib_path
+                "%sESPEAK_DATA_PATH=%s %s --library-path %s ",
+                path_prefix, esp_data, self.espeak_linker, self.espeak_lib_path
             )
         elseif self.espeak_lib_path then
+            local path_prefix = ""
+            if self.espeak_bin_path then
+                path_prefix = string.format("PATH=%s:$PATH ", self.espeak_bin_path)
+            end
             exec_prefix = string.format(
-                "LD_LIBRARY_PATH=%s ESPEAK_DATA_PATH=%s ",
-                self.espeak_lib_path, esp_data
+                "%sLD_LIBRARY_PATH=%s ESPEAK_DATA_PATH=%s ",
+                path_prefix, self.espeak_lib_path, esp_data
             )
         end
         -- Build word-gap flag only if non-zero
@@ -993,14 +1002,22 @@ function TTSEngine:espeakSynthesizeFallback(text)
     local exec_prefix = ""
     local esp_data = self:_resolveEspeakDataPath()
     if self.espeak_linker then
+        local path_prefix = ""
+        if self.espeak_bin_path then
+            path_prefix = string.format("PATH=%s:$PATH ", self.espeak_bin_path)
+        end
         exec_prefix = string.format(
-            "ESPEAK_DATA_PATH=%s %s --library-path %s ",
-            esp_data, self.espeak_linker, self.espeak_lib_path
+            "%sESPEAK_DATA_PATH=%s %s --library-path %s ",
+            path_prefix, esp_data, self.espeak_linker, self.espeak_lib_path
         )
     elseif self.espeak_lib_path then
+        local path_prefix = ""
+        if self.espeak_bin_path then
+            path_prefix = string.format("PATH=%s:$PATH ", self.espeak_bin_path)
+        end
         exec_prefix = string.format(
-            "LD_LIBRARY_PATH=%s ESPEAK_DATA_PATH=%s ",
-            self.espeak_lib_path, esp_data
+            "%sLD_LIBRARY_PATH=%s ESPEAK_DATA_PATH=%s ",
+            path_prefix, self.espeak_lib_path, esp_data
         )
     end
     local speed = math.floor(175 * (self.rate or 1.0))

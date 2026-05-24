@@ -20,7 +20,7 @@
         (crossPkgs.espeak-ng.override {
           pcaudiolibSupport = false;
           sonicSupport = false;
-          mbrolaSupport = false;
+          mbrolaSupport = true;
         }).overrideAttrs (_old: {
           postInstall = "";
         });
