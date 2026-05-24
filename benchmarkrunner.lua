@@ -95,8 +95,25 @@ end
 --- Collect basic device info for the report header.
 local function collectDeviceHeader()
     local lines = {}
-    table.insert(lines, "platform: " .. (Device.getPlatform and Device:getPlatform() or "unknown"))
-    table.insert(lines, "model: " .. (Device.getDeviceModel and Device:getDeviceModel() or "unknown"))
+    local platform = Device.getPlatform and Device:getPlatform() or "unknown"
+    local model = Device.getDeviceModel and Device:getDeviceModel() or "unknown"
+    -- Fallback for newer devices KOReader does not yet recognise.
+    if platform == "unknown" then
+        if Device.isKindle and Device:isKindle() then
+            platform = "kindle"
+        elseif Device.isKobo and Device:isKobo() then
+            platform = "kobo"
+        elseif Device.isPocketBook and Device:isPocketBook() then
+            platform = "pocketbook"
+        elseif Device.isAndroid and Device:isAndroid() then
+            platform = "android"
+        end
+    end
+    if model == "unknown" and Device.model then
+        model = tostring(Device.model)
+    end
+    table.insert(lines, "platform: " .. platform)
+    table.insert(lines, "model: " .. model)
     table.insert(lines, "arch: " .. (shellCapture("uname -m", 2) or "unknown"))
     table.insert(lines, "cpu_cores: " .. detectCpuCores())
     local meminfo = shellCapture("grep MemTotal /proc/meminfo 2>/dev/null", 2)

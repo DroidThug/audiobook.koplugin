@@ -3266,15 +3266,33 @@ function TTSEngine:findAudioPlayer()
                 -- comes from our estimates (may be slightly off since Ivona
                 -- speaks at a different rate than espeak/Piper).
                 local h_orchestrator = io.popen("lipc-get-prop com.lab126.tts.orchestrator orchestratorStarted 2>/dev/null")
+                local orch_ok = false
                 if h_orchestrator then
                     local orch_val = h_orchestrator:read("*a") or ""
                     h_orchestrator:close()
                     if orch_val:match("^%s*1") then
-                        self.audio_player_type = "kindle-native-tts-fallback"
-                        self._no_real_audio_output = false
-                        logger.warn("TTSEngine: Kindle native TTS fallback selected (Ivona SDK available, GStreamer stripped)")
-                        return "kindle-native-tts-fallback"
+                        orch_ok = true
                     end
+                end
+
+                if orch_ok then
+                    self.audio_player_type = "kindle-native-tts-fallback"
+                    self._no_real_audio_output = false
+                    logger.warn("TTSEngine: Kindle native TTS fallback selected (Ivona SDK available, GStreamer stripped)")
+                    return "kindle-native-tts-fallback"
+                end
+
+                -- Issue #26 (PW6 Gen 12): orchestratorStarted may return 0
+                -- even though ttssrc is present and functional.  The ttssrc
+                -- GStreamer element connects to the Ivona SDK directly and
+                -- does not require the orchestrator to report "started".
+                -- If we detected ttssrc during the gst-play probe, use the
+                -- native TTS fallback anyway (it routes through --ttssrc).
+                if self._ttssrc_available then
+                    self.audio_player_type = "kindle-native-tts-fallback"
+                    self._no_real_audio_output = false
+                    logger.warn("TTSEngine: Kindle native TTS fallback selected (ttssrc available, orchestrator not started)")
+                    return "kindle-native-tts-fallback"
                 end
 
                 -- Fall through: no wavparse AND no gst-play helper (or
