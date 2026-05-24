@@ -1079,15 +1079,13 @@ lipc-probe -l 2>/dev/null | grep -iE 'voice|tts|a11y|access|speak|screen.?read|p
                     if f then f:close(); lib_path = p; break end
                 end
                 log("liblipc_path=" .. (lib_path or "not found"))
-                if not lib_path then return table.concat(lines, "
-") end
+                if not lib_path then return table.concat(lines, "\n") end
                 -- 2) Dump key exported symbols
                 local nm = shellCapture("nm -D " .. lib_path .. " 2>/dev/null | grep -i 'Lipc\|lipc' | head -30", 5)
                 log("symbols=" .. (nm or "nm failed"))
                 -- 3) Try FFI load + named connection + PlayParameter
                 local ffi_ok, ffi = pcall(require, "ffi")
-                if not ffi_ok then log("ffi=not available"); return table.concat(lines, "
-") end
+                if not ffi_ok then log("ffi=not available"); return table.concat(lines, "\n") end
                 -- Declare LIPC functions (wrapped in pcall to tolerate duplicate cdef)
                 pcall(function() ffi.cdef[[
                     typedef struct _LIPC LIPC;
@@ -1100,8 +1098,7 @@ lipc-probe -l 2>/dev/null | grep -iE 'voice|tts|a11y|access|speak|screen.?read|p
                     void LipcFreeString(char *str);
                 ]] end)
                 local load_ok, lipc_lib = pcall(ffi.load, "lipc")
-                if not load_ok then log("ffi_load=failed: " .. tostring(lipc_lib)); return table.concat(lines, "
-") end
+                if not load_ok then log("ffi_load=failed: " .. tostring(lipc_lib)); return table.concat(lines, "\n") end
                 log("ffi_load=ok")
                 -- 3a) Anonymous connection (same as lipc-set-prop)
                 local code = ffi.new("int[1]")
@@ -1147,8 +1144,7 @@ lipc-probe -l 2>/dev/null | grep -iE 'voice|tts|a11y|access|speak|screen.?read|p
                     lipc_lib.LipcSetStringProperty(h_named, "com.lab126.playermgr", "Stop", "")
                     lipc_lib.LipcClose(h_named)
                 end
-                return table.concat(lines, "
-")
+                return table.concat(lines, "\n")
                 end)
                 if not ok then return "pcall_error: " .. tostring(result) end
                 return result

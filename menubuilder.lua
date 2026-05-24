@@ -954,7 +954,7 @@ function MenuBuilder.buildMbrolaVoiceMenu(plugin)
         local lang_voices = voices_by_lang[lang]
         table.sort(lang_voices, function(a, b) return a.id < b.id end)
 
-        for _, v in ipairs(lang_voices) do
+        for __, v in ipairs(lang_voices) do
             local voice_id = v.id
             local label = v.name
             if v.bundled then
