@@ -1081,7 +1081,7 @@ lipc-probe -l 2>/dev/null | grep -iE 'voice|tts|a11y|access|speak|screen.?read|p
                 log("liblipc_path=" .. (lib_path or "not found"))
                 if not lib_path then return table.concat(lines, "\n") end
                 -- 2) Dump key exported symbols
-                local nm = shellCapture("nm -D " .. lib_path .. " 2>/dev/null | grep -i 'Lipc\|lipc' | head -30", 5)
+                local nm = shellCapture("nm -D " .. lib_path .. " 2>/dev/null | grep -i 'Lipc\\|lipc' | head -30", 5)
                 log("symbols=" .. (nm or "nm failed"))
                 -- 3) Try FFI load + named connection + PlayParameter
                 local ffi_ok, ffi = pcall(require, "ffi")
