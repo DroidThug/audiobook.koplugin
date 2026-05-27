@@ -544,9 +544,15 @@ function TTSEngine:synthesizeCommand(text, callback)
             if self.espeak_bin_path then
                 path_prefix = string.format("PATH=%s:$PATH ", self.espeak_bin_path)
             end
+            -- Explicitly unset LD_LIBRARY_PATH so that forked children
+            -- (e.g. /bin/sh spawned by espeak-ng's mbrowrap) don't try to
+            -- load system binaries against the bundled libs.
+            -- XDG_DATA_DIRS is needed so espeak-ng's MBROLA voice lookup
+            -- finds voice databases in the plugin's share/mbrola/ directory
+            -- (the fallback search uses XDG_DATA_DIRS, not ESPEAK_DATA_PATH).
             exec_prefix = string.format(
-                "%sESPEAK_DATA_PATH=%s %s --library-path %s ",
-                path_prefix, esp_data, self.espeak_linker, self.espeak_lib_path
+                "%sLD_LIBRARY_PATH= XDG_DATA_DIRS=%s ESPEAK_DATA_PATH=%s %s --library-path %s ",
+                path_prefix, esp_data, esp_data, self.espeak_linker, self.espeak_lib_path
             )
         elseif self.espeak_lib_path then
             local path_prefix = ""
@@ -1007,8 +1013,8 @@ function TTSEngine:espeakSynthesizeFallback(text)
             path_prefix = string.format("PATH=%s:$PATH ", self.espeak_bin_path)
         end
         exec_prefix = string.format(
-            "%sESPEAK_DATA_PATH=%s %s --library-path %s ",
-            path_prefix, esp_data, self.espeak_linker, self.espeak_lib_path
+            "%sLD_LIBRARY_PATH= XDG_DATA_DIRS=%s ESPEAK_DATA_PATH=%s %s --library-path %s ",
+            path_prefix, esp_data, esp_data, self.espeak_linker, self.espeak_lib_path
         )
     elseif self.espeak_lib_path then
         local path_prefix = ""

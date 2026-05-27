@@ -903,9 +903,9 @@ function MenuBuilder.buildMbrolaVoiceMenu(plugin)
     table.insert(menu, {
         text = _("Disable MBROLA (use regular espeak-ng voice)"),
         checked_func = function()
-            return current_mb == ""
+            return plugin:getSetting("tts_mbrola_voice", "") == ""
         end,
-        callback = function()
+        callback = function(touchmenu_instance)
             plugin:setSetting("tts_mbrola_voice", "")
             plugin:setSetting("tts_mbrola_voice_label", "")
             -- Restore regular espeak-ng voice
@@ -918,11 +918,10 @@ function MenuBuilder.buildMbrolaVoiceMenu(plugin)
                 text = _("MBROLA disabled. Using regular espeak-ng voice."),
                 timeout = 2,
             })
+            if touchmenu_instance then
+                touchmenu_instance:updateItems()
+            end
         end,
-    })
-    table.insert(menu, {
-        text = _("─"),
-        enabled = false,
     })
 
     -- Group voices by language
@@ -950,11 +949,11 @@ function MenuBuilder.buildMbrolaVoiceMenu(plugin)
     end
     table.sort(sorted_langs)
 
-    for _, lang in ipairs(sorted_langs) do
+    for i, lang in ipairs(sorted_langs) do
         local lang_voices = voices_by_lang[lang]
         table.sort(lang_voices, function(a, b) return a.id < b.id end)
 
-        for __, v in ipairs(lang_voices) do
+        for j, v in ipairs(lang_voices) do
             local voice_id = v.id
             local label = v.name
             if v.bundled then
@@ -966,7 +965,7 @@ function MenuBuilder.buildMbrolaVoiceMenu(plugin)
                     local mark = (sel == voice_id) and " ✓" or ""
                     return label .. mark
                 end,
-                callback = function()
+                callback = function(touchmenu_instance)
                     local mb_voice = "mb-" .. voice_id
                     plugin:setSetting("tts_mbrola_voice", voice_id)
                     plugin:setSetting("tts_mbrola_voice_label", v.name)
@@ -975,15 +974,12 @@ function MenuBuilder.buildMbrolaVoiceMenu(plugin)
                         text = T(_("MBROLA voice selected:\n%1"), v.name),
                         timeout = 2,
                     })
+                    if touchmenu_instance then
+                        touchmenu_instance:updateItems()
+                    end
                 end,
             })
         end
-        table.insert(menu, { text = _("─"), enabled = false })
-    end
-
-    -- Remove trailing separator
-    if #menu > 0 and menu[#menu].enabled == false then
-        table.remove(menu)
     end
 
     return menu
