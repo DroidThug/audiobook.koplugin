@@ -1037,7 +1037,9 @@ function MenuBuilder.buildMbrolaDownloadMenu(plugin, Downloader)
                             -- Auto-select the downloaded voice
                             plugin:setSetting("tts_mbrola_voice", voice_id)
                             plugin:setSetting("tts_mbrola_voice_label", voice_name)
-                            plugin.tts_engine:setVoice("mb-" .. voice_id)
+                            if plugin.tts_engine then
+                                plugin.tts_engine:setVoice("mb-" .. voice_id)
+                            end
                             UIManager:show(InfoMessage:new{
                                 text = _("Voice installed:\n") .. voice_name
                                     .. _("\n\nIt is now selected as your active MBROLA voice."),

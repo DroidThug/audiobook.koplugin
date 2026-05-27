@@ -159,13 +159,18 @@ function Audiobook:_initSubmodules()
             self.tts_engine:setRate(self:getSetting("speech_rate", 1.0))
             self.tts_engine:setPitch(self:getSetting("speech_pitch", 50))
             self.tts_engine:setVolume(self:getSetting("speech_volume", 1.0))
-            local voice_base = self:getSetting("tts_voice", "en")
-            local voice_variant = self:getSetting("tts_voice_variant", "")
-            local full_voice = voice_base
-            if voice_variant ~= "" then
-                full_voice = voice_base .. "+" .. voice_variant
+            local mbrola_voice = self:getSetting("tts_mbrola_voice", "")
+            if mbrola_voice ~= "" then
+                self.tts_engine:setVoice("mb-" .. mbrola_voice)
+            else
+                local voice_base = self:getSetting("tts_voice", "en")
+                local voice_variant = self:getSetting("tts_voice_variant", "")
+                local full_voice = voice_base
+                if voice_variant ~= "" then
+                    full_voice = voice_base .. "+" .. voice_variant
+                end
+                self.tts_engine:setVoice(full_voice)
             end
-            self.tts_engine:setVoice(full_voice)
             self.tts_engine:setWordGap(self:getSetting("word_gap", 2))
             self.tts_engine:setClausePause(self:getSetting("clause_pause", 0))
             local piper_model = self:getSetting("piper_model", nil)
