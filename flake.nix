@@ -86,6 +86,16 @@
         "bugreport.lua"
         "androidtts.lua"
         "_meta.lua"
+        "mediaengine.lua"
+        "mediasync.lua"
+        "audiobookplayer.lua"
+        "m4bparser.lua"
+        "mediaaligner.lua"
+        "transcoder.lua"
+        "benchmarkrunner.lua"
+        "downloader.lua"
+        "epubmediaoverlay.lua"
+        "updater.lua"
       ];
     in
     {

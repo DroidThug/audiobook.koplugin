@@ -1,7 +1,7 @@
 --[[--
 MediaEngine -- Audio file playback with seeking for pre-recorded audiobooks.
-Supports mpv (JSON IPC), mplayer (slave mode), gst-play-1.0, and aplay fallbacks.
-Designed to mirror the audio-playback subset of TTSEngine for easy integration.
+Supports mpv (JSON IPC), mplayer (slave mode), gst-play-1.0, aplay fallbacks,
+and Kindle-specific backends (LIPC playermgr, bundled gst-play).
 
 @module koplugin.audiobook.mediaengine
 --]]
@@ -25,6 +25,8 @@ MediaEngine.BACKENDS = {
     GST_PIPELINE = "gst-pipeline",
     APLAY = "aplay",
     WAV_PLAY = "wav-play",
+    KINDLE_LIPC = "kindle-lipc",
+    KINDLE_GST_PLAY = "kindle-gst-play",
 }
 
 function MediaEngine:new(o)
@@ -53,6 +55,9 @@ function MediaEngine:new(o)
     o._pause_start_time = nil
     o._total_pause_ms = 0
     o._seek_offset = 0
+    -- Kindle-specific state
+    o._gst_play_cmd = nil
+    o._lipc_fallback_tried = false
     return o
 end
 
@@ -119,7 +124,36 @@ function MediaEngine:detectBackend()
         return self.backend, self.backend_cmd
     end
 
-    -- 5) aplay -- WAV only, no seeking
+    -- 5) Kindle backends: LIPC playermgr (Amazon's audio service) or
+    -- bundled kindle/gst-play (raw PCM to mixersink → audiomgrd → BT).
+    -- Kindle devices have no standard audio tools (no aplay, no mpv, etc.)
+    -- and audio must go through Amazon's proprietary pipeline.
+    -- These are checked before aplay/wav-play because they can handle
+    -- any file format (playermgr uses GStreamer internally) and support
+    -- seeking via the lipc-get-prop PlayStatus mechanism.
+    if self:_isKindle() then
+        -- Try bundled gst-play first (most reliable on PW5/PW6/Colorsoft
+        -- where GStreamer is stripped and lacks wavparse).
+        local gst_play_detected = self:_detectKindleGstPlay()
+        if gst_play_detected then
+            self.backend = self.BACKENDS.KINDLE_GST_PLAY
+            self.backend_cmd = self._gst_play_cmd
+            logger.warn("MediaEngine: selected kindle-gst-play backend")
+            return self.backend, self.backend_cmd
+        end
+
+        -- Try LIPC playermgr (may work for non-WAV formats like MP3
+        -- which playermgr can decode natively via decodebin).
+        local lipc_detected = self:_detectKindleLipc()
+        if lipc_detected then
+            self.backend = self.BACKENDS.KINDLE_LIPC
+            self.backend_cmd = "lipc"
+            logger.warn("MediaEngine: selected kindle-lipc backend")
+            return self.backend, self.backend_cmd
+        end
+    end
+
+    -- 6) aplay -- WAV only, no seeking
     if self:commandExists("aplay") then
         self.backend = self.BACKENDS.APLAY
         self.backend_cmd = "aplay"
@@ -127,19 +161,140 @@ function MediaEngine:detectBackend()
         return self.backend, self.backend_cmd
     end
 
-    -- 6) bundled wav-play -- WAV only, no seeking
-    local wav_play = self._plugin_dir .. "/wav-play"
-    local f = io.open(wav_play, "r")
+    -- 7) bundled wav-play -- WAV only, no seeking
+    local wav_play_path = self._plugin_dir .. "/wav-play"
+    local f = io.open(wav_play_path, "r")
     if f then
         f:close()
         self.backend = self.BACKENDS.WAV_PLAY
-        self.backend_cmd = wav_play
+        self.backend_cmd = wav_play_path
         logger.warn("MediaEngine: selected bundled wav-play backend (WAV only, no seek)")
         return self.backend, self.backend_cmd
     end
 
     logger.err("MediaEngine: no audio backend found")
     return nil, nil
+end
+
+-- ---------------------------------------------------------------------------
+-- Kindle-specific backend detection
+-- Mirrors the logic in TTSEngine:findAudioPlayer() for LIPC playermgr
+-- and bundled kindle/gst-play backends.
+-- ---------------------------------------------------------------------------
+
+--- Check if the device is a Kindle via KOReader's Device module or
+--- fallback heuristics.
+-- @treturn bool
+function MediaEngine:_isKindle()
+    return Device.isKindle and Device:isKindle()
+end
+
+--- Probe whether Kindle playermgr (LIPC) is available: lipc-set-prop,
+--- lipc-get-prop exist, and com.lab126.playermgr InPlayback property
+--- can be read (returns a digit).
+-- @treturn string|nil "kindle-lipc" if available, nil otherwise
+function MediaEngine:_detectKindleLipc()
+    if not self:_isKindle() then return nil end
+
+    local h = io.popen("command -v lipc-set-prop 2>/dev/null && command -v lipc-get-prop 2>/dev/null")
+    if not h then return nil end
+    local out = h:read("*a") or ""
+    h:close()
+    if out == "" then return nil end
+
+    local ph = io.popen("lipc-get-prop com.lab126.playermgr InPlayback 2>&1")
+    if not ph then return nil end
+    local val = ph:read("*a") or ""
+    ph:close()
+    val = val:match("^%s*(%d+)")
+    if val then
+        -- playermgr service exists and responds.
+        -- Check for wavparse in GStreamer plugins: if present, playermgr
+        -- can decode WAV files via GStreamer natively.  If absent, audio
+        -- files need-- to be transcoded to WAV and played via kindle-gst-play.
+        local has_wavparse = false
+        local gst_dirs = {"/usr/lib/gstreamer-1.0", "/usr/lib/gstreamer-0.10"}
+        for _, dir in ipairs(gst_dirs) do
+            local lsh = io.popen("ls " .. dir .. "/libgstwav* 2>/dev/null")
+            if lsh then
+                local ls_out = lsh:read("*a") or ""
+                lsh:close()
+                if ls_out:match("libgstwav") then
+                    has_wavparse = true
+                    break
+                end
+            end
+        end
+        if not has_wavparse then
+            -- No wavparse -- playermgr cannot decode WAV natively.
+            -- Only use kindle-lipc if we can detect the bundled gst-play
+            -- as a fallback, since the file is already transcoded to WAV
+            -- by the plugin's transcoder before reaching MediaEngine.
+            -- If gst-play exists, we prefer KINDLE_GST_PLAY; if not,
+            -- try kindle-lipc anyway (the file may be MP3 which playermgr
+            -- handles natively via decodebin).
+            local plugin_dir = self._plugin_dir or "."
+            local gst_play_bin = plugin_dir .. "/kindle/gst-play"
+            local gf = io.open(gst_play_bin, "r")
+            if not gf then
+                -- No gst-play available; skip LIPC if wavparse is absent
+                -- because playermgr will fail silently on WAV files.
+                -- MP3 files may still work, but we can't be sure.
+                logger.warn("MediaEngine: Kindle LIPC available but no wavparse and no gst-play -- will try LIPC for non-WAV files")
+            else
+                gf:close()
+                logger.warn("MediaEngine: Kindle LIPC available but no wavparse -- gst-play present for WAV fallback")
+            end
+        end
+        logger.warn("MediaEngine: Found Kindle LIPC playermgr service, InPlayback=", val,
+            "wavparse=", has_wavparse)
+        return "kindle-lipc"
+    end
+    logger.warn("MediaEngine: lipc-get-prop playermgr InPlayback returned:", val)
+    return nil
+end
+
+--- Probe for the bundled kindle/gst-play binary and verify that
+--- GStreamer mixersink is available.  gst-play feeds raw PCM to
+--- mixersink → audiomgrd → BT headphones.
+-- @treturn string|nil "kindle-gst-play" if available, nil otherwise
+function MediaEngine:_detectKindleGstPlay()
+    if not self:_isKindle() then return nil end
+
+    local plugin_dir = self._plugin_dir or "."
+    local gst_play_bin = plugin_dir .. "/kindle/gst-play"
+    local gf = io.open(gst_play_bin, "r")
+    if not gf then
+        logger.dbg("MediaEngine: kindle/gst-play not bundled")
+        return nil
+    end
+    gf:close()
+
+    -- kindle-gst-play is statically linked against the Kindle's system
+    -- glibc (/lib/ld-linux-armhf.so.3).  No bundled linker wrapping needed.
+    local gst_play_cmd = gst_play_bin
+
+    -- Run --probe to verify GStreamer loads and mixersink exists
+    local ph = io.popen(gst_play_cmd .. " --probe 2>&1")
+    if not ph then return nil end
+    local probe = ph:read("*a") or ""
+    ph:close()
+
+    local has_plugin_error = probe:match("Failed to load plugin")
+        or probe:match("undefined symbol")
+        or probe:match("GStreamer%-WARNING")
+    if has_plugin_error then
+        logger.warn("MediaEngine: kindle-gst-play probe found plugin load error:", probe:gsub("\n", " "))
+        return nil
+    end
+    if not probe:match("mixersink=found") then
+        logger.warn("MediaEngine: kindle-gst-play probe: mixersink not found")
+        return nil
+    end
+
+    logger.warn("MediaEngine: Found bundled kindle-gst-play with mixersink")
+    self._gst_play_cmd = gst_play_cmd
+    return "kindle-gst-play"
 end
 
 -- ---------------------------------------------------------------------------
@@ -435,6 +590,10 @@ function MediaEngine:play(on_complete, on_fail)
         return self:_playGstPipeline(gen)
     elseif self.backend == self.BACKENDS.APLAY or self.backend == self.BACKENDS.WAV_PLAY then
         return self:_playAplay(gen)
+    elseif self.backend == self.BACKENDS.KINDLE_GST_PLAY then
+        return self:_playKindleGstPlay(gen)
+    elseif self.backend == self.BACKENDS.KINDLE_LIPC then
+        return self:_playKindleLipc(gen)
     end
 
     logger.err("MediaEngine: unknown backend", self.backend)
@@ -649,6 +808,220 @@ function MediaEngine:_playAplay(gen)
 end
 
 -- ---------------------------------------------------------------------------
+-- Kindle-specific playback methods
+-- ---------------------------------------------------------------------------
+
+function MediaEngine:_playKindleGstPlay(gen)
+    -- kindle/gst-play: a custom binary that feeds raw PCM to GStreamer's
+    -- mixersink element, bypassing the missing wavparse on stripped firmware.
+    -- The binary reads WAV files, strips the header, and pipes PCM to
+    -- mixersink → audiomgrd → BT headphones.
+    --
+    -- Seeking: use the --seek=<seconds> argument.  Re-launch on seek.
+    local gst_cmd = self._gst_play_cmd or self.backend_cmd
+
+    -- Add seek offset if present
+    local args = ""
+    if self._seek_offset and self._seek_offset > 0 then
+        args = string.format(" --seek=%d", math.floor(self._seek_offset))
+    end
+
+    local path = self.current_path:gsub('"', '\\"')
+    local cmd = string.format(
+        '%s%s "%s"',
+        gst_cmd,
+        args,
+        path
+    )
+    logger.warn("MediaEngine: kindle-gst-play launch gen=", gen,
+        "seek_offset=", self._seek_offset or 0)
+
+    -- Spawn in background and capture PID
+    local pid_file = self:_getTempDir() .. "/kindle-gst-pid-" .. gen
+    os.remove(pid_file)
+    local wrapper = string.format("sh -c 'echo $$ > %s; exec %s' &", pid_file, cmd)
+    os.execute(wrapper)
+
+    UIManager:scheduleIn(0.3, function()
+        if self.play_generation ~= gen then return end
+        local pf = io.open(pid_file, "r")
+        if pf then
+            local pid_str = pf:read("*l")
+            pf:close()
+            self.audio_pid = tonumber(pid_str)
+            logger.warn("MediaEngine: kindle-gst-play PID =", self.audio_pid)
+        end
+        os.remove(pid_file)
+        self:_startPositionPoller(gen)
+        self:_startCompletionWatcher(gen)
+    end)
+
+    return true
+end
+
+function MediaEngine:_playKindleLipc(gen)
+    -- Kindle LIPC: use Amazon's playermgr service via lipc-set-prop
+    -- to play audio files.  playermgr uses GStreamer internally and
+    -- routes audio through audiomgrd → BT headphones.
+    --
+    -- Seeking: seek-by-restart using Open + Play with the requested
+    -- time offset approximated by InPlayback polling.
+    --
+    -- Supported file formats: MP3, AAC, possibly WAV (depends on
+    -- wavparse availability in the device's GStreamer installation).
+    -- The transcoder in main.lua already converts unsupported formats
+    -- to MP3 or WAV before reaching MediaEngine.
+
+    local file_path = self.current_path
+
+    -- Stop any previous playback first
+    os.execute("lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null")
+
+    -- Request audio focus from audiomgrd
+    os.execute("lipc-set-prop com.lab126.audiomgrd setFocus 'audiobook' 2>/dev/null")
+
+    -- Enable GStreamer debug logging
+    os.execute("lipc-set-prop com.lab126.playermgr gstLogLevel 2 2>/dev/null")
+
+    -- Helper to run LIPC commands and capture output
+    local function lipc_cmd(cmd)
+        local h = io.popen(cmd .. " 2>&1")
+        local out = ""
+        if h then out = h:read("*a") or ""; h:close() end
+        return out
+    end
+
+    -- Try multiple strategies to start playback:
+    local file_uri = "file://" .. file_path
+    local started = false
+    local strategies = {
+        {name = "Open(URI)+Play", cmd1 = string.format(
+            "lipc-set-prop com.lab126.playermgr Open '%s'", file_uri),
+            cmd2 = "lipc-set-prop com.lab126.playermgr Play ''"},
+        {name = "Open(path)+Play", cmd1 = string.format(
+            "lipc-set-prop com.lab126.playermgr Open '%s'", file_path),
+            cmd2 = "lipc-set-prop com.lab126.playermgr Play ''"},
+        {name = "Play(URI)", cmd1 = "", cmd2 = string.format(
+            "lipc-set-prop com.lab126.playermgr Play '%s'", file_uri)},
+        {name = "Play(path)", cmd1 = "", cmd2 = string.format(
+            "lipc-set-prop com.lab126.playermgr Play '%s'", file_path)},
+    }
+
+    for _, s in ipairs(strategies) do
+        if started then break end
+        os.execute("lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null")
+        if s.cmd1 ~= "" then
+            local out1 = lipc_cmd(s.cmd1)
+            logger.warn("MediaEngine: kindle-lipc", s.name, "Open:", out1)
+        end
+        local out2 = lipc_cmd(s.cmd2)
+        logger.warn("MediaEngine: kindle-lipc", s.name, "Play:", out2)
+
+        -- Check if playback started
+        local in_play = lipc_cmd("lipc-get-prop com.lab126.playermgr InPlayback")
+        started = in_play:match("^%s*(%d+)") == "1"
+        logger.warn("MediaEngine: kindle-lipc InPlayback:", in_play, "for strategy:", s.name)
+    end
+
+    if not started then
+        logger.err("MediaEngine: Kindle LIPC -- none of 4 strategies got InPlayback=1")
+        -- Try fallback to gst-play once
+        if self._gst_play_cmd and not self._lipc_fallback_tried then
+            self._lipc_fallback_tried = true
+            logger.warn("MediaEngine: kindle-lipc failed, falling back to kindle-gst-play")
+            self.backend = self.BACKENDS.KINDLE_GST_PLAY
+            self.backend_cmd = self._gst_play_cmd
+            return self:_playKindleGstPlay(gen)
+        end
+        self.is_playing = false
+        if self._on_fail then
+            local cb = self._on_fail
+            self._on_fail = nil
+            cb("kindle-lipc playback failed")
+        end
+        return false
+    end
+
+    self._lipc_fallback_tried = false
+    self._audio_launched_at = UIManager:getTime()
+    logger.warn("MediaEngine: kindle-lipc playback started")
+
+    self:_startPositionPoller(gen)
+
+    -- For Kindle LIPC, completion is detected by polling the InPlayback
+    -- property instead of PID-based process watcher (playermgr is a
+    -- system daemon, not a child process we spawned).
+    local engine = self
+    local poll_count = 0
+    local dur_ms = (self.current_duration or 3600) * 1000
+    local max_polls = math.max(300, math.floor(dur_ms * 3 / 100))
+    local startup_polls = 5
+    local ever_playing = false
+    local function pollLipcDone()
+        if engine.play_generation ~= gen then return end
+        if not engine.is_playing then return end
+        if engine.is_paused then
+            UIManager:scheduleIn(0.3, pollLipcDone)
+            return
+        end
+        poll_count = poll_count + 1
+        if poll_count > startup_polls then
+            local h = io.popen("lipc-get-prop com.lab126.playermgr InPlayback 2>/dev/null")
+            if h then
+                local val = h:read("*a") or ""
+                h:close()
+                val = val:match("(%d+)")
+                if val and tonumber(val) == 1 then
+                    ever_playing = true
+                elseif val and tonumber(val) == 0 then
+                    local elapsed_ms = 0
+                    if engine._audio_launched_at then
+                        elapsed_ms = time.to_ms(UIManager:getTime() - engine._audio_launched_at)
+                            - (engine._total_pause_ms or 0)
+                    end
+                    if ever_playing then
+                        -- Was playing, now stopped → playback completed normally
+                        logger.warn("MediaEngine: Kindle LIPC playback complete, elapsed=",
+                            elapsed_ms, "ms")
+                        engine.is_playing = false
+                        if engine._on_complete then
+                            local cb = engine._on_complete
+                            engine._on_complete = nil
+                            cb()
+                        end
+                        return
+                    elseif elapsed_ms > 5000 then
+                        -- Never started playing after 5 seconds → failure
+                        logger.err("MediaEngine: Kindle LIPC playback never started, elapsed=",
+                            elapsed_ms, "ms")
+                        engine.is_playing = false
+                        if engine._on_fail then
+                            local cb = engine._on_fail
+                            engine._on_fail = nil
+                            cb("playback never started")
+                        end
+                        return
+                    end
+                end
+            end
+        end
+        if poll_count > max_polls then
+            logger.warn("MediaEngine: Kindle LIPC max polls reached, forcing stop")
+            engine.is_playing = false
+            if engine._on_complete then
+                local cb = engine._on_complete
+                engine._on_complete = nil
+                cb()
+            end
+            return
+        end
+        UIManager:scheduleIn(0.1, pollLipcDone)
+    end
+    UIManager:scheduleIn(0.1, pollLipcDone)
+    return true
+end
+
+-- ---------------------------------------------------------------------------
 -- Position polling
 -- ---------------------------------------------------------------------------
 
@@ -695,7 +1068,8 @@ function MediaEngine:_startCompletionWatcher(gen)
 
         -- For backends without IPC, estimate completion from elapsed time
         if (self.backend == self.BACKENDS.APLAY or self.backend == self.BACKENDS.WAV_PLAY
-            or self.backend == self.BACKENDS.GST_PLAY or self.backend == self.BACKENDS.GST_PIPELINE)
+            or self.backend == self.BACKENDS.GST_PLAY or self.backend == self.BACKENDS.GST_PIPELINE
+            or self.backend == self.BACKENDS.KINDLE_GST_PLAY)
             and self._play_start_time and self.current_duration then
             local pos = self:getPosition()
             if pos >= self.current_duration then
@@ -766,9 +1140,13 @@ function MediaEngine:resume()
                 f:close()
             end
         end
+    elseif self.backend == self.BACKENDS.KINDLE_LIPC then
+        -- Kindle playermgr: Resume (set Play again)
+        os.execute("lipc-set-prop com.lab126.playermgr Play '' 2>/dev/null")
     elseif self.backend == self.BACKENDS.GST_PLAY
-        or self.backend == self.BACKENDS.GST_PIPELINE then
-        -- After a paused seek the GST process was killed; restart it.
+        or self.backend == self.BACKENDS.GST_PIPELINE
+        or self.backend == self.BACKENDS.KINDLE_GST_PLAY then
+        -- After a paused seek the process was killed; restart it.
         if self.audio_pid and ffi.C.kill then
             ffi.C.kill(self.audio_pid, 18) -- SIGCONT
         else
@@ -789,7 +1167,8 @@ function MediaEngine:stop()
         self._position_timer = nil
     end
 
-    -- Kill audio process
+
+    -- Kill audio process (for most backends)
     local dying_pid = self.audio_pid
     if dying_pid then
         if ffi.C.kill then
@@ -823,6 +1202,11 @@ function MediaEngine:stop()
         elseif self._fifo_path then
             self:_mpvSendFifo("quit")
         end
+    end
+
+    -- For Kindle LIPC, tell playermgr to stop
+    if self.backend == self.BACKENDS.KINDLE_LIPC then
+        os.execute("lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null")
     end
 
     self:_cleanupIpc()
@@ -881,7 +1265,8 @@ function MediaEngine:seek(seconds, mode)
             end
         end
     elseif self.backend == self.BACKENDS.GST_PLAY
-        or self.backend == self.BACKENDS.GST_PIPELINE then
+        or self.backend == self.BACKENDS.GST_PIPELINE
+        or self.backend == self.BACKENDS.KINDLE_GST_PLAY then
         -- Seek via process restart with time offset.
         -- For relative seeks, compute target from current position.
         local target = seconds
@@ -902,6 +1287,38 @@ function MediaEngine:seek(seconds, mode)
         self:stop()
         -- Only restart playback if we were actually playing before the seek.
         -- When paused, restore the paused state so resume() can restart us.
+        if was_playing then
+            UIManager:scheduleIn(0.5, function()
+                self:play(saved_on_complete, saved_on_fail)
+            end)
+        else
+            self.is_playing = true
+            self.is_paused = true
+            self._on_complete = saved_on_complete
+            self._on_fail = saved_on_fail
+            self._play_start_time = UIManager:getTime()
+            self._pause_start_time = UIManager:getTime()
+        end
+        return true
+    elseif self.backend == self.BACKENDS.KINDLE_LIPC then
+        -- Seek via re-open at new position.  Kindle playermgr does not
+        -- support direct seeking; we stop and restart via Open+Play.
+        local target = seconds
+        if mode == "relative" then
+            target = self:getPosition() + seconds
+        end
+        target = math.max(0, target)
+        logger.warn("MediaEngine: Kindle LIPC seek mode=", mode, "req=", seconds,
+            "current=", self:getPosition(), "target=", target,
+            "was_playing=", was_playing)
+        local saved_on_complete = self._on_complete
+        local saved_on_fail = self._on_fail
+        self._seek_offset = target
+        self._play_start_time = UIManager:getTime()
+        self._total_pause_ms = 0
+        self._pause_start_time = nil
+        self:stop()
+        -- Restart playback at new position
         if was_playing then
             UIManager:scheduleIn(0.5, function()
                 self:play(saved_on_complete, saved_on_fail)
