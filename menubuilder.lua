@@ -42,6 +42,67 @@ function MenuBuilder.buildVoiceSettingsMenu(plugin)
         end,
     })
 
+    -- MBROLA voice toggle (espeak-ng backend only).
+    -- Due to a firmware bug in the MTK Bluetooth SBC encoder, only
+    -- mb-en1 (UK English Male 1) works reliably on MTK Kobo devices.
+    -- See docs/MBROLA_MTK_REPEAT_BUG.md for the full diagnostic report.
+    if plugin.tts_engine and plugin.tts_engine.backend == plugin.tts_engine.BACKENDS.ESPEAK then
+        table.insert(menu, {
+            text = _("MBROLA voice UK English Male 1"),
+            checked_func = function()
+                return plugin:getSetting("tts_mbrola_voice", "") == "en1"
+            end,
+            callback = function()
+                local current = plugin:getSetting("tts_mbrola_voice", "")
+                if current == "en1" then
+                    -- Uncheck: disable MBROLA
+                    plugin:setSetting("tts_mbrola_voice", "")
+                    plugin:setSetting("tts_mbrola_voice_label", "")
+                    local base = plugin:getSetting("tts_voice", "en")
+                    local var = plugin:getSetting("tts_voice_variant", "")
+                    local full = base
+                    if var ~= "" then
+                        full = base .. "+" .. var
+                    end
+                    plugin.tts_engine:setVoice(full)
+                    UIManager:show(InfoMessage:new{
+                        text = _("MBROLA disabled. Using regular espeak-ng voice."),
+                        timeout = 2,
+                    })
+                else
+                    -- Check: enable mb-en1 only
+                    plugin:setSetting("tts_mbrola_voice", "en1")
+                    plugin:setSetting("tts_mbrola_voice_label", "UK English Male 1")
+                    plugin.tts_engine:setVoice("mb-en1")
+                    UIManager:show(InfoMessage:new{
+                        text = _(
+                            "MBROLA voice enabled: UK English Male 1.\n\n"
+                            .. "Other MBROLA voices are unavailable because they trigger "
+                            .. "a firmware bug in the MTK Bluetooth chip that causes "
+                            .. "mid-sentence audio repeats. See the full report on GitHub."
+                        ),
+                        timeout = 5,
+                    })
+                end
+            end,
+        })
+        -- If user had a different MBROLA voice selected, migrate to disabled
+        do
+            local current_mb = plugin:getSetting("tts_mbrola_voice", "")
+            if current_mb ~= "" and current_mb ~= "en1" then
+                plugin:setSetting("tts_mbrola_voice", "")
+                plugin:setSetting("tts_mbrola_voice_label", "")
+                local base = plugin:getSetting("tts_voice", "en")
+                local var = plugin:getSetting("tts_voice_variant", "")
+                local full = base
+                if var ~= "" then
+                    full = base .. "+" .. var
+                end
+                plugin.tts_engine:setVoice(full)
+            end
+        end
+    end
+
     -- Quick start with espeak (Piper-only): play first sentences via espeak
     -- while Piper warms up.  Only relevant when both backends are usable.
     if plugin.tts_engine
@@ -187,47 +248,19 @@ function MenuBuilder.buildVoiceSettingsMenu(plugin)
     else
         table.insert(menu, {
             text_func = function()
+                if plugin:getSetting("tts_mbrola_voice", "") ~= "" then
+                    return _("Voice: (disabled while MBROLA is on)")
+                end
                 return T(_("Voice: %1"), plugin:getSetting("tts_voice_label", "English (GB)"))
             end,
             sub_item_table = MenuBuilder.buildVoiceMenu(plugin),
-        })
-        -- MBROLA voice selection (espeak-ng backend only)
-        table.insert(menu, {
-            text_func = function()
-                local mb = plugin:getSetting("tts_mbrola_voice", "")
-                if mb ~= "" then
-                    return T(_("MBROLA voice: %1"), plugin:getSetting("tts_mbrola_voice_label", mb))
-                end
-                return _("MBROLA voice: (not selected)")
+            enabled_func = function()
+                return plugin:getSetting("tts_mbrola_voice", "") == ""
             end,
-            sub_item_table_func = function()
-                local ok, result = pcall(function()
-                    return MenuBuilder.buildMbrolaVoiceMenu(plugin)
-                end)
-                if ok then
-                    return result
-                else
-                    logger.err("MenuBuilder: buildMbrolaVoiceMenu crashed:", result)
-                    return {{ text = _("Could not load MBROLA voice menu."), enabled = false }}
-                end
-            end,
-        })
-        -- Download additional MBROLA voices
-        table.insert(menu, {
-            text = _("Download MBROLA voice…"),
-            sub_item_table_func = function()
-                local ok, result = pcall(function()
-                    local _dir = debug.getinfo(1, "S").source:match("^@(.*/)[^/]*$") or "./"
-                    local Downloader = dofile(_dir .. "downloader.lua")
-                    return MenuBuilder.buildMbrolaDownloadMenu(plugin, Downloader)
-                end)
-                if ok then
-                    return result
-                else
-                    logger.err("MenuBuilder: buildMbrolaDownloadMenu crashed:", result)
-                    return {{ text = _("Could not load MBROLA download menu."), enabled = false }}
-                end
-            end,
+            help_text = _(
+                "Base voice and accent variant are ignored when a MBROLA voice is active. "
+                .. "Disable MBROLA to use regular espeak-ng voices."
+            ),
         })
     end
 
@@ -893,7 +926,14 @@ espeak-ng to use the MBROLA voice (e.g. mb-us1).
 --]]
 function MenuBuilder.buildMbrolaVoiceMenu(plugin)
     local menu = {}
-    local plugin_dir = plugin.plugin_dir or "."
+    local plugin_dir = plugin.plugin_dir
+    if not plugin_dir then
+        local esp = plugin.tts_engine and plugin.tts_engine.espeak_data_path
+        if esp then
+            plugin_dir = esp:match("^(.+)/espeak%-ng/share$")
+        end
+    end
+    plugin_dir = plugin_dir or "."
     local _dir = debug.getinfo(1, "S").source:match("^@(.*/)[^/]*$") or "./"
     local Downloader = dofile(_dir .. "downloader.lua")
     local voices = Downloader:getMbrolaVoiceList(plugin_dir)
@@ -1001,7 +1041,7 @@ function MenuBuilder.buildMbrolaDownloadMenu(plugin, Downloader)
     plugin_dir = plugin_dir or "."
     local voices = Downloader:getMbrolaVoiceList(plugin_dir)
 
-    for _, v in ipairs(voices) do
+    for idx, v in ipairs(voices) do
         if v.bundled then
             -- Bundled voices are already included; skip in download menu
             goto continue

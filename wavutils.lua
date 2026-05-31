@@ -76,6 +76,20 @@ function WavUtils.readSampleRate(f)
 end
 
 --[[--
+Read sample rate from a WAV file path.
+@param path string  File path
+@return number  Sample rate (0 on error)
+--]]
+function WavUtils.readSampleRateFromPath(path)
+    if not path then return 0 end
+    local f = io.open(path, "rb")
+    if not f then return 0 end
+    local sr = WavUtils.readSampleRate(f)
+    f:close()
+    return sr
+end
+
+--[[--
 Resample a WAV file in-place to a target sample rate.
 Uses linear interpolation.  Suitable for resampling espeak 22050Hz
 output to match Piper model rates (e.g. 16000Hz).

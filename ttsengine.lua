@@ -488,8 +488,13 @@ function TTSEngine:synthesizeCommand(text, callback)
     local audio_file = temp_dir .. "/audiobook_tts_" .. os.time() .. "_" .. self.file_counter .. ".wav"
     local timing_file = temp_dir .. "/audiobook_timing_" .. os.time() .. ".txt"
     local cmd
-    -- Limit text length to avoid command line issues
+    -- Limit text length to avoid command line issues and MBROLA phoneme
+    -- buffer overflow.  MBROLA's internal buffer is small; very long
+    -- input can cause playback artifacts on some firmware.
     local max_text_len = 1000
+    if self.voice and self.voice:match("^mb%-") then
+        max_text_len = 300
+    end
     if #text > max_text_len then
         text = text:sub(1, max_text_len)
         logger.dbg("TTSEngine: Truncated text to", max_text_len, "chars")
@@ -775,6 +780,12 @@ function TTSEngine:synthesizeCommand(text, callback)
         logger.dbg("TTSEngine: Audio file created, size:", size)
         if size and size > 0 then
             self.current_audio_file = audio_file
+            -- Warn if espeak-ng reported voice issues even though it produced
+            -- a file (can happen when MBROLA voice is missing and espeak falls
+            -- back to default voice).
+            if synth_output and synth_output:match("[Vv]oice") then
+                logger.warn("TTSEngine: espeak voice warning:", synth_output:sub(1, 200))
+            end
             -- Generate timing estimates since most engines don't provide timing
             self:generateTimingEstimates(text)
             if callback then
@@ -1286,7 +1297,13 @@ Play the synthesized audio.
 --]]
 function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
     local t0 = UIManager:getTime()
-    logger.warn("TTSEngine: play() called, audio_file=", self.current_audio_file, "is_speaking=", self.is_speaking)
+    -- Detect duplicate play() calls that could cause audio repeats.
+    if self.is_speaking then
+        logger.err("TTSEngine: DUPLICATE play() called while already speaking! gen=",
+            self.play_generation, "audio=", self.current_audio_file)
+    end
+    logger.dbg("TTSEngine: play() called, audio_file=", self.current_audio_file,
+        "is_speaking=", self.is_speaking)
     if not self.current_audio_file then
         logger.err("TTSEngine: No audio file to play")
         UIManager:show(InfoMessage:new{
@@ -1335,7 +1352,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
     end
     logger.dbg("TTSEngine: Using player:", player)
     logger.dbg("TTSEngine: Audio file:", self.current_audio_file)
-    logger.warn("TTSEngine: play() findPlayer took", time.to_ms(UIManager:getTime() - t0), "ms")
+    logger.dbg("TTSEngine: play() findPlayer took", time.to_ms(UIManager:getTime() - t0), "ms")
     -- Block playback when no real audio output exists and no BT device is
     -- connected.  On single-core Kobos (no speaker), silently looping
     -- through aplay for every sentence wastes CPU and can crash the device.
@@ -2706,7 +2723,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             for _, cf in ipairs(concat_files) do
                 table.insert(self._concat_durations, cf.duration_ms)
             end
-            logger.warn("TTSEngine: Merged", 1 + #concat_files, "sentences, durations=",
+            logger.dbg("TTSEngine: Merged", 1 + #concat_files, "sentences, durations=",
                 table.concat(self._concat_durations, "+"))
         else
             self._concat_durations = nil
@@ -2717,6 +2734,15 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         -- Reading the WAV header gives the true total duration, avoiding
         -- the bug where first-sentence padding was excluded from the sum.
         self._expected_play_duration_ms = self:getAudioDurationMs()
+        -- Detect the actual sample rate of the audio file so the persistent
+        -- pipeline's rawaudioparse element uses the correct rate.
+        -- MBROLA voices typically output at 16000 Hz, not 22050 Hz.
+        if self.current_audio_file then
+            self._target_sample_rate = WavUtils.readSampleRateFromPath(self.current_audio_file)
+            if self._target_sample_rate <= 0 then
+                self._target_sample_rate = 22050
+            end
+        end
         -- Cancel any pending callbacks from previous play()
         if self._completion_timer_fn then
             UIManager:unschedule(self._completion_timer_fn)
@@ -2738,7 +2764,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         local my_gen = self.play_generation
         -- BT latency: pipe buffer + ring buffer (~200ms)
         self.playback_latency_ms = (self._pipe_buffer_delay_ms or PIPE_BUFFER_DELAY_64KB) + 200
-        logger.warn("TTSEngine: play() pre-launch took", time.to_ms(UIManager:getTime() - t0), "ms")
+        logger.dbg("TTSEngine: play() pre-launch took", time.to_ms(UIManager:getTime() - t0), "ms")
         -- Feed audio to the persistent pipeline
         os.remove(PIPELINE_CTRL_DIR .. "/done")
         local ctrl_f = io.open(PIPELINE_CTRL_DIR .. "/play", "w")
@@ -2819,7 +2845,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                     return
                 end
             end
-            logger.warn("TTSEngine: Pipeline completion (duration-based,",
+            logger.dbg("TTSEngine: Pipeline completion (duration-based,",
                 engine._expected_play_duration_ms, "ms - trailing_gap",
                 trailing_gap_ms, "ms + pipe_buf",
                 pipe_buf_ms, "ms)")
@@ -3844,7 +3870,7 @@ The script starts gst-launch reading from a named FIFO and feeds it
 raw PCM (silence when idle, real audio when playing).
 --]]
 function TTSEngine:_writePipelineScript()
-    local sr = self._piper_sample_rate or 22050
+    local sr = self._pipeline_sample_rate or 22050
     -- Silence chunk: ~50ms at sample rate, 16-bit mono
     -- MUST be even (multiple of block_align=2) to preserve PCM sample alignment!
     local silence_samples = math.floor(sr * 0.05)
@@ -3874,6 +3900,7 @@ gst-launch-1.0 filesrc location="$FIFO" \
   ! rawaudioparse use-sink-caps=false format=pcm pcm-format=s16le sample-rate=%d num-channels=1 \
   ! audioconvert ! audioresample \
   ! "audio/x-raw,format=S16LE,rate=48000,channels=2" \
+  ! queue max-size-time=500000000 max-size-bytes=131072 \
   ! mtkbtmwrpcaudiosink sync=false >/dev/null 2>"$CTRL/pipeline_stderr" &
 GST_PID=$!
 # Open FIFO write end — keeps it alive between individual writes.
@@ -4014,6 +4041,13 @@ function TTSEngine:_startPersistentPipeline()
         end
     end
 
+    -- Configure pipeline for the actual sample rate of the audio we'll play.
+    -- MBROLA voices (e.g. 16000 Hz) differ from espeak-ng default (22050 Hz).
+    -- Using the wrong rate causes audio to play at wrong speed and breaks
+    -- word-highlighting sync.
+    self._pipeline_sample_rate = self._target_sample_rate or 22050
+    logger.dbg("TTSEngine: Starting persistent pipeline at",
+        self._pipeline_sample_rate, "Hz")
     if not self:_writePipelineScript() then
         logger.err("TTSEngine: Cannot write pipeline script")
         return false
@@ -4046,7 +4080,7 @@ function TTSEngine:_startPersistentPipeline()
     -- At 22050Hz mono 16-bit (44100 B/s): 16KB ≈ 370ms.
     -- At 16000Hz mono 16-bit (32000 B/s): 16KB ≈ 512ms.
     -- Balances low latency with headroom for Piper CPU stalls.
-    local sr = self._piper_sample_rate or 22050
+    local sr = self._pipeline_sample_rate or 22050
     self._pipe_buffer_delay_ms = pipeBufferDelay(sr, 64)  -- default: assume 64KB
     if gst_pid then
         local O_WRONLY    = 1
@@ -4189,7 +4223,18 @@ Ensure the persistent BT pipeline is running, (re)starting if needed.
 --]]
 function TTSEngine:_ensurePersistentPipeline()
     if self:_isPipelineAlive() then
-        return true
+        -- If the audio sample rate changed (e.g. switching from espeak 22050Hz
+        -- to MBROLA 16000Hz), the pipeline must be restarted with the new rate
+        -- or rawaudioparse will play audio at the wrong speed.
+        if self._target_sample_rate and self._pipeline_sample_rate
+                and self._target_sample_rate ~= self._pipeline_sample_rate then
+            logger.warn("TTSEngine: Sample rate changed from",
+                self._pipeline_sample_rate, "to", self._target_sample_rate,
+                "Hz — restarting pipeline")
+            self:_stopPersistentPipeline("rate_change")
+        else
+            return true
+        end
     end
     logger.warn("TTSEngine: Pipeline not alive, (re)starting...")
     return self:_startPersistentPipeline()
@@ -4423,7 +4468,13 @@ function TTSEngine:onPlaybackComplete()
         logger.warn("TTSEngine: onPlaybackComplete SKIPPED (not speaking, double-fire guard)")
         return
     end
-    logger.warn("TTSEngine: onPlaybackComplete gen=", self.play_generation, "pid=", self.audio_pid)
+    local elapsed_ms = 0
+    if self._audio_launched_at then
+        elapsed_ms = time.to_ms(UIManager:getTime() - self._audio_launched_at)
+    end
+    logger.dbg("TTSEngine: onPlaybackComplete gen=", self.play_generation,
+        "pid=", self.audio_pid, "elapsed=", elapsed_ms, "ms",
+        "expected=", self._expected_play_duration_ms or 0, "ms")
     self.is_speaking = false
     -- Bump generation so stale watcher/timing loops exit
     self.play_generation = (self.play_generation or 0) + 1

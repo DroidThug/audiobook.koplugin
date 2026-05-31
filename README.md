@@ -160,6 +160,7 @@ Two Bluetooth stacks are supported, auto-detected at runtime:
 On MTK devices the BT audio pipeline uses an exclusive abstract socket. If audio stops working after a crash, restart KOReader -- the plugin kills orphan processes on startup.
 
 > On MTK Kobo devices, the mtkbtmwrpc daemon binds a single abstract socket. Only one GStreamer pipeline can hold it at a time. The plugin keeps one persistent pipeline alive across sentences to avoid reconnection gaps. On BlueZ devices, the plugin starts `bluetoothd` and resets the HCI adapter automatically when you power on Bluetooth.
+> **Known issue on MTK devices:** MBROLA voices other than `mb-en1` (UK English Male 1) may produce mid-sentence audio repeats due to a firmware bug in the MTK Bluetooth SBC encoder. This affects all MBROLA voices except `mb-en1`. See [docs/MBROLA_MTK_REPEAT_BUG.md](docs/MBROLA_MTK_REPEAT_BUG.md) for the full diagnostic report.
 
 For the full platform audio and Bluetooth architecture (Kobo generations, Kindle, Android), see [docs/PLATFORM_AUDIO.md](docs/PLATFORM_AUDIO.md).
 

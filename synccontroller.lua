@@ -667,7 +667,20 @@ function SyncController:beginSentencePlayback(sentence)
                 break
             end
 
-            -- Sentence is available — NOW apply inter-sentence gap to the
+            -- Cap concat duration BEFORE applying gap padding.
+            -- Very large merged WAVs can overwhelm the MTK Bluetooth sink's
+            -- internal buffer, causing mid-playback audio repeats on long
+            -- paragraphs.  When the limit is reached we break here; the
+            -- trailing-gap code after the loop supplies the final padding.
+            local MAX_CONCAT_MS = 30000
+            if cumulative_ms + pf_dur > MAX_CONCAT_MS then
+                logger.warn("SyncController: Concat duration limit reached (",
+                    cumulative_ms + pf_dur, "ms >", MAX_CONCAT_MS,
+                    "ms) at sentence", idx, "— splitting into next group")
+                break
+            end
+
+            -- Sentence is available — apply inter-sentence gap to the
             -- PREVIOUS sentence's WAV (trailing silence).
             local pause_ms = 0
             if prev_sent then
