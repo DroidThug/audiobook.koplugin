@@ -238,6 +238,22 @@ function Audiobook:_initSubmodules()
         self.media_sync = nil
         self.transcoder = nil
     end
+
+    -- ── Audiobookshelf modules (always load; works without a document) ──
+    local ok_abs, err_abs = pcall(function()
+        local ABSSync = dofile(pp .. "abssync.lua")
+        if ABSSync then
+            self._abs_sync = ABSSync:new{
+                plugin = self,
+                plugin_dir = pp:sub(1, -2),
+            }
+            self:_startAbsSyncTimer()
+        end
+    end)
+    if not ok_abs then
+        logger.warn("Audiobook: ABS sync module failed to load:", err_abs)
+        self._abs_sync = nil
+    end
 end
 
 function Audiobook:onDispatcherRegisterActions()
@@ -343,6 +359,16 @@ function Audiobook:addToMainMenu(menu_items)
                 end,
                 callback = function()
                     self:openMusicPlaylist()
+                end,
+            },
+            -- ── Audiobookshelf ──
+            {
+                text = _("Audiobookshelf"),
+                enabled_func = function()
+                    return self._init_ok and self.media_sync ~= nil
+                end,
+                sub_item_table_func = function()
+                    return self:_buildAudiobookshelfMenu()
                 end,
             },
             -- ── Bluetooth settings ──
@@ -1044,7 +1070,7 @@ function Audiobook:_playAudioFile(file_path, playlist_files)
     self:_doPlayAudioFile(file_path, playlist_files, 0)
 end
 
-function Audiobook:_doPlayAudioFile(file_path, playlist_files, start_position)
+function Audiobook:_doPlayAudioFile(file_path, playlist_files, start_position, abs_item_id, abs_item_metadata)
     if not file_path or not self.media_sync then return end
     local playable_path = file_path
 
@@ -1102,11 +1128,38 @@ function Audiobook:_doPlayAudioFile(file_path, playlist_files, start_position)
         logger.warn("Audiobook: parser load FAILED:", ok, MetadataParser)
     end
 
+    -- If this is an ABS item, use ABS metadata when local extraction fails
+    if abs_item_id and abs_item_metadata then
+        if (not chapters or #chapters == 0) and abs_item_metadata.chapters then
+            chapters = abs_item_metadata.chapters
+            logger.warn("Audiobook: using ABS chapters for", abs_item_id, "(" .. #chapters .. " chapters)")
+        end
+        if not cover_path and abs_item_metadata.cover_path then
+            local cf = io.open(abs_item_metadata.cover_path, "r")
+            if cf then
+                cf:close()
+                cover_path = abs_item_metadata.cover_path
+            end
+        end
+        -- Store ABS tracking on media_sync
+        self.media_sync._abs_item_id = abs_item_id
+        self.media_sync._abs_duration = duration or abs_item_metadata.duration or 0
+    else
+        -- Clear ABS tracking for non-ABS playback
+        self.media_sync._abs_item_id = nil
+        self.media_sync._abs_duration = nil
+    end
+
     -- For standalone audio without text alignment, we create a single
     -- synthetic timing entry covering the whole file.
+    -- Use ABS metadata duration when ffprobe fails (common on Kobo).
+    local known_duration = duration
+    if not known_duration and abs_item_metadata and abs_item_metadata.duration then
+        known_duration = abs_item_metadata.duration
+    end
     local timing_data = {{
         start_time = 0,
-        end_time = duration or 3600,
+        end_time = known_duration or 3600,
         text = _("Audio playback"),
     }}
     self.media_sync:start(playable_path, timing_data, chapters, cover_path, playlist_files, file_path)
@@ -1445,6 +1498,28 @@ function Audiobook:stopReadAlong()
         if ok_pos and ok_path and pos and path and pos > 10 then
             self:_savePosition(path, pos)
             logger.warn("Audiobook: saved position", pos, "for", path)
+
+            -- Sync to Audiobookshelf if this is an ABS item
+            if self.media_sync._abs_item_id and self._abs_sync then
+                local dur = self.media_sync._abs_duration or 0
+                self._abs_sync:recordProgress(
+                    self.media_sync._abs_item_id,
+                    path, pos, dur, false
+                )
+                -- Attempt immediate flush
+                local ABSClient
+                pcall(function()
+                    ABSClient = dofile(self.path .. "/absclient.lua")
+                end)
+                if ABSClient then
+                    local server_url = self:getSetting("abs_server_url", "")
+                    local token = self:getSetting("abs_api_token", "")
+                    if server_url ~= "" and token ~= "" then
+                        local client = ABSClient:new{ server_url = server_url, token = token }
+                        self._abs_sync:flush(client)
+                    end
+                end
+            end
         end
         pcall(function() self.media_sync:stop() end)
     end
@@ -1933,6 +2008,159 @@ function Audiobook:deletePluginSettings()
     self.tts_engine_type = "espeak"
     self.voice = nil
     self.highlight_style = "background"
+end
+
+-- ---------------------------------------------------------------------------
+-- Audiobookshelf integration
+-- ---------------------------------------------------------------------------
+
+--[[--
+Build the Audiobookshelf submenu.
+Loads absbrowse.lua dynamically to avoid plugin load failures.
+--]]
+function Audiobook:_buildAudiobookshelfMenu()
+    local ABSBrowse
+    local pp = self.path and (self.path .. "/") or "./"
+    pcall(function()
+        ABSBrowse = dofile(pp .. "absbrowse.lua")
+    end)
+    if ABSBrowse and ABSBrowse.buildMainMenu then
+        return ABSBrowse.buildMainMenu(self)
+    end
+    return {{
+        text = _("Audiobookshelf modules not available."),
+        enabled = false,
+    }}
+end
+
+--[[--
+Play a cached Audiobookshelf item.
+Handles resume prompt and delegates to _doPlayAudioFile with ABS metadata.
+@param item_id string  ABS item ID
+@param audio_path string  Local audio file path
+@param metadata table  {title, author, narrator, duration, chapters, cover_path}
+--]]
+function Audiobook:_playAbsItem(item_id, audio_path, metadata)
+    if not audio_path or not self.media_sync then
+        return
+    end
+
+    -- Update "last played" settings
+    self:setSetting("abs_last_item_id", item_id)
+    self:setSetting("abs_last_library_id", metadata and metadata.library_id or "")
+
+    -- Check for saved position (from local audio_positions or ABS sync)
+    local saved_pos = nil
+    local saved_time = nil
+
+    -- First check local saved position
+    local local_pos, local_time = self:_getSavedPosition(audio_path)
+    if local_pos and local_pos > 30 then
+        saved_pos = local_pos
+        saved_time = local_time
+    end
+
+    -- If we have ABS sync, also check remote position
+    if self._abs_sync then
+        local ABSClient
+        local pp = self.path and (self.path .. "/") or "./"
+        pcall(function()
+            ABSClient = dofile(pp .. "absclient.lua")
+        end)
+        if ABSClient then
+            local server_url = self:getSetting("abs_server_url", "")
+            local token = self:getSetting("abs_api_token", "")
+            if server_url ~= "" and token ~= "" then
+                local client = ABSClient:new{ server_url = server_url, token = token }
+                local remote_pos, err = self._abs_sync:getRemotePosition(client, item_id)
+                if remote_pos and remote_pos > 30 then
+                    -- Use remote position if it's newer (we don't have timestamps for local_pos here,
+                    -- so prefer remote when it's significantly ahead)
+                    if not saved_pos or math.abs(remote_pos - saved_pos) > 60 then
+                        saved_pos = remote_pos
+                        saved_time = os.time()
+                    end
+                end
+            end
+        end
+    end
+
+    if saved_pos and saved_pos > 30 then
+        local ConfirmBox = require("ui/widget/confirmbox")
+        UIManager:show(ConfirmBox:new{
+            text = T(_("Resume from %1?\n\nLast played: %2"),
+                self:_formatAudioTime(saved_pos),
+                os.date("%Y-%m-%d %H:%M", saved_time or os.time())),
+            ok_text = _("Resume"),
+            cancel_text = _("From start"),
+            ok_callback = function()
+                self:_doPlayAudioFile(audio_path, nil, saved_pos, item_id, metadata)
+            end,
+            cancel_callback = function()
+                self:_clearPosition(audio_path)
+                self:_doPlayAudioFile(audio_path, nil, 0, item_id, metadata)
+            end,
+        })
+        return
+    end
+
+    self:_doPlayAudioFile(audio_path, nil, 0, item_id, metadata)
+end
+
+--[[--
+Start the periodic ABS sync timer.
+Flushes progress updates to the server every 60 seconds.
+--]]
+function Audiobook:_startAbsSyncTimer()
+    if self._abs_sync_timer_running then
+        return
+    end
+    self._abs_sync_timer_running = true
+
+    local function tick()
+        if not self._abs_sync_timer_running then
+            return
+        end
+        if self._abs_sync then
+            -- Record current playback position if an ABS item is playing
+            if self.media_sync and self.media_sync._abs_item_id
+                    and (self.media_sync:isPlaying() or self.media_sync:isPaused()) then
+                local ok_pos, pos = pcall(function()
+                    return self.media_sync.media_engine and self.media_sync.media_engine:getPosition()
+                end)
+                local ok_path, path = pcall(function()
+                    return self.media_sync.media_engine and self.media_sync.media_engine.current_path
+                end)
+                if ok_pos and ok_path and pos and path then
+                    self:_savePosition(path, pos)
+                    self._abs_sync:recordProgress(
+                        self.media_sync._abs_item_id,
+                        path, pos,
+                        self.media_sync._abs_duration or 0,
+                        false
+                    )
+                end
+            end
+
+            -- Flush pending updates to ABS
+            local ABSClient
+            local pp = self.path and (self.path .. "/") or "./"
+            pcall(function()
+                ABSClient = dofile(pp .. "absclient.lua")
+            end)
+            if ABSClient then
+                local server_url = self:getSetting("abs_server_url", "")
+                local token = self:getSetting("abs_api_token", "")
+                if server_url ~= "" and token ~= "" then
+                    local client = ABSClient:new{ server_url = server_url, token = token }
+                    self._abs_sync:flush(client)
+                end
+            end
+        end
+        -- Reschedule in 60 seconds
+        UIManager:scheduleIn(60, tick)
+    end
+    UIManager:scheduleIn(60, tick)
 end
 
 return Audiobook

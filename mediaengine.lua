@@ -21,6 +21,7 @@ local MediaEngine = {}
 MediaEngine.BACKENDS = {
     MPV = "mpv",
     MPLAYER = "mplayer",
+    FFMPEG_PIPE = "ffmpeg-pipe",
     GST_PLAY = "gst-play",
     GST_PIPELINE = "gst-pipeline",
     APLAY = "aplay",
@@ -73,6 +74,28 @@ function MediaEngine:commandExists(cmd)
     return result ~= nil and result ~= ""
 end
 
+--[[--
+Probe for ffmpeg in the plugin's bin/ directory or PATH.
+@return string|nil  absolute path to ffmpeg binary, or nil
+--]]
+function MediaEngine:_findFfmpeg()
+    if self._plugin_dir then
+        local plugin_ffmpeg = self._plugin_dir .. "/bin/ffmpeg"
+        local f = io.open(plugin_ffmpeg, "r")
+        if f then
+            f:close()
+            return plugin_ffmpeg
+        end
+    end
+    local h = io.popen("command -v ffmpeg 2>/dev/null")
+    if h then
+        local result = h:read("*l")
+        h:close()
+        if result and result ~= "" then return result end
+    end
+    return nil
+end
+
 function MediaEngine:_getTempDir()
     return os.getenv("TMPDIR") or "/tmp"
 end
@@ -107,7 +130,18 @@ function MediaEngine:detectBackend()
         return self.backend, self.backend_cmd
     end
 
-    -- 3) gst-play-1.0 -- preferred over gst-launch because playbin handles
+    -- 3) ffmpeg pipe -- decodes any format ffmpeg supports (m4b, aac, ogg,
+    -- flac, etc.) and pipes raw WAV to aplay.  Preferred over gst-play on
+    -- devices where gstreamer lacks AAC decoders (common on Kobo).
+    local ffmpeg_cmd = self:_findFfmpeg()
+    if ffmpeg_cmd then
+        self.backend = self.BACKENDS.FFMPEG_PIPE
+        self.backend_cmd = ffmpeg_cmd
+        logger.warn("MediaEngine: selected ffmpeg-pipe backend")
+        return self.backend, self.backend_cmd
+    end
+
+    -- 4) gst-play-1.0 -- preferred over gst-launch because playbin handles
     -- URI fragments (#t=) for time-offset seeking, which uridecodebin does not.
     if self:commandExists("gst-play-1.0") then
         self.backend = self.BACKENDS.GST_PLAY
@@ -584,6 +618,8 @@ function MediaEngine:play(on_complete, on_fail)
         return self:_playMpv(gen)
     elseif self.backend == self.BACKENDS.MPLAYER then
         return self:_playMplayer(gen)
+    elseif self.backend == self.BACKENDS.FFMPEG_PIPE then
+        return self:_playFfmpegPipe(gen)
     elseif self.backend == self.BACKENDS.GST_PLAY then
         return self:_playGstPlay(gen)
     elseif self.backend == self.BACKENDS.GST_PIPELINE then
@@ -661,6 +697,86 @@ function MediaEngine:_playMplayer(gen)
 
     UIManager:scheduleIn(0.3, function()
         if self.play_generation ~= gen then return end
+        self:_startPositionPoller(gen)
+        self:_startCompletionWatcher(gen)
+    end)
+
+    return true
+end
+
+function MediaEngine:_playFfmpegPipe(gen)
+    -- ffmpeg decodes to raw PCM; on Kobo we pipe through gstreamer
+    -- to the MTK Bluetooth sink because aplay has no ALSA soundcards.
+    -- We use raw s16le instead of WAV because wavparse chokes on piped
+    -- WAV streams with incomplete headers.
+    -- Seeking is done via process restart with -ss offset.
+    -- Pause/resume uses SIGSTOP/SIGCONT on the shell PID.
+    local offset = self._seek_offset or 0
+    local path = self.current_path:gsub('"', '\\"')
+    local ffmpeg = self.backend_cmd
+
+    -- Detect whether to use gstreamer + mtkbtmwrpcaudiosink or fall back to aplay
+    local has_mtk_sink = false
+    local has_gst_launch = self:commandExists("gst-launch-1.0")
+    if has_gst_launch then
+        local h = io.popen("gst-inspect-1.0 mtkbtmwrpcaudiosink >/dev/null 2>&1 && echo yes || echo no")
+        if h then
+            has_mtk_sink = h:read("*l") == "yes"
+            h:close()
+        end
+    end
+
+    -- Raw PCM format: s16le, 44100 Hz, stereo.
+    -- gstreamer pipeline uses audio/x-raw caps instead of wavparse.
+    local player_cmd
+    if has_mtk_sink then
+        player_cmd = 'gst-launch-1.0 fdsrc fd=0 ! audio/x-raw,format=S16LE,rate=44100,channels=2 ! audioconvert ! audioresample ! mtkbtmwrpcaudiosink'
+    else
+        player_cmd = 'aplay -f S16_LE -r 44100 -c 2'
+    end
+
+    local cmd
+    if offset > 0 then
+        cmd = string.format(
+            'nice -n 10 "%s" -ss %d -i "%s" -ar 44100 -ac 2 -f s16le - 2>/dev/null | %s',
+            ffmpeg, math.floor(offset), path, player_cmd
+        )
+    else
+        cmd = string.format(
+            'nice -n 10 "%s" -i "%s" -ar 44100 -ac 2 -f s16le - 2>/dev/null | %s',
+            ffmpeg, path, player_cmd
+        )
+    end
+
+    logger.warn("MediaEngine: ffmpeg-pipe launch gen=", gen,
+        "offset=", offset,
+        "sink=", has_mtk_sink and "mtkbtmwrpcaudiosink" or "aplay",
+        "cmd=", cmd:sub(1, 200))
+
+    -- Kill any stale ffmpeg/gst-launch processes before starting.
+    -- Previous crashes can leave zombie processes that hold the MTK
+    -- Bluetooth socket, causing "Address already in use" errors.
+    os.execute("killall -9 ffmpeg gst-launch-1.0 2>/dev/null")
+
+    -- Spawn in background and capture PID.
+    -- Do NOT use 'exec' here: in POSIX sh, 'exec cmd1 | cmd2' replaces the
+    -- shell with the last pipeline stage (gst-launch), so the original PID
+    -- disappears and the completion watcher thinks playback finished.
+    local pid_file = self:_getTempDir() .. "/ffmpeg-pid-" .. gen
+    os.remove(pid_file)
+    local wrapper = string.format("sh -c 'echo $$ > %s; %s' &", pid_file, cmd)
+    os.execute(wrapper)
+
+    UIManager:scheduleIn(0.3, function()
+        if self.play_generation ~= gen then return end
+        local pf = io.open(pid_file, "r")
+        if pf then
+            local pid_str = pf:read("*l")
+            pf:close()
+            self.audio_pid = tonumber(pid_str)
+            logger.warn("MediaEngine: ffmpeg-pipe PID =", self.audio_pid)
+        end
+        os.remove(pid_file)
         self:_startPositionPoller(gen)
         self:_startCompletionWatcher(gen)
     end)
@@ -1168,16 +1284,21 @@ function MediaEngine:stop()
     end
 
 
-    -- Kill audio process (for most backends)
+    -- Kill audio process (for most backends).
+    -- Kill the process group first so ffmpeg/gst-launch children inside
+    -- the shell pipeline also receive the signal.  Fall back to the
+    -- individual PID if the group kill fails.
     local dying_pid = self.audio_pid
     if dying_pid then
         if ffi.C.kill then
-            ffi.C.kill(dying_pid, 15) -- SIGTERM
+            ffi.C.kill(-dying_pid, 15) -- SIGTERM to process group
+            ffi.C.kill(dying_pid, 15)  -- SIGTERM to shell itself
             UIManager:scheduleIn(0.3, function()
                 local h = io.open("/proc/" .. dying_pid .. "/status", "r")
                 if h then
                     h:close()
-                    ffi.C.kill(dying_pid, 9) -- SIGKILL
+                    ffi.C.kill(-dying_pid, 9) -- SIGKILL to group
+                    ffi.C.kill(dying_pid, 9)  -- SIGKILL to shell
                 end
             end)
         end
@@ -1266,7 +1387,8 @@ function MediaEngine:seek(seconds, mode)
         end
     elseif self.backend == self.BACKENDS.GST_PLAY
         or self.backend == self.BACKENDS.GST_PIPELINE
-        or self.backend == self.BACKENDS.KINDLE_GST_PLAY then
+        or self.backend == self.BACKENDS.KINDLE_GST_PLAY
+        or self.backend == self.BACKENDS.FFMPEG_PIPE then
         -- Seek via process restart with time offset.
         -- For relative seeks, compute target from current position.
         local target = seconds
@@ -1274,9 +1396,9 @@ function MediaEngine:seek(seconds, mode)
             target = self:getPosition() + seconds
         end
         target = math.max(0, target)
-        logger.warn("MediaEngine: GST seek mode=", mode, "req=", seconds,
+        logger.warn("MediaEngine: seek-by-restart mode=", mode, "req=", seconds,
             "current=", self:getPosition(), "target=", target,
-            "was_playing=", was_playing)
+            "was_playing=", was_playing, "backend=", self.backend)
         -- Preserve callbacks before stop() nils them.
         local saved_on_complete = self._on_complete
         local saved_on_fail = self._on_fail

@@ -40,7 +40,14 @@ Text-to-speech for [KOReader](https://github.com/koreader/koreader) with synchro
 
 * [Audio] Play music files (MP3, FLAC, OGG, and more)
 * [Books] Play audiobooks with scrubber seek, chapter navigation, and sleep timer
+* [Audiobookshelf] Browse, download, and sync playback progress with an [Audiobookshelf](https://www.audiobookshelf.org/) server (see [setup guide](docs/AUDIOBOOKSHELF.md))!
 * [Sync] Storyteller compatibility; EPUB 3 Media Overlays support (work in progress)
+
+## Audiobookshelf integration
+
+Connect to an [Audiobookshelf](https://www.audiobookshelf.org/) server to browse your library, download audiobooks for offline playback, and sync progress across devices. All configuration is done through the KOReader menu; no file editing is required.
+
+For setup instructions, see [docs/AUDIOBOOKSHELF.md](docs/AUDIOBOOKSHELF.md).
 
 ## Quick start
 

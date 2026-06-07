@@ -54,6 +54,10 @@ function MediaSync:new(o)
     o._last_progress_pct = -1
     o._last_ui_update_time = nil
 
+    -- Audiobookshelf tracking (set by main.lua when playing ABS items)
+    o._abs_item_id = nil
+    o._abs_duration = nil
+
     return o
 end
 
@@ -120,6 +124,15 @@ function MediaSync:start(audio_path, timing_data, chapters, cover_path, playlist
         logger.err("MediaSync: failed to load audio", audio_path)
         self.state = self.STATE.STOPPED
         return false
+    end
+
+    -- If probing failed (e.g., no ffprobe for m4b), use the timing data
+    -- end_time which was set from the known metadata duration.
+    if not self.media_engine.current_duration or self.media_engine.current_duration == 0 then
+        local known_dur = timing_data[1] and timing_data[1].end_time
+        if known_dur and known_dur > 0 then
+            self.media_engine.current_duration = known_dur
+        end
     end
 
     -- Sync playlist menu highlight if it's open
@@ -255,6 +268,9 @@ function MediaSync:seekToTime(seconds)
             end)
         end
     end
+    -- Full-screen refresh on e-ink to clear ghost trails when seeking
+    -- backwards after the progress bar has filled.
+    UIManager:setDirty("all", "ui")
 end
 
 function MediaSync:seekToChapter(index)
@@ -546,6 +562,12 @@ function MediaSync:_checkAutoAdvance(pos)
     local last_sent = self.timing_data[#self.timing_data]
     if not last_sent then return end
 
+    -- Skip auto-advance during a seek: the media engine is temporarily
+    -- stopped while it restarts the pipeline at the new offset.
+    if self.media_engine and self.media_engine._seek_offset then
+        return
+    end
+
     -- If we're past the last sentence end, check if we should auto-advance
     -- (For standalone audio: just stop. For EPUB Media Overlays: advance page.)
     if pos >= last_sent.end_time then
@@ -602,11 +624,12 @@ function MediaSync:_startPositionPoller(gen)
             pcall(function()
                 self.playback_bar:updateTimeDisplay(pos or 0, dur or 0)
             end)
-            -- Update chapter title
+            -- Update chapter title and current chapter info
             local ok_ch, ch, ch_idx = pcall(function() return self:getCurrentChapter() end)
             if ok_ch and ch then
                 pcall(function()
                     self.playback_bar:updateChapterTitle(ch.title or "")
+                    self.playback_bar:setCurrentChapter(ch)
                 end)
                 -- Update chapter menu highlight if it's open (chapter mode only;
                 -- playlist mode uses playlist index, not chapter index)
@@ -946,6 +969,11 @@ function MediaSync:_formatTime(seconds)
     seconds = math.floor(seconds or 0)
     local mins = math.floor(seconds / 60)
     local secs = seconds % 60
+    if mins >= 60 then
+        local hours = math.floor(mins / 60)
+        mins = mins % 60
+        return string.format("%d:%02d:%02d", hours, mins, secs)
+    end
     return string.format("%d:%02d", mins, secs)
 end
 
@@ -957,7 +985,8 @@ function MediaSync:getCurrentChapter()
     if not self.chapters or #self.chapters == 0 then return nil end
     local pos = self.media_engine:getPosition()
     for i = #self.chapters, 1, -1 do
-        if pos >= self.chapters[i].start_time then
+        local st = self.chapters[i].start_time or self.chapters[i].start or 0
+        if pos >= st then
             return self.chapters[i], i
         end
     end

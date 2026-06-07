@@ -29,6 +29,7 @@ local HorizontalSpan = require("ui/widget/horizontalspan")
 local ImageWidget = require("ui/widget/imagewidget")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local ProgressWidget = require("ui/widget/progresswidget")
+local RenderText = require("ui/rendertext")
 local Size = require("ui/size")
 local TextWidget = require("ui/widget/textwidget")
 local UIManager = require("ui/uimanager")
@@ -48,6 +49,10 @@ local AudiobookPlayer = InputContainer:extend{
     output_name = "",
     cover_image_path = nil,
     playback_speed = 1.0,
+    -- Time display mode: "book" = position-in-book, "chapter" = position-in-chapter
+    _time_display_mode = "book",
+    _current_chapter_start = 0,
+    _current_chapter_end = 0,
     -- Callbacks
     on_play_pause = nil,
     on_skip_back = nil,
@@ -70,6 +75,59 @@ local AudiobookPlayer = InputContainer:extend{
     -- widget, we must manually forward events to the UI below).
     ui_widget = nil,
 }
+
+-- Read JPEG width/height from file headers without loading the image.
+local function _jpegDimensions(path)
+    local f = io.open(path, "rb")
+    if not f then return nil, nil end
+    local data = f:read(2)
+    if data ~= "\xff\xd8" then
+        f:close()
+        return nil, nil
+    end
+    while true do
+        local marker = f:read(2)
+        if not marker then break end
+        if marker:byte(1) ~= 0xFF then
+            f:close()
+            return nil, nil
+        end
+        local mtype = marker:byte(2)
+        while mtype == 0xFF do
+            local b = f:read(1)
+            if not b then f:close(); return nil, nil end
+            mtype = b:byte(1)
+        end
+        if mtype == 0xD9 then break end -- EOI
+        -- markers without payload
+        if mtype == 0xD8 or mtype == 0x01 then
+            -- continue
+        elseif mtype >= 0xD0 and mtype <= 0xD9 then
+            -- continue
+        else
+            local len_b = f:read(2)
+            if not len_b or #len_b < 2 then break end
+            local len = len_b:byte(1) * 256 + len_b:byte(2)
+            -- SOF0 / SOF1 / SOF2 contain dimensions
+            if mtype == 0xC0 or mtype == 0xC1 or mtype == 0xC2 then
+                local sof = f:read(5)
+                if sof and #sof == 5 then
+                    local h = sof:byte(2) * 256 + sof:byte(3)
+                    local w = sof:byte(4) * 256 + sof:byte(5)
+                    f:close()
+                    return w, h
+                end
+                break
+            else
+                if len > 2 then
+                    f:seek("cur", len - 2)
+                end
+            end
+        end
+    end
+    f:close()
+    return nil, nil
+end
 
 function AudiobookPlayer:init()
     self.width = Screen:getWidth()
@@ -185,10 +243,24 @@ function AudiobookPlayer:setupUI()
     local top_row = HorizontalGroup:new(top_row_items)
 
     -- ── Cover art placeholder ──
-    -- Responsive: base on smaller screen dimension so it works in both orientations
-    local smaller_dim = math.min(self.width, self.height)
-    self._cover_height = math.floor(smaller_dim * 0.32)
-    self._cover_width = math.floor(self._cover_height * 0.75)
+    -- Compute cover frame size dynamically based on the actual image aspect ratio.
+    -- The frame is sized to match the image shape, capped at 45% of screen height.
+    local padding = Size.padding.small
+    local max_cover_h = math.floor(math.min(self.width, self.height) * 0.45)
+    local img_w, img_h = nil, nil
+    if self.cover_image_path then
+        img_w, img_h = _jpegDimensions(self.cover_image_path)
+    end
+    if img_w and img_h and img_w > 0 and img_h > 0 then
+        local avail_w = self.width - padding * 2
+        local scale = math.min(avail_w / img_w, max_cover_h / img_h)
+        self._cover_width = math.floor(img_w * scale)
+        self._cover_height = math.floor(img_h * scale)
+    else
+        -- Fallback: use a generous square-ish frame when no image is available
+        self._cover_width = math.floor(self.width * 0.6)
+        self._cover_height = math.min(self._cover_width, max_cover_h)
+    end
     self.cover_frame = self:_buildCoverFrame()
 
     -- ── Metadata under cover ──
@@ -199,12 +271,8 @@ function AudiobookPlayer:setupUI()
         truncate_left = true,
     }
 
-    self.output_widget = TextWidget:new{
-        text = self.output_name or "",
-        face = Font:getFace("cfont", 12),
-        max_width = self.width - spacing * 4,
-        truncate_left = true,
-    }
+    -- Multi-line filename: wrap into up to 2 lines so long filenames are readable.
+    self.output_widget = self:_buildOutputWidget(self.output_name or "")
 
     -- ── Time display ──
     self.time_widget = TextWidget:new{
@@ -506,7 +574,14 @@ function AudiobookPlayer:setPlaying(is_playing)
 end
 
 function AudiobookPlayer:updateTimeDisplay(current_sec, total_sec)
-    local text = self:_formatTime(current_sec) .. " / " .. self:_formatTime(total_sec)
+    local text
+    if self._time_display_mode == "chapter" and self._current_chapter_end > self._current_chapter_start then
+        local chapter_pos = math.max(0, current_sec - self._current_chapter_start)
+        local chapter_dur = self._current_chapter_end - self._current_chapter_start
+        text = self:_formatTime(chapter_pos) .. " / " .. self:_formatTime(chapter_dur)
+    else
+        text = self:_formatTime(current_sec) .. " / " .. self:_formatTime(total_sec)
+    end
     if text ~= self.current_time_str then
         self.current_time_str = text
         self.time_widget:setText(text)
@@ -545,6 +620,16 @@ function AudiobookPlayer:updateChapterTitle(title)
     end
 end
 
+function AudiobookPlayer:setCurrentChapter(chapter)
+    if chapter then
+        self._current_chapter_start = chapter.start_time or 0
+        self._current_chapter_end = chapter.end_time or 0
+    else
+        self._current_chapter_start = 0
+        self._current_chapter_end = 0
+    end
+end
+
 function AudiobookPlayer:setTitle(title)
     self.title = title or _("Audiobook")
     if self.title_widget then
@@ -575,67 +660,64 @@ function AudiobookPlayer:setLoopActive(active)
     end
 end
 
+function AudiobookPlayer:_buildOutputWidget(name)
+    local max_w = self.width - Size.padding.small * 4
+    local face = Font:getFace("cfont", 12)
+    -- Simple word-wrap: split into up to 2 lines at word boundaries.
+    local lines = {}
+    if name and name ~= "" then
+        local words = {}
+        for w in name:gmatch("%S+") do
+            table.insert(words, w)
+        end
+        local line1, line2 = "", ""
+        for i, w in ipairs(words) do
+            local test = line1 .. (line1 ~= "" and " " or "") .. w
+            local tw = RenderText:sizeUtf8Text(0, max_w, face, test, true).x
+            if tw <= max_w then
+                line1 = test
+            else
+                -- remaining words go to line 2
+                line2 = table.concat(words, " ", i)
+                break
+            end
+        end
+        if line1 ~= "" then table.insert(lines, line1) end
+        if line2 ~= "" then
+            local tw = RenderText:sizeUtf8Text(0, max_w, face, line2, true).x
+            if tw > max_w then
+                -- Truncate with ellipsis if still too long
+                line2 = line2:sub(1, math.floor(#line2 * 0.8)) .. "…"
+            end
+            table.insert(lines, line2)
+        end
+    end
+    if #lines == 0 then
+        lines = { name or "" }
+    end
+    local widgets = {}
+    for _, line in ipairs(lines) do
+        table.insert(widgets, TextWidget:new{
+            text = line,
+            face = face,
+            max_width = max_w,
+        })
+    end
+    local vg = VerticalGroup:new{ align = "center" }
+    for _, w in ipairs(widgets) do
+        table.insert(vg, w)
+    end
+    return vg
+end
+
 function AudiobookPlayer:updateOutputName(name)
     if name and name ~= self.output_name then
         self.output_name = name
-        self.output_widget:setText(name)
+        self.output_widget = self:_buildOutputWidget(name)
         UIManager:setDirty(self, function()
             return "ui", self.output_widget.dimen
         end)
     end
-end
-
--- Read JPEG width/height from file headers without loading the image.
-local function _jpegDimensions(path)
-    local f = io.open(path, "rb")
-    if not f then return nil, nil end
-    local data = f:read(2)
-    if data ~= "\xff\xd8" then
-        f:close()
-        return nil, nil
-    end
-    while true do
-        local marker = f:read(2)
-        if not marker then break end
-        if marker:byte(1) ~= 0xFF then
-            f:close()
-            return nil, nil
-        end
-        local mtype = marker:byte(2)
-        while mtype == 0xFF do
-            local b = f:read(1)
-            if not b then f:close(); return nil, nil end
-            mtype = b:byte(1)
-        end
-        if mtype == 0xD9 then break end -- EOI
-        -- markers without payload
-        if mtype == 0xD8 or mtype == 0x01 then
-            -- continue
-        elseif mtype >= 0xD0 and mtype <= 0xD9 then
-            -- continue
-        else
-            local len_b = f:read(2)
-            if not len_b or #len_b < 2 then break end
-            local len = len_b:byte(1) * 256 + len_b:byte(2)
-            -- SOF0 / SOF1 / SOF2 contain dimensions
-            if mtype == 0xC0 or mtype == 0xC1 or mtype == 0xC2 then
-                local sof = f:read(5)
-                if sof and #sof == 5 then
-                    local h = sof:byte(2) * 256 + sof:byte(3)
-                    local w = sof:byte(4) * 256 + sof:byte(5)
-                    f:close()
-                    return w, h
-                end
-                break
-            else
-                if len > 2 then
-                    f:seek("cur", len - 2)
-                end
-            end
-        end
-    end
-    f:close()
-    return nil, nil
 end
 
 function AudiobookPlayer:_buildCoverFrame()
@@ -644,34 +726,55 @@ function AudiobookPlayer:_buildCoverFrame()
 
     if self.cover_image_path then
         local padding = Size.padding.small
-        local max_w = self.width - padding * 2
+        local max_w = cover_width - padding * 2
         local max_h = cover_height - padding * 2
 
-        -- Use "cover" scaling: fill the frame and crop excess so any black
-        -- bars or matte in the source image are cropped off.
-        local img_w, img_h = _jpegDimensions(self.cover_image_path)
-        local scale_factor = 0 -- default fit-inside
-        if img_w and img_h and img_w > 0 and img_h > 0 then
-            scale_factor = math.max(max_w / img_w, max_h / img_h)
-        end
+        -- Let ImageWidget auto-scale the image to fit inside max_w x max_h
+        -- without cropping.  scale_factor = 0 uses math.min so the entire
+        -- image is visible, centered with blank space on the shorter side.
+        local scale_factor = 0
 
-        local ok, image_widget = pcall(function()
-            return ImageWidget:new{
-                file = self.cover_image_path,
+        local function try_image(path)
+            local widget = ImageWidget:new{
+                file = path,
                 width = max_w,
                 height = max_h,
                 scale_factor = scale_factor,
             }
-        end)
+            -- Force an early render so image-cache exhaustion is caught here
+            -- instead of during the widget paint cycle (which would crash).
+            widget:getSize()
+            return widget
+        end
+
+        local ok, image_widget = pcall(try_image, self.cover_image_path)
+
+        -- If the full-size cover exhausted KOReader's image cache, try a
+        -- small thumbnail generated by ffmpeg (fits in ~200 kB vs ~4 MB).
+        if not ok or not image_widget then
+            local thumb_path = self.cover_image_path .. ".thumb.jpg"
+            local ffmpeg_cmd = string.format(
+                '"plugins/audiobook.koplugin/bin/ffmpeg" -y -i "%s" -vf "scale=300:-1" -q:v 2 -f image2 -vframes 1 "%s" 2>/dev/null',
+                self.cover_image_path:gsub('"', '\\"'),
+                thumb_path:gsub('"', '\\"')
+            )
+            os.execute(ffmpeg_cmd)
+            local f = io.open(thumb_path, "r")
+            if f then
+                f:close()
+                ok, image_widget = pcall(try_image, thumb_path)
+            end
+        end
+
         if ok and image_widget then
             return FrameContainer:new{
-                width = self.width,
+                width = cover_width,
                 height = cover_height,
                 background = self:_getThemeBackground(),
                 bordersize = 0,
                 padding = 0,
                 CenterContainer:new{
-                    dimen = Geom:new{ w = self.width, h = cover_height },
+                    dimen = Geom:new{ w = cover_width, h = cover_height },
                     image_widget,
                 },
             }
@@ -709,7 +812,7 @@ function AudiobookPlayer:setCoverImage(path)
             self.chapter_widget:setText(self.chapter_title)
         end
         if self.output_name and self.output_name ~= "" then
-            self.output_widget:setText(self.output_name)
+            self.output_widget = self:_buildOutputWidget(self.output_name)
         end
         self.time_widget:setText(self.current_time_str or "0:00 / 0:00")
         self.progress_bar:setPercentage((self.progress or 0) / 100)
@@ -741,6 +844,11 @@ function AudiobookPlayer:_formatTime(seconds)
     seconds = math.floor(seconds or 0)
     local mins = math.floor(seconds / 60)
     local secs = seconds % 60
+    if mins >= 60 then
+        local hours = math.floor(mins / 60)
+        mins = mins % 60
+        return string.format("%d:%02d:%02d", hours, mins, secs)
+    end
     return string.format("%d:%02d", mins, secs)
 end
 
@@ -797,9 +905,10 @@ function AudiobookPlayer:_updateScrubberPreview(x)
     if not pct then return end
     self._scrubber_drag_pct = pct
     self.progress_bar:setPercentage(pct)
-    -- Use string-form setDirty for reliable repaint during rapid drag
-    -- (function-form with region can be coalesced/ignored on e-ink)
-    UIManager:setDirty(self, "ui")
+    -- Use "fast" mode for drag updates: it refreshes the entire widget
+    -- region more thoroughly than "ui", which reduces ghosting on e-ink
+    -- screens during rapid scrubber movements.
+    UIManager:setDirty(self, "fast")
 end
 
 function AudiobookPlayer:_updateMiniWidgets()
@@ -1010,6 +1119,17 @@ function AudiobookPlayer:handleEvent(event)
                 end
             end
 
+            -- Check time widget tap (toggle book/chapter time display)
+            if self.time_widget and self.time_widget.dimen then
+                if self:_isTapOnWidget(ges.pos, self.time_widget) then
+                    self._time_display_mode = (self._time_display_mode == "book")
+                        and "chapter" or "book"
+                    -- Force a time refresh on next poller tick by clearing cached string
+                    self.current_time_str = nil
+                    return true
+                end
+            end
+
             -- Check progress bar area (tap to seek)
             if self.progress_bar and self.progress_bar.dimen then
                 local bar_y = self.progress_bar.dimen.y
@@ -1095,7 +1215,7 @@ function AudiobookPlayer:onSetDimensions(size, rotation_mode)
     self.cover_image_path = cover_path
     self.play_pause_button:setText(was_playing and "⏸" or "▶", self.play_pause_button.width)
     if chapter and chapter ~= "" then self.chapter_widget:setText(chapter) end
-    if output and output ~= "" then self.output_widget:setText(output) end
+    if output and output ~= "" then self.output_widget = self:_buildOutputWidget(output) end
     self.time_widget:setText(time_str or "0:00 / 0:00")
     self.progress_bar:setPercentage((progress or 0) / 100)
     self.speed_button:setText(self:_speedText(), self.speed_button.width)

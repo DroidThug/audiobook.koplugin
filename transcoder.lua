@@ -66,11 +66,17 @@ function Transcoder:_cachePath(input_path)
 end
 
 function Transcoder:isPlayable(path)
-    -- Based on detected GStreamer plugins on the device.
-    -- The Kobo Libra Colour has: mpg123 (MP3), wavparse (WAV).
-    -- Everything else needs transcoding.
+    -- Native GStreamer formats (mpg123, wavparse)
     local ext = (path:match("%.([^.]+)$") or ""):lower()
-    return ext == "mp3" or ext == "wav"
+    if ext == "mp3" or ext == "wav" then
+        return true
+    end
+    -- When ffmpeg is bundled, the ffmpeg-pipe backend can decode
+    -- m4b/aac/ogg/flac/etc. directly without pre-transcoding.
+    if self:_findFfmpeg() then
+        return true
+    end
+    return false
 end
 
 function Transcoder:needsTranscode(path)
@@ -87,7 +93,7 @@ end
 function Transcoder:transcode(input_path, on_progress)
     local ffmpeg = self:_findFfmpeg()
     if not ffmpeg then
-        return nil, "ffmpeg not found"
+        error("ffmpeg not found")
     end
 
     local output_path = self:_cachePath(input_path)
@@ -102,9 +108,10 @@ function Transcoder:transcode(input_path, on_progress)
 
     -- Transcode: copy audio to MP3 V2 (~190 kbps, good quality/size),
     -- copy metadata (chapters), copy cover art, use id3v2.3 for compatibility.
+    -- nice -n 10 keeps the UI responsive during the long conversion.
     local tmp_path = output_path .. ".tmp"
     local cmd = string.format(
-        '"%s" -y -i "%s" -vn -c:a libmp3lame -q:a 2 ' ..
+        'nice -n 10 "%s" -y -i "%s" -vn -c:a libmp3lame -q:a 2 ' ..
         '-map_metadata 0 -id3v2_version 3 -write_id3v1 1 ' ..
         '-f mp3 "%s" 2>/dev/null',
         ffmpeg:gsub('"', '\\"'),
@@ -130,7 +137,7 @@ function Transcoder:transcode(input_path, on_progress)
 
     -- Clean up failed temp file
     os.execute('rm -f "' .. tmp_path:gsub('"', '\\"') .. '" 2>/dev/null')
-    return nil, "ffmpeg transcoding failed"
+    error("ffmpeg transcoding failed")
 end
 
 function Transcoder:clearOldTranscodes(max_age_days)
