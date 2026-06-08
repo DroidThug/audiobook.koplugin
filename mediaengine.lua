@@ -75,6 +75,28 @@ function MediaEngine:commandExists(cmd)
 end
 
 --[[--
+Build an ffmpeg atempo filter string for the given playback speed.
+atempo accepts 0.5..2.0; chain multiple filters for speeds outside that range.
+@return string  Filter string suitable for -filter:a, or empty string for 1.0x.
+--]]
+function MediaEngine:_atempoFilterString(speed)
+    speed = tonumber(speed) or 1.0
+    if math.abs(speed - 1.0) < 0.01 then return "" end
+    local filters = {}
+    local remaining = speed
+    while remaining > 2.0 + 0.001 do
+        table.insert(filters, "atempo=2.0")
+        remaining = remaining / 2.0
+    end
+    while remaining < 0.5 - 0.001 do
+        table.insert(filters, "atempo=0.5")
+        remaining = remaining / 0.5
+    end
+    table.insert(filters, string.format("atempo=%.3f", remaining))
+    return " -filter:a \"" .. table.concat(filters, ",") .. "\""
+end
+
+--[[--
 Probe for ffmpeg in the plugin's bin/ directory or PATH.
 @return string|nil  absolute path to ffmpeg binary, or nil
 --]]
@@ -735,16 +757,17 @@ function MediaEngine:_playFfmpegPipe(gen)
         player_cmd = 'aplay -f S16_LE -r 44100 -c 2'
     end
 
+    local atempo = self:_atempoFilterString(self._playback_speed)
     local cmd
     if offset > 0 then
         cmd = string.format(
-            'nice -n 10 "%s" -ss %d -i "%s" -ar 44100 -ac 2 -f s16le - 2>/dev/null | %s',
-            ffmpeg, math.floor(offset), path, player_cmd
+            'nice -n 10 "%s" -ss %d -i "%s"%s -ar 44100 -ac 2 -f s16le - 2>/dev/null | %s',
+            ffmpeg, math.floor(offset), path, atempo, player_cmd
         )
     else
         cmd = string.format(
-            'nice -n 10 "%s" -i "%s" -ar 44100 -ac 2 -f s16le - 2>/dev/null | %s',
-            ffmpeg, path, player_cmd
+            'nice -n 10 "%s" -i "%s"%s -ar 44100 -ac 2 -f s16le - 2>/dev/null | %s',
+            ffmpeg, path, atempo, player_cmd
         )
     end
 
@@ -1406,11 +1429,18 @@ function MediaEngine:seek(seconds, mode)
         self._play_start_time = UIManager:getTime()
         self._total_pause_ms = 0
         self._pause_start_time = nil
+        -- Capture generation before stop() increments it, so we can cancel the
+        -- scheduled restart if the user stops playback before it fires.
+        local restart_gen = self.play_generation
         self:stop()
         -- Only restart playback if we were actually playing before the seek.
         -- When paused, restore the paused state so resume() can restart us.
         if was_playing then
             UIManager:scheduleIn(0.5, function()
+                if self.play_generation ~= restart_gen then
+                    logger.dbg("MediaEngine: seek restart cancelled (generation changed)")
+                    return
+                end
                 self:play(saved_on_complete, saved_on_fail)
             end)
         else
@@ -1439,10 +1469,15 @@ function MediaEngine:seek(seconds, mode)
         self._play_start_time = UIManager:getTime()
         self._total_pause_ms = 0
         self._pause_start_time = nil
+        local lipc_restart_gen = self.play_generation
         self:stop()
         -- Restart playback at new position
         if was_playing then
             UIManager:scheduleIn(0.5, function()
+                if self.play_generation ~= lipc_restart_gen then
+                    logger.dbg("MediaEngine: Kindle LIPC seek restart cancelled")
+                    return
+                end
                 self:play(saved_on_complete, saved_on_fail)
             end)
         else
@@ -1473,7 +1508,9 @@ function MediaEngine:getPosition()
         return 0
     end
 
-    -- For backends without IPC (gst-play, aplay), estimate from elapsed time
+    -- For backends without IPC (gst-play, aplay, ffmpeg-pipe), estimate from elapsed time.
+    -- Scale elapsed real time by playback speed so the reported position tracks the
+    -- actual audio position when atempo / speed filters are in use.
     if self._play_start_time then
         local ok, elapsed_ms = pcall(function()
             if self.is_paused and self._pause_start_time then
@@ -1483,9 +1520,11 @@ function MediaEngine:getPosition()
             end
         end)
         if ok and elapsed_ms then
-            local pos = math.max(0, elapsed_ms / 1000) + (self._seek_offset or 0)
+            local speed = self._playback_speed or 1.0
+            local pos = math.max(0, elapsed_ms / 1000) * speed + (self._seek_offset or 0)
             pos = math.min(pos, self.current_duration or pos)
-            logger.dbg("MediaEngine: getPosition elapsed=", elapsed_ms, "offset=", self._seek_offset, "pos=", pos)
+            logger.dbg("MediaEngine: getPosition elapsed=", elapsed_ms, "offset=", self._seek_offset,
+                "speed=", speed, "pos=", pos)
             return pos
         else
             logger.warn("MediaEngine: getPosition elapsed-time failed, ok=", ok, "err=", elapsed_ms)
@@ -1547,6 +1586,7 @@ function MediaEngine:setSpeed(speed)
     speed = tonumber(speed) or 1.0
     if speed < 0.5 then speed = 0.5 end
     if speed > 3.0 then speed = 3.0 end
+    local old_speed = self._playback_speed or 1.0
     self._playback_speed = speed
 
     if not self.is_playing then return end
@@ -1565,8 +1605,17 @@ function MediaEngine:setSpeed(speed)
                 f:close()
             end
         end
+    elseif self.backend == self.BACKENDS.FFMPEG_PIPE then
+        -- ffmpeg-pipe supports speed only via the atempo filter, so restart
+        -- the pipeline at the current position when speed changes.
+        if math.abs(speed - old_speed) >= 0.01 then
+            local pos = self:getPosition() or 0
+            logger.warn("MediaEngine: restarting ffmpeg-pipe for speed change",
+                old_speed, "->", speed, "at pos", pos)
+            self:seek(pos, "absolute")
+        end
     end
-    -- gst-play / gst-pipeline / aplay do not support speed control
+    -- gst-play / gst-pipeline / aplay / wav-play do not support speed control
 end
 
 function MediaEngine:getSpeed()

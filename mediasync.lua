@@ -851,13 +851,35 @@ function MediaSync:showChapterList()
 
     -- Back-reference so onTap can clear MediaSync._chapter_menu
     chapter_window._mediasync = self
+    local function _closeChapterWindow(wrapper)
+        if wrapper._mediasync then
+            wrapper._mediasync._chapter_menu = nil
+            wrapper._mediasync._chapter_menu_window = nil
+        end
+        UIManager:close(wrapper)
+    end
     function chapter_window:onTap(arg, ges_ev)
-        if ges_ev.pos:notIntersectWith(menu_rect) then
-            if self._mediasync then
-                self._mediasync._chapter_menu = nil
-                self._mediasync._chapter_menu_window = nil
-            end
-            UIManager:close(self)
+        if ges_ev and ges_ev.pos and ges_ev.pos:notIntersectWith(menu_rect) then
+            _closeChapterWindow(self)
+            return true
+        end
+        return false
+    end
+    function chapter_window:onSwipe(arg, ges_ev)
+        if ges_ev and ges_ev.pos and ges_ev.pos:notIntersectWith(menu_rect) then
+            _closeChapterWindow(self)
+            return true
+        end
+        return false
+    end
+    function chapter_window:onHold(arg, ges_ev)
+        if ges_ev and ges_ev.pos and ges_ev.pos:notIntersectWith(menu_rect) then
+            return true
+        end
+        return false
+    end
+    function chapter_window:onPan(arg, ges_ev)
+        if ges_ev and ges_ev.pos and ges_ev.pos:notIntersectWith(menu_rect) then
             return true
         end
         return false
@@ -923,13 +945,35 @@ function MediaSync:showPlaylist()
 
     -- Back-reference so onTap can clear MediaSync._chapter_menu
     playlist_window._mediasync = self
+    local function _closePlaylistWindow(wrapper)
+        if wrapper._mediasync then
+            wrapper._mediasync._chapter_menu = nil
+            wrapper._mediasync._chapter_menu_window = nil
+        end
+        UIManager:close(wrapper)
+    end
     function playlist_window:onTap(arg, ges_ev)
-        if ges_ev.pos:notIntersectWith(menu_rect) then
-            if self._mediasync then
-                self._mediasync._chapter_menu = nil
-                self._mediasync._chapter_menu_window = nil
-            end
-            UIManager:close(self)
+        if ges_ev and ges_ev.pos and ges_ev.pos:notIntersectWith(menu_rect) then
+            _closePlaylistWindow(self)
+            return true
+        end
+        return false
+    end
+    function playlist_window:onSwipe(arg, ges_ev)
+        if ges_ev and ges_ev.pos and ges_ev.pos:notIntersectWith(menu_rect) then
+            _closePlaylistWindow(self)
+            return true
+        end
+        return false
+    end
+    function playlist_window:onHold(arg, ges_ev)
+        if ges_ev and ges_ev.pos and ges_ev.pos:notIntersectWith(menu_rect) then
+            return true
+        end
+        return false
+    end
+    function playlist_window:onPan(arg, ges_ev)
+        if ges_ev and ges_ev.pos and ges_ev.pos:notIntersectWith(menu_rect) then
             return true
         end
         return false

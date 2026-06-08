@@ -1243,7 +1243,9 @@ end
 function AudiobookPlayer:paintTo(bb, x, y)
     if not self.visible then return end
     if self._minimized then
-        -- Draw only the mini player bar at bottom
+        -- Draw only the mini player bar at bottom.
+        -- UIManager's window.y for this widget is always 0 (set when first shown),
+        -- so we must add the bottom offset ourselves.
         if self._mini_bar and self._mini_bar.paintTo then
             self._mini_bar:paintTo(bb, x or 0, (y or 0) + self.height - self._mini_height)
         end

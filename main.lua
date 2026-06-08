@@ -1542,8 +1542,11 @@ function Audiobook:pauseReadAlong()
         pcall(function() BtMediaControl.sendPlaybackStatus("paused") end)
         return
     end
-    self.sync_controller:pause()
-    pcall(function() BtMediaControl.sendPlaybackStatus("paused") end)
+    -- TTS fallback: guard nil controller (e.g. BT event after audio stopped).
+    if self.sync_controller then
+        pcall(function() self.sync_controller:pause() end)
+        pcall(function() BtMediaControl.sendPlaybackStatus("paused") end)
+    end
 end
 
 function Audiobook:resumeReadAlong()
@@ -1554,8 +1557,10 @@ function Audiobook:resumeReadAlong()
         pcall(function() BtMediaControl.sendPlaybackStatus("playing") end)
         return
     end
-    self.sync_controller:resume()
-    pcall(function() BtMediaControl.sendPlaybackStatus("playing") end)
+    if self.sync_controller then
+        pcall(function() self.sync_controller:resume() end)
+        pcall(function() BtMediaControl.sendPlaybackStatus("playing") end)
+    end
 end
 
 
