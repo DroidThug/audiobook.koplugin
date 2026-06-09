@@ -3362,24 +3362,25 @@ function TTSEngine:findAudioPlayer()
     -- headphones via the "bluealsa" ALSA PCM device.
     local bt = self.plugin and self.plugin.bt_manager
     if self:commandExists("aplay") and bt then
-        -- If bluealsa is not running but bundled, and a BT audio device
-        -- is already connected (e.g. paired externally through Kobo
-        -- firmware settings), start bluealsa now so we can use it.
+        -- If bluealsa is not running but bundled, start it now.
+        -- BlueALSA can run without an active BT device; it simply
+        -- registers the A2DP profile with BlueZ and creates the ALSA
+        -- PCM device.  When headphones connect later, audio works
+        -- immediately.  Previously we gated this on an active connection,
+        -- which meant paired-but-idle devices never triggered startup
+        -- and audio fell through to a bare aplay with "no soundcards"
+        -- (issue #8).
         if not bt:isBluealsaRunning()
             and bt:hasBluealsaBundled()
             and bt:getStackType() == "bluez" then
-            local has_bt_device = false
-            local ok_list, devs = pcall(bt.listAudioDevices, bt)
-            if ok_list and devs then
-                for _, d in ipairs(devs) do
-                    if d.connected then has_bt_device = true; break end
-                end
-            end
-            if has_bt_device then
-                logger.warn("TTSEngine: BT device connected but bluealsa not running, starting it")
-                bt:startBluealsa()
-            else
-                logger.warn("TTSEngine: BlueALSA bundled but daemon not running (no BT device)")
+            logger.warn("TTSEngine: BlueALSA bundled but not running, starting it")
+            local ba_ok = bt:startBluealsa()
+            if not ba_ok then
+                -- startBluealsa() polls internally, but on single-core Kobos
+                -- the daemon may still be registering with D-Bus/ALSA.  Give
+                -- it one more grace period before we fall through.
+                logger.warn("TTSEngine: BlueALSA startup reported false, waiting 3s")
+                os.execute("sleep 3")
             end
         end
 
@@ -3402,6 +3403,7 @@ function TTSEngine:findAudioPlayer()
             end
             self.audio_player_type = "bluealsa"
             self._bluealsa_env = env
+            self._no_real_audio_output = false
             logger.warn("TTSEngine: Found BlueALSA audio bridge, device:", ba_dev)
             return env .. "aplay -q -D " .. ba_dev
         end

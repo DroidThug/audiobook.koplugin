@@ -698,6 +698,18 @@ function BTManager:powerOn()
     -- Give the stack a moment to initialize
     if ok then os.execute("sleep 2") end
 
+    -- Start BlueALSA proactively on BlueZ so the ALSA PCM is ready
+    -- before any audio playback begins.  Previously BlueALSA was only
+    -- started reactively inside findAudioPlayer() when a BT device
+    -- happened to be connected at that exact moment; if the device
+    -- was paired but idle, audio would fail with "no soundcards".
+    if bt_stack == "bluez" and self:hasBluealsaBundled() then
+        local ba_ok = self:startBluealsa()
+        if not ba_ok then
+            logger.err("BTManager: BlueALSA failed to start during power-on")
+        end
+    end
+
     local powered = self:isPowered()
     logger.warn("BTManager: powerOn result:", powered,
         "bluetoothd running:", is_bluetoothd_running())
@@ -864,6 +876,9 @@ function BTManager:startBluealsa()
                 os.execute("killall -HUP dbus-daemon 2>/dev/null")
                 os.execute("sleep 1")
                 logger.warn("BTManager: installed bluealsa D-Bus policy")
+            else
+                logger.err("BTManager: cannot write D-Bus policy to", policy_dst,
+                    "-- bluealsa may fail to register with D-Bus (read-only fs?)")
             end
         end
     else
@@ -893,6 +908,9 @@ function BTManager:startBluealsa()
                 ad:write(content)
                 ad:close()
                 logger.warn("BTManager: installed bluealsa ALSA config to", asound_dst)
+            else
+                logger.err("BTManager: cannot write ALSA config to", asound_dst,
+                    "-- aplay may not find the bluealsa PCM (read-only fs?)")
             end
         end
     end
@@ -1320,6 +1338,12 @@ function BTManager:connect(address)
     local conn_out = get_property(path, DEVICE_IFACE, "Connected")
     if conn_out:match("boolean true") then
         logger.warn("BTManager: device already connected, skipping D-Bus Connect")
+        -- Start BlueALSA even on the fast path; otherwise a device that
+        -- was already connected when the plugin loaded would never trigger
+        -- the post-connect BlueALSA startup (issue #8).
+        if bt_stack == "bluez" and self:hasBluealsaBundled() then
+            self:startBluealsa()
+        end
         return true
     end
 
