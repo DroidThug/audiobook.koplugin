@@ -204,9 +204,20 @@ done
 
 # ── BlueALSA (BT audio bridge for BlueZ Kobo) ─────────────────────────
 echo ""
-echo "=== Building BlueALSA for armv7l via Nix cross-compilation ==="
-BLUEALSA_OUT=$(nix-build "$SCRIPT_DIR/cross-build-bluealsa.nix" --no-out-link)
-echo "BlueALSA Nix store path: $BLUEALSA_OUT"
+echo "=== Building BlueALSA for armv7l (glibc 2.19 compatible) ==="
+
+# Use Debian Jessie sysroot build for compatibility with older Kobo devices
+# (Clara 2E has glibc 2.19; the Nix cross-compilation uses a newer glibc).
+# The build script downloads Jessie packages, creates a sysroot, and builds
+# bluez-alsa against it. Output lands in .build-bluealsa-compat/out/.
+echo "Running build-bluealsa-compat.sh..."
+if ! bash "$SCRIPT_DIR/build-bluealsa-compat.sh"; then
+    echo "ERROR: BlueALSA compat build failed. Falling back to Nix cross-build."
+    BLUEALSA_OUT=$(nix-build "$SCRIPT_DIR/cross-build-bluealsa.nix" --no-out-link)
+else
+    BLUEALSA_OUT="$SCRIPT_DIR/.build-bluealsa-compat/out"
+fi
+echo "BlueALSA output path: $BLUEALSA_OUT"
 
 BLUEALSA_DEST="$PLUGIN_DEST/bluealsa"
 mkdir -p "$BLUEALSA_DEST/bin" "$BLUEALSA_DEST/lib/alsa-lib" \
@@ -226,46 +237,20 @@ cp "$BLUEALSA_OUT/etc/alsa/conf.d/20-bluealsa.conf" "$BLUEALSA_DEST/etc/alsa/con
 # D-Bus policy (allows root to use org.bluealsa)
 cp "$BLUEALSA_OUT/share/dbus-1/system.d/bluealsa.conf" "$BLUEALSA_DEST/share/dbus-1/system.d/"
 
-# Bundle runtime dependencies (cross-compiled shared libs)
+# Bundle runtime dependencies (already collected by build script)
 echo "Bundling BlueALSA runtime dependencies..."
-# Find the linked libraries from the bluealsa binary
-BLUEALSA_DEPS=$(nix-shell -p binutils --run "readelf -d $BLUEALSA_OUT/bin/bluealsa" 2>/dev/null \
-    | grep -oP 'NEEDED.*\[(.+)\]' | grep -oP '\[(.+)\]' | tr -d '[]')
-echo "  BlueALSA NEEDED: $BLUEALSA_DEPS"
-
-# Collect all .so files from Nix closure that bluealsa needs at runtime
-# (skip glibc since we already bundle it from espeak-ng)
-for so in $(nix-shell -p binutils --run "ldd $BLUEALSA_OUT/bin/bluealsa" 2>/dev/null \
-    | grep -oP '/nix/store/\S+' | sort -u); do
+for so in "$BLUEALSA_OUT/lib/"*.so*; do
+    [ -e "$so" ] || continue
     soname=$(basename "$so")
+    # Skip glibc libs (device already has these)
     case "$soname" in
         ld-linux*|libc.so*|libm.so*|libdl.so*|libpthread*|librt.so*|libgcc_s*)
-            ;; # Already bundled with espeak-ng glibc
+            ;;
         *)
-            if [ -f "$so" ]; then
-                cp "$so" "$BLUEALSA_DEST/lib/"
-                echo "  + $soname"
-            fi
+            cp "$so" "$BLUEALSA_DEST/lib/"
+            echo "  + $soname"
             ;;
     esac
-done
-
-# Also check the ALSA PCM plugin's deps
-for so in $(nix-shell -p binutils --run "ldd $BLUEALSA_OUT/lib/alsa-lib/libasound_module_pcm_bluealsa.so" 2>/dev/null \
-    | grep -oP '/nix/store/\S+' | sort -u); do
-    soname=$(basename "$so")
-    if [ ! -f "$BLUEALSA_DEST/lib/$soname" ]; then
-        case "$soname" in
-            ld-linux*|libc.so*|libm.so*|libdl.so*|libpthread*|librt.so*|libgcc_s*)
-                ;;
-            *)
-                if [ -f "$so" ]; then
-                    cp "$so" "$BLUEALSA_DEST/lib/"
-                    echo "  + $soname (from PCM plugin)"
-                fi
-                ;;
-        esac
-    fi
 done
 
 echo "BlueALSA bundle contents:"

@@ -898,27 +898,49 @@ function BTManager:startBluealsa()
     end
 
     -- Build the library search path from bundled libs + system libs.
-    -- Include wav-play/lib which reliably bundles libasound.so.2 (the
-    -- cross-ldd approach in packaging may miss it for bluealsa).
+    -- Include wav-play/lib which reliably bundles libasound.so.2.
     -- Include /usr/lib:/lib as a last resort for other system libs.
     local espeak_lib = ba_dir:gsub("bluealsa/$", "") .. "espeak-ng/lib"
     local wav_play_lib = ba_dir:gsub("bluealsa/$", "") .. "wav-play/lib"
     local ld_path = ba_dir .. "lib:" .. espeak_lib .. ":" .. wav_play_lib .. ":/usr/lib:/lib"
 
-    -- Use the bundled dynamic linker (same as espeak-ng uses)
-    local linker = espeak_lib .. "/ld-linux-armhf.so.3"
-    local lf = io.open(linker, "r")
-    local use_bundled_linker = lf ~= nil
-    if lf then lf:close() end
+    -- Detect whether the binary was built against system glibc (newer
+    -- compat build) or against a newer Nix glibc (older build).
+    -- The compat build has ELF interpreter /lib/ld-linux-armhf.so.3
+    -- and can run directly with LD_LIBRARY_PATH.  The old build has
+    -- a Nix store interpreter and needs the bundled linker.
+    local function getElfInterpreter(path)
+        local h = io.popen("readelf -l " .. path .. " 2>/dev/null | grep 'interpreter'")
+        local r = h and h:read("*a") or ""
+        if h then h:close() end
+        return r:match("%[([^%]]+)%]") or ""
+    end
+
+    local interp = getElfInterpreter(bin)
+    local needs_bundled_linker = interp:match("/nix/store/") ~= nil
 
     -- Log stderr to a temp file for diagnostics instead of discarding.
     local ba_log = "/tmp/.bluealsa_start.log"
     local cmd
-    if use_bundled_linker then
-        cmd = string.format(
-            "%s --library-path %s %s --profile=a2dp-source 2>%s &",
-            linker, ld_path, bin, ba_log)
+    if needs_bundled_linker then
+        -- Old binary: use bundled ld-linux + --library-path to isolate
+        -- from the device's older glibc.
+        local linker = espeak_lib .. "/ld-linux-armhf.so.3"
+        local lf = io.open(linker, "r")
+        local have_linker = lf ~= nil
+        if lf then lf:close() end
+        if have_linker then
+            cmd = string.format(
+                "%s --library-path %s %s --profile=a2dp-source 2>%s &",
+                linker, ld_path, bin, ba_log)
+        else
+            cmd = string.format(
+                "LD_LIBRARY_PATH=%s %s --profile=a2dp-source 2>%s &",
+                ld_path, bin, ba_log)
+        end
     else
+        -- New compat binary: built against device glibc; just set
+        -- LD_LIBRARY_PATH for non-glibc deps (libbluetooth, libdbus, etc.).
         cmd = string.format(
             "LD_LIBRARY_PATH=%s %s --profile=a2dp-source 2>%s &",
             ld_path, bin, ba_log)

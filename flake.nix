@@ -122,8 +122,16 @@
           # Cross-compiled espeak-ng binary + data for Kobo armv7l
           espeak-ng-kobo = espeakKobo;
 
-          # Cross-compiled bluez-alsa for Kobo armv7l
+          # Cross-compiled bluez-alsa for Kobo armv7l (uses Nix glibc)
+          # Note: this build may be incompatible with older devices (glibc < 2.28).
+          # For Clara 2E and similar devices, use bluealsa-kobo-compat below.
           bluealsa-kobo = bluealsaKobo;
+
+          # Cross-compiled bluez-alsa built against Debian Jessie glibc 2.19.
+          # This is the recommended build for distribution; it works on all
+          # Kobo devices including Clara 2E (goldfinch).
+          # Requires: nix build .#bluealsa-kobo-compat --no-sandbox
+          bluealsa-kobo-compat = import ./cross-build-bluealsa-compat.nix;
 
           # Cross-compiled GStreamer WAV player for Kindle armv7l
           kindle-gst-play = kindleGstPlay;

@@ -26,7 +26,7 @@ jobs:
             ~/.nix-defexpr
             /nix/store
             /nix/var
-          key: nix-store-${{ hashFiles('cross-build-*.nix') }}
+          key: nix-store-${{ hashFiles('cross-build-*.nix', 'build-bluealsa-compat.sh') }}
           restore-keys: nix-store-
 
       - name: Cache Piper downloads
