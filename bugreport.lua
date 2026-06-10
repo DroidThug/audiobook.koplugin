@@ -888,13 +888,32 @@ rm -f /tmp/.pcm_test.wav /tmp/.pcm_test.raw
         if not skip_intensive then
             -- v0.1.6.5: kindle-gst-play --ttssrc test.
             -- On Colorsoft, playermgr is non-functional but ttssrc bypasses it.
-            local plugin_dir = info.plugin_dir or "plugins/audiobook.koplugin/"
-            local gst_play_bin = plugin_dir .. "kindle/gst-play"
-            info.kindle_gst_ttssrc_test = shellCapture(
-                "echo '--- kindle-gst-play --ttssrc ---'; "
-                .. "'" .. gst_play_bin .. "' --ttssrc 'hello world' 2>&1; "
-                .. "echo 'exit_code=$?'",
-                15) or "failed"
+            -- Use the same linker wrapper as ttsengine.lua so the test matches
+            -- actual execution (issue #23).
+            local gst_play_path = nil
+            for _, p in ipairs({
+                info.plugin_dir and info.plugin_dir .. "kindle/gst-play" or nil,
+                _utils_dir .. "kindle/gst-play",
+                "/mnt/us/koreader/plugins/audiobook.koplugin/kindle/gst-play",
+                "/mnt/onboard/.adds/koreader/plugins/audiobook.koplugin/kindle/gst-play",
+            }) do
+                if p and fileExists(p) then gst_play_path = p; break end
+            end
+            if gst_play_path then
+                local espeak_lib = gst_play_path:gsub("/kindle/gst%-play$", "/espeak-ng/lib")
+                local ld_linux = espeak_lib .. "/ld-linux-armhf.so.3"
+                local gst_cmd = gst_play_path
+                if fileExists(ld_linux) then
+                    gst_cmd = ld_linux .. " --library-path " .. espeak_lib .. ":/usr/lib:/lib " .. gst_play_path
+                end
+                info.kindle_gst_ttssrc_test = shellCapture(
+                    "echo '--- kindle-gst-play --ttssrc ---'; "
+                    .. gst_cmd .. " --ttssrc 'hello world' 2>&1; "
+                    .. "echo 'exit_code=$?'",
+                    15) or "failed"
+            else
+                info.kindle_gst_ttssrc_test = "binary_not_found"
+            end
         else
             info.kindle_gst_ttssrc_test = "skipped (/var nearly full)"
         end
@@ -1382,6 +1401,9 @@ amixer scontrols 2>&1 | head -10 || echo "amixer not available"
         -- Last gst-play playback log (stderr captured during actual play)
         info.kindle_gst_play_last_log = shellCapture(
             "cat /tmp/.gst_play_last.log 2>/dev/null", 2) or "none"
+        -- Last ttssrc fallback log (stderr from kindle-native-tts-fallback path)
+        info.kindle_ttssrc_fallback_log = shellCapture(
+            "cat /tmp/.ttssrc_fallback.log 2>/dev/null", 2) or "none"
     end
 
     -- Root-cause diagnostic: find deleted files in /var/ still held open

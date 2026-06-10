@@ -99,9 +99,23 @@ function TTSEngine:new(o)
     o._android_tts = nil
     -- Load persisted "gst-play is broken" flag so we don't re-probe a
     -- hanging pipeline on every KOReader restart (issue #22, PW5).
+    -- Clear broken flags when the plugin is updated so fixes can be re-tested.
     if o.plugin then
-        o._gst_play_broken = o.plugin:getSetting("_gst_play_broken") or false
-        o._ttssrc_broken = o.plugin:getSetting("_ttssrc_broken") or false
+        local last_version = o.plugin:getSetting("_last_plugin_version") or ""
+        local meta_ok, meta = pcall(dofile, _utils_dir .. "_meta.lua")
+        local current_version = (meta_ok and meta and meta.version) or ""
+        if current_version ~= "" and current_version ~= last_version then
+            logger.warn("TTSEngine: plugin updated from", last_version, "to", current_version,
+                "-- clearing broken flags for re-test")
+            o.plugin:setSetting("_gst_play_broken", false)
+            o.plugin:setSetting("_ttssrc_broken", false)
+            o.plugin:setSetting("_last_plugin_version", current_version)
+            o._gst_play_broken = false
+            o._ttssrc_broken = false
+        else
+            o._gst_play_broken = o.plugin:getSetting("_gst_play_broken") or false
+            o._ttssrc_broken = o.plugin:getSetting("_ttssrc_broken") or false
+        end
     end
     -- Startup garbage collection: remove stale temp files left behind by
     -- previous crashed or force-quit sessions (issue #22).
@@ -1790,7 +1804,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         -- directly.  ttssrc connects to the TTS orchestrator (Ivona SDK) and
         -- routes audio through mixersink → audiomgrd → BT, bypassing the
         -- broken playermgr Open/PlayParameter path (issue #23).
-        if is_fallback and self._kindle_gst_play_bin then
+        if is_fallback and self._kindle_gst_play_bin and not self._ttssrc_broken then
             logger.warn("TTSEngine: Kindle native TTS via kindle-gst-play --ttssrc")
 
             local function escapeForGst(s)
@@ -1803,12 +1817,13 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
 
             local pid_file = "/tmp/.ttssrc_pid_" .. my_gen
             local done_file = "/tmp/.ttssrc_done_" .. my_gen
+            local gst_log = "/tmp/.ttssrc_fallback.log"
             os.remove(pid_file)
             os.remove(done_file)
 
             local cmd = string.format(
-                "%s --ttssrc %s > /dev/null 2>&1 & pid=$!; echo $pid > %s; (wait $pid; echo $? > %s) &",
-                self._kindle_gst_play_bin, shellEsc(escaped_text),
+                "%s --ttssrc %s >%s 2>&1 & pid=$!; echo $pid > %s; (wait $pid; echo $? > %s) &",
+                self._kindle_gst_play_bin, shellEsc(escaped_text), gst_log,
                 pid_file, done_file
             )
             os.execute(cmd)
@@ -1843,6 +1858,15 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                             return
                         else
                             logger.err("TTSEngine: kindle-gst-play --ttssrc failed, code=", exit_code)
+                            -- Log stderr for diagnostics
+                            local log_fh = io.open("/tmp/.ttssrc_fallback.log", "r")
+                            if log_fh then
+                                local log_text = log_fh:read("*a") or ""
+                                log_fh:close()
+                                if log_text ~= "" then
+                                    logger.warn("TTSEngine: --ttssrc stderr:", log_text:sub(1, 500))
+                                end
+                            end
                             -- Exit codes 126/127 mean the binary is not executable or not found.
                             -- These are permanent configuration errors, not transient failures.
                             -- Disable immediately instead of waiting for 2 failures (issue #22).
@@ -2218,7 +2242,10 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                 end
                 local has_error = log_text:match("Failed to load plugin")
                     or log_text:match("undefined symbol")
-                    or log_text:match("[Ee]rror")
+                    or log_text:match("gst%-play: ttssrc element not found")
+                    or log_text:match("gst%-play: ttssrc pipeline creation failed")
+                    or log_text:match("gst%-play: cannot load libgstreamer")
+                    or log_text:match("gst%-play: GStreamer error:")
                 if has_error then
                     logger.err("TTSEngine: kindle-ttssrc exited with error")
                     engine._gst_play_pid = nil
@@ -2690,7 +2717,9 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                 end
                 local has_error = log_text:match("Failed to load plugin")
                     or log_text:match("undefined symbol")
-                    or log_text:match("[Ee]rror")
+                    or log_text:match("gst%-play: pipeline creation failed")
+                    or log_text:match("gst%-play: cannot load libgstreamer")
+                    or log_text:match("gst%-play: GStreamer error:")
                 if is_early_exit and has_error then
                     logger.err("TTSEngine: kindle-gst-play exited early (", elapsed_ms,
                         "ms) with error, expected ~", expected_ms, "ms")
@@ -2698,7 +2727,8 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                     engine.is_speaking = false
                     engine.play_generation = (engine.play_generation or 0) + 1
                     engine:cleanup()
-                    local err_hint = log_text:match("[Ee]rror%s*:?%s*(.+)") or ""
+                    local err_hint = log_text:match("gst%-play: GStreamer error:%s*(.+)")
+                        or log_text:match("gst%-play: ([^\n]+)") or ""
                     if #err_hint > 80 then
                         err_hint = err_hint:sub(1, 80) .. "..."
                     end
@@ -3128,7 +3158,16 @@ function TTSEngine:findAudioPlayer()
     -- v0.1.9.7: On Colorsoft, playermgr is non-functional (issue #23).
     -- Skip the playermgr-based native TTS path and fall through to the
     -- kindle-ttssrc path which bypasses playermgr entirely.
-    local is_colorsoft = Device:isKindle() and Device.model == "KindleColorSoft"
+    -- KOReader may not detect Colorsoft model (returns "unknown"), so also
+    -- use kernel version as a heuristic.
+    local kernel_version = ""
+    local kh = io.popen("uname -r 2>/dev/null")
+    if kh then kernel_version = kh:read("*a") or ""; kh:close() end
+    kernel_version = kernel_version:gsub("^%s+", ""):gsub("%s+$", "")
+    local is_colorsoft = Device:isKindle() and (
+        Device.model == "KindleColorSoft"
+        or kernel_version:match("^5%.15%.")  -- Colorsoft kernel signature
+    )
     if Device:isKindle() and self:commandExists("lipc-set-prop")
         and self:commandExists("lipc-get-prop")
         and self.backend == self.BACKENDS.KINDLE_NATIVE
