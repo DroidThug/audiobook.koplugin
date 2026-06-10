@@ -1185,6 +1185,166 @@ if [ -n "$AMGR_PID" ]; then
   done | head -20
 fi
 ]], 5) or "n/a"
+
+        -- v0.1.x.x: Deep audio architecture probe for firmwares where
+        -- audiomgrd reports no output despite BT headphones being paired.
+        -- This section investigates Android/Bluedroid stack migration
+        -- and alternative initialization sequences (issue #32).
+
+        -- 1) Android / Bluedroid audio stack detection.
+        -- Newer Kindle firmware may use Android's audio stack instead of
+        -- the traditional audiomgrd → btfd pipeline.
+        info.kindle_android_audio = shellCapture([[echo "=== Android audio processes ==="
+ps 2>/dev/null | grep -iE 'audioflinger|audioserver|audio_hw|mediaserver|media\.server' | grep -v grep | head -10 || echo "none"
+echo "=== Audio HAL libs ==="
+ls -la /usr/lib/audio.primary.*.so /usr/lib/libaudio*.so /system/lib/audio.primary.*.so /system/lib/libaudio*.so 2>/dev/null | head -10 || echo "none"
+echo "=== Audio policy files ==="
+find /etc /system/etc /usr/share /vendor/etc -maxdepth 3 -name '*audio_policy*' -o -name '*audio_effects*' -o -name '*audio_output*' 2>/dev/null | head -15 || echo "none"
+echo "=== Audio config files ==="
+cat /etc/audio_policy.conf 2>/dev/null | head -30 || echo "no /etc/audio_policy.conf"
+cat /system/etc/audio_policy.conf 2>/dev/null | head -30 || echo "no /system/etc/audio_policy.conf"
+echo "=== Binder devices ==="
+ls -la /dev/binder /dev/hwbinder /dev/vndbinder 2>/dev/null || echo "no binder devices"
+echo "=== getprop audio properties ==="
+for p in $(getprop 2>/dev/null | grep -iE 'audio|bt|a2dp|bluetooth|sound' | cut -d']' -f1 | tr -d '[]'); do
+  echo "$p=$(getprop $p 2>/dev/null)"
+done | head -30 || echo "getprop not available"
+]], 10) or "n/a"
+
+        -- 2) Full audiomgrd and playermgr property dump.
+        -- On some firmwares properties exist but have different names.
+        info.kindle_audiomgrd_all_props = shellCapture(
+            "lipc-probe com.lab126.audiomgrd 2>/dev/null | head -60", 5) or "n/a"
+        info.kindle_playermgr_all_props = shellCapture(
+            "lipc-probe com.lab126.playermgr 2>/dev/null | head -60", 5) or "n/a"
+
+        -- 3) Read every known audiomgrd property even if undocumented.
+        info.kindle_audiomgrd_deep = shellCapture([[echo "=== audiomgrd deep read ==="
+for prop in isStarted audioOutputConnected audioCurrentOutput speakerVolume setFocus audioState btState outputDevice outputRoute sinkState streamState; do
+  val=$(lipc-get-prop com.lab126.audiomgrd "$prop" 2>&1)
+  rc=$?
+  echo "prop=$prop rc=$rc val=$val"
+done
+]], 8) or "n/a"
+
+        -- 4) Read every known playermgr property.
+        info.kindle_playermgr_deep = shellCapture([[echo "=== playermgr deep read ==="
+for prop in InPlayback TTS_State State CurrentState Position Duration Volume Mute gstLogLevel; do
+  val=$(lipc-get-prop com.lab126.playermgr "$prop" 2>&1)
+  rc=$?
+  echo "prop=$prop rc=$rc val=$val"
+done
+]], 8) or "n/a"
+
+        -- 5) Try aggressive initialization sequences to trigger audiomgrd
+        -- into recognizing BT output.  These are safe (no sound produced).
+        if not skip_intensive then
+            info.kindle_audio_trigger = shellCapture([[echo "=== Trigger sequence tests ==="
+-- Sequence A: setFocus tts + query outputConnected
+echo "--- seqA: setFocus tts ---"
+val1=$(lipc-get-prop com.lab126.audiomgrd audioOutputConnected 2>&1)
+echo "before_focus=$val1"
+focusA=$(lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>&1)
+echo "setFocus_tts_rc=$focusA"
+sleep 1 2>/dev/null || usleep 1000000 2>/dev/null
+val2=$(lipc-get-prop com.lab126.audiomgrd audioOutputConnected 2>&1)
+echo "after_tts_focus=$val2"
+-- Sequence B: setFocus playermgr
+echo "--- seqB: setFocus playermgr ---"
+focusB=$(lipc-set-prop com.lab126.audiomgrd setFocus 'playermgr' 2>&1)
+echo "setFocus_playermgr_rc=$focusB"
+sleep 1 2>/dev/null || usleep 1000000 2>/dev/null
+val3=$(lipc-get-prop com.lab126.audiomgrd audioOutputConnected 2>&1)
+echo "after_pm_focus=$val3"
+-- Sequence C: setFocus with BT state hint
+echo "--- seqC: BT-aware focus ---"
+val4=$(lipc-get-prop com.lab126.audiomgrd btState 2>&1 || echo "no_btState")
+echo "btState=$val4"
+-- Sequence D: Query audioState if it exists
+echo "--- seqD: audioState ---"
+val5=$(lipc-get-prop com.lab126.audiomgrd audioState 2>&1 || echo "no_audioState")
+echo "audioState=$val5"
+]], 15) or "failed"
+        else
+            info.kindle_audio_trigger = "skipped (/var nearly full)"
+        end
+
+        -- 6) D-Bus deep inspection: list ALL services, not just BlueZ.
+        -- Newer firmware may expose audio routing via D-Bus instead of LIPC.
+        info.kindle_dbus_all = shellCapture([[echo "=== D-Bus service list ==="
+dbus-send --system --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.ListNames 2>/dev/null | grep -v '^method' | head -30 || echo "dbus not available"
+echo "=== D-Bus audio-related ==="
+dbus-send --system --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.ListNames 2>/dev/null | grep -iE 'audio|media|blue|a2dp|pulse|pipewire' | head -15 || echo "none"
+]], 8) or "n/a"
+
+        -- 7) Full process tree (not just audio-filtered).
+        -- Reveals if unexpected daemons (e.g. Android audioserver) are running.
+        info.kindle_all_procs = shellCapture(
+            "ps 2>/dev/null | grep -v 'ps$' | grep -v grep | head -40", 3) or "n/a"
+
+        -- 8) Bluedroid deep inspection.
+        -- The A2DP control socket at /data/misc/bluedroid/.a2dp_ctrl suggests
+        -- Amazon switched to Android's Bluedroid stack on some firmwares.
+        info.kindle_bluedroid = shellCapture([[echo "=== Bluedroid state ==="
+ls -la /data/misc/bluedroid/ 2>/dev/null || echo "no /data/misc/bluedroid"
+echo "=== BT config ==="
+cat /data/misc/bluedroid/bt_config.conf 2>/dev/null | head -20 || echo "no bt_config.conf"
+echo "=== BT stack processes ==="
+ps 2>/dev/null | grep -iE 'bluedroid|btif|bta|btm|btstack' | grep -v grep | head -10 || echo "none"
+echo "=== A2DP data socket ==="
+cat /proc/net/unix 2>/dev/null | grep a2dp | head -10 || echo "no a2dp sockets"
+]], 8) or "n/a"
+
+        -- 9) Library dependency check: what do audiomgrd and btfd link to?
+        -- Missing libraries may explain why the audio pipeline fails to init.
+        info.kindle_audio_deps = shellCapture([[echo "=== audiomgrd deps ==="
+ldd $(which audiomgrd 2>/dev/null || echo /usr/bin/audiomgrd) 2>/dev/null | head -20 || echo "ldd not available"
+echo "=== btfd deps ==="
+ldd $(which btfd 2>/dev/null || echo /usr/bin/btfd) 2>/dev/null | head -20 || echo "ldd not available"
+echo "=== Missing libs in /usr/lib ==="
+ls -la /usr/lib/libaudio*.so* /usr/lib/libbt*.so* /usr/lib/libsbc*.so* /usr/lib/liba2dp*.so* 2>/dev/null | head -20 || echo "none found"
+]], 8) or "n/a"
+
+        -- 10) Check if any ALSA card appears after aggressive focus dance.
+        -- Some firmwares dynamically register ALSA cards only after focus.
+        if not skip_intensive then
+            info.kindle_alsa_after_focus = shellCapture([[echo "=== ALSA before focus ==="
+aplay -l 2>&1 | head -5
+aplay -L 2>&1 | head -10
+echo "=== Triggering focus dance ==="
+lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>/dev/null
+sleep 1 2>/dev/null || usleep 1000000 2>/dev/null
+lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null
+lipc-set-prop com.lab126.playermgr Open '' 2>/dev/null
+sleep 1 2>/dev/null || usleep 1000000 2>/dev/null
+echo "=== ALSA after focus ==="
+aplay -l 2>&1 | head -5
+aplay -L 2>&1 | head -10
+echo "=== /dev/snd after focus ==="
+ls -la /dev/snd/ 2>/dev/null || echo "empty"
+]], 12) or "failed"
+        else
+            info.kindle_alsa_after_focus = "skipped (/var nearly full)"
+        end
+
+        -- 11) Check for new/unexpected LIPC services that might handle audio.
+        -- Filter for anything containing audio, media, sound, bt, blue, player.
+        info.kindle_lipc_audio_candidates = shellCapture(
+            "lipc-probe -l 2>/dev/null | grep -iE 'audio|media|sound|bt|blue|player|music|stream|sink' | head -20", 3) or "n/a"
+
+        -- 12) Inspect /proc/asound for any dynamically created cards
+        -- (some firmwares use card aliases or timers instead of real cards).
+        info.kindle_asound_full = shellCapture([[echo "=== /proc/asound/ ==="
+ls -la /proc/asound/ 2>/dev/null || echo "not found"
+echo "=== /proc/asound/cards ==="
+cat /proc/asound/cards 2>/dev/null || echo "not found"
+echo "=== /proc/asound/devices ==="
+cat /proc/asound/devices 2>/dev/null || echo "not found"
+echo "=== /proc/asound/pcm ==="
+cat /proc/asound/pcm 2>/dev/null || echo "not found"
+echo "=== amixer scontrols ==="
+amixer scontrols 2>&1 | head -10 || echo "amixer not available"
+]], 8) or "n/a"
     end
 
     -- /tmp writable (needed for WAV files)

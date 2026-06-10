@@ -1357,71 +1357,86 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
     -- connected.  On single-core Kobos (no speaker), silently looping
     -- through aplay for every sentence wastes CPU and can crash the device.
     if self._no_real_audio_output then
-        local bt_connected = false
-        -- Kindle does not use BlueZ; BT audio is managed by audiomgrd.
-        -- Query audiomgrd directly via LIPC to detect system-level BT connections.
-        if Device:isKindle() and not bt_connected then
-            local h = io.popen("lipc-get-prop com.lab126.audiomgrd audioOutputConnected 2>/dev/null")
-            if h then
-                local val = h:read("*a") or ""
-                h:close()
-                if val:match("1") then
-                    bt_connected = true
-                    logger.warn("TTSEngine: Kindle BT audio connected (audiomgrd)")
-                end
+        -- Kindle rescue: some firmwares need aggressive initialization
+        -- before audiomgrd recognizes BT output (issue #32).
+        local rescued_player = nil
+        if Device:isKindle() and not self._kindle_rescue_attempted then
+            self._kindle_rescue_attempted = true
+            logger.warn("TTSEngine: play() attempting Kindle rescue probe")
+            rescued_player = self:_kindleRescueProbe()
+            if rescued_player then
+                self._cached_player = rescued_player
+                player = rescued_player
             end
-            -- Also check audioCurrentOutput == 1 (A2DP / BT output)
-            if not bt_connected then
-                local h2 = io.popen("lipc-get-prop com.lab126.audiomgrd audioCurrentOutput 2>/dev/null")
-                if h2 then
-                    local val2 = h2:read("*a") or ""
-                    h2:close()
-                    if val2:match("1") then
+        end
+
+        if not rescued_player then
+            local bt_connected = false
+            -- Kindle does not use BlueZ; BT audio is managed by audiomgrd.
+            -- Query audiomgrd directly via LIPC to detect system-level BT connections.
+            if Device:isKindle() and not bt_connected then
+                local h = io.popen("lipc-get-prop com.lab126.audiomgrd audioOutputConnected 2>/dev/null")
+                if h then
+                    local val = h:read("*a") or ""
+                    h:close()
+                    if val:match("1") then
                         bt_connected = true
-                        logger.warn("TTSEngine: Kindle BT output selected (audiomgrd)")
+                        logger.warn("TTSEngine: Kindle BT audio connected (audiomgrd)")
+                    end
+                end
+                -- Also check audioCurrentOutput == 1 (A2DP / BT output)
+                if not bt_connected then
+                    local h2 = io.popen("lipc-get-prop com.lab126.audiomgrd audioCurrentOutput 2>/dev/null")
+                    if h2 then
+                        local val2 = h2:read("*a") or ""
+                        h2:close()
+                        if val2:match("1") then
+                            bt_connected = true
+                            logger.warn("TTSEngine: Kindle BT output selected (audiomgrd)")
+                        end
                     end
                 end
             end
-        end
-        local btm = self.plugin and self.plugin.bt_manager
-        if btm and not bt_connected then
-            local ok, devices = pcall(btm.listAudioDevices, btm)
-            if ok and devices then
-                for _, dev in ipairs(devices) do
-                    if dev.connected then
-                        bt_connected = true
-                        break
+            local btm = self.plugin and self.plugin.bt_manager
+            if btm and not bt_connected then
+                local ok, devices = pcall(btm.listAudioDevices, btm)
+                if ok and devices then
+                    for _, dev in ipairs(devices) do
+                        if dev.connected then
+                            bt_connected = true
+                            break
+                        end
                     end
                 end
             end
-        end
-        if bt_connected then
-            -- BT device appeared after initial findAudioPlayer (e.g.
-            -- connected externally).  Re-probe the audio player so
-            -- bluealsa can be started and used.
-            logger.warn("TTSEngine: BT device connected, re-probing audio player")
-            self._cached_player = nil
-            self._no_real_audio_output = false
-            player = self:findAudioPlayer()
-            if not player then
-                logger.warn("TTSEngine: re-probe failed, no audio player found")
+            if bt_connected then
+                -- BT device appeared after initial findAudioPlayer (e.g.
+                -- connected externally).  Re-probe the audio player so
+                -- bluealsa can be started and used.
+                logger.warn("TTSEngine: BT device connected, re-probing audio player")
+                self._cached_player = nil
+                self._no_real_audio_output = false
+                player = self:findAudioPlayer()
+                if not player then
+                    logger.warn("TTSEngine: re-probe failed, no audio player found")
+                    self.is_speaking = false
+                    return false
+                end
+            else
+                logger.warn("TTSEngine: No soundcard and no BT connected - refusing to play")
                 self.is_speaking = false
+                local msg
+                if Device:isKindle() then
+                    msg = _("No audio output available.\n\nKindle has no built-in speaker. Please connect Bluetooth headphones via Kindle Settings, then try again.\n\nIf you already have headphones connected, please generate a bug report (Audiobook > Generate bug report) and share it on GitHub — it will help identify the correct audio path for this Kindle model.")
+                else
+                    msg = _("No audio output available.\n\nThis device has no built-in speaker. Please connect a Bluetooth audio device first:\n\n1. Go to Audiobook > Bluetooth settings > Bluetooth\n2. Turn Bluetooth on\n3. Scan and pair your headphones/speaker\n4. Then start read-along again.")
+                end
+                UIManager:show(InfoMessage:new{
+                    text = msg,
+                    timeout = 10,
+                })
                 return false
             end
-        else
-            logger.warn("TTSEngine: No soundcard and no BT connected - refusing to play")
-            self.is_speaking = false
-            local msg
-            if Device:isKindle() then
-                msg = _("No audio output available.\n\nKindle has no built-in speaker. Please connect Bluetooth headphones via Kindle Settings, then try again.\n\nIf you already have headphones connected, please generate a bug report (Audiobook > Generate bug report) and share it on GitHub — it will help identify the correct audio path for this Kindle model.")
-            else
-                msg = _("No audio output available.\n\nThis device has no built-in speaker. Please connect a Bluetooth audio device first:\n\n1. Go to Audiobook > Bluetooth settings > Bluetooth\n2. Turn Bluetooth on\n3. Scan and pair your headphones/speaker\n4. Then start read-along again.")
-            end
-            UIManager:show(InfoMessage:new{
-                text = msg,
-                timeout = 10,
-            })
-            return false
         end
     end
     -- PocketBook pre-flight: on devices with a Bluetooth adapter
@@ -3343,6 +3358,17 @@ function TTSEngine:findAudioPlayer()
         end
     end
 
+    -- 0d) Kindle rescue probe: when all native paths fail, try aggressive
+    -- initialization sequences to wake up audiomgrd or force ALSA card
+    -- registration.  Some firmwares (e.g. PW11 5.17.1.0.3) need a specific
+    -- LIPC focus sequence before audioOutputConnected becomes 1 (issue #32).
+    if Device:isKindle() then
+        local rescued = self:_kindleRescueProbe()
+        if rescued then
+            return rescued
+        end
+    end
+
     -- 1) GStreamer with Kobo Bluetooth A2DP sink (primary on Kobo Libra Colour etc.)
     if self:commandExists("gst-launch-1.0") then
         local handle = io.popen("gst-inspect-1.0 mtkbtmwrpcaudiosink 2>/dev/null | head -1")
@@ -3759,6 +3785,143 @@ function TTSEngine:findAudioPlayer()
 
     logger.warn("TTSEngine: No audio player found. has_soundcard=", has_soundcard,
                 "is_kindle=", is_kindle, "checked:", #players, "candidates")
+    return nil
+end
+
+--[[--
+Kindle rescue probe: when all standard audio paths fail, try aggressive
+initialization sequences to wake up audiomgrd or force ALSA card
+registration.  Some firmwares (e.g. PW11 5.17.1.0.3) need a specific
+LIPC focus sequence before audioOutputConnected becomes 1 (issue #32).
+@return string|nil  Audio player command if rescue succeeded, nil otherwise
+--]]
+function TTSEngine:_kindleRescueProbe()
+    if not Device:isKindle() then return nil end
+    logger.warn("TTSEngine: Kindle rescue probe starting (issue #32)")
+
+    -- Check if audiomgrd is running
+    local amgr_h = io.popen("pidof audiomgrd 2>/dev/null")
+    local has_amgr = false
+    if amgr_h then
+        local pid = amgr_h:read("*a") or ""
+        amgr_h:close()
+        has_amgr = pid:match("%d")
+    end
+    if not has_amgr then
+        logger.warn("TTSEngine: Rescue probe aborting — audiomgrd not running")
+        return nil
+    end
+
+    -- Helper: try a focus value and check if output connects
+    local function tryFocus(focus_val)
+        os.execute("lipc-set-prop com.lab126.audiomgrd setFocus '" .. focus_val .. "' 2>/dev/null")
+        os.execute("sleep 1 2>/dev/null || usleep 1000000 2>/dev/null")
+        local h = io.popen("lipc-get-prop com.lab126.audiomgrd audioOutputConnected 2>/dev/null")
+        if h then
+            local v = h:read("*a") or ""
+            h:close()
+            if v:match("1") then
+                logger.warn("TTSEngine: Rescue probe — setFocus='" .. focus_val .. "' made audioOutputConnected=1")
+                return true
+            end
+        end
+        return false
+    end
+
+    -- Sequence 1: setFocus tts
+    if tryFocus("tts") then
+        local h = io.popen("lipc-get-prop com.lab126.playermgr InPlayback 2>/dev/null")
+        if h then
+            local v = h:read("*a") or ""
+            h:close()
+            if v:match("%d") then
+                self.audio_player_type = "kindle-lipc"
+                self._no_real_audio_output = false
+                logger.warn("TTSEngine: Rescue probe selected kindle-lipc after setFocus=tts")
+                return "kindle-lipc"
+            end
+        end
+    end
+
+    -- Sequence 2: setFocus playermgr
+    if tryFocus("playermgr") then
+        local h = io.popen("lipc-get-prop com.lab126.playermgr InPlayback 2>/dev/null")
+        if h then
+            local v = h:read("*a") or ""
+            h:close()
+            if v:match("%d") then
+                self.audio_player_type = "kindle-lipc"
+                self._no_real_audio_output = false
+                logger.warn("TTSEngine: Rescue probe selected kindle-lipc after setFocus=playermgr")
+                return "kindle-lipc"
+            end
+        end
+    end
+
+    -- Sequence 3: setFocus com.lab126.playermgr
+    if tryFocus("com.lab126.playermgr") then
+        local h = io.popen("lipc-get-prop com.lab126.playermgr InPlayback 2>/dev/null")
+        if h then
+            local v = h:read("*a") or ""
+            h:close()
+            if v:match("%d") then
+                self.audio_player_type = "kindle-lipc"
+                self._no_real_audio_output = false
+                logger.warn("TTSEngine: Rescue probe selected kindle-lipc after setFocus=com.lab126.playermgr")
+                return "kindle-lipc"
+            end
+        end
+    end
+
+    -- Sequence 4: Check if ALSA devices appeared after focus dance
+    local aplay_h = io.popen("aplay -l 2>/dev/null")
+    if aplay_h then
+        local out = aplay_h:read("*a") or ""
+        aplay_h:close()
+        if not out:find("no soundcards") then
+            local card, dev = out:match("card (%d+):.+device (%d+):")
+            if card and dev then
+                self.audio_player_type = "aplay"
+                self._no_real_audio_output = false
+                logger.warn("TTSEngine: Rescue probe found ALSA hw:" .. card .. "," .. dev)
+                return "aplay -q -D hw:" .. card .. "," .. dev
+            end
+        end
+    end
+
+    -- Sequence 5: Check aplay -L for any non-default PCM
+    local aL = io.popen("aplay -L 2>/dev/null")
+    if aL then
+        local out = aL:read("*a") or ""
+        aL:close()
+        for line in out:gmatch("([^\n]+)") do
+            local name = line:match("^(%S+)$")
+            if name and name ~= "default" and name ~= "null" then
+                self.audio_player_type = "aplay"
+                self._no_real_audio_output = false
+                logger.warn("TTSEngine: Rescue probe found PCM:", name)
+                return "aplay -q -D " .. name
+            end
+        end
+    end
+
+    -- Sequence 6: Try to wake up playermgr with an empty Open call
+    os.execute("lipc-set-prop com.lab126.playermgr Stop '' 2>/dev/null")
+    os.execute("lipc-set-prop com.lab126.playermgr Open '' 2>/dev/null")
+    os.execute("sleep 1 2>/dev/null || usleep 1000000 2>/dev/null")
+    local h = io.popen("lipc-get-prop com.lab126.playermgr InPlayback 2>/dev/null")
+    if h then
+        local v = h:read("*a") or ""
+        h:close()
+        if v:match("%d") then
+            self.audio_player_type = "kindle-lipc"
+            self._no_real_audio_output = false
+            logger.warn("TTSEngine: Rescue probe selected kindle-lipc after Open wake-up")
+            return "kindle-lipc"
+        end
+    end
+
+    logger.warn("TTSEngine: Kindle rescue probe exhausted — no audio path found")
     return nil
 end
 
