@@ -1648,7 +1648,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                     gf:close()
                     if self.espeak_linker then
                         self._kindle_gst_play_bin = string.format(
-                            "%s --library-path %s:/usr/lib:/lib %s",
+                            "%s --library-path %s:/usr/lib/tts:/usr/lib:/lib %s",
                             self.espeak_linker, self.espeak_lib_path, gst_play_bin)
                     else
                         self._kindle_gst_play_bin = gst_play_bin
@@ -1783,7 +1783,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                     gf:close()
                     if self.espeak_linker then
                         self._kindle_gst_play_bin = string.format(
-                            "%s --library-path %s:/usr/lib:/lib %s",
+                            "%s --library-path %s:/usr/lib/tts:/usr/lib:/lib %s",
                             self.espeak_linker, self.espeak_lib_path, gst_play_bin)
                     else
                         self._kindle_gst_play_bin = gst_play_bin
@@ -2731,6 +2731,25 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                         logger.err("TTSEngine: kindle-gst-play hung after",
                             poll_count * 0.1, "s, log=", log_text:gsub("\n", " "):sub(1, 200))
                         os.execute("kill " .. pid .. " 2>/dev/null")
+
+                        -- Try system gst-launch-0.10 fallback once (issue #32).
+                        -- The bundled gst-play hangs on some firmwares, but the
+                        -- system gst-launch-0.10 with raw PCM works.
+                        if not engine._gst_play_system_fallback_tried then
+                            engine._gst_play_system_fallback_tried = true
+                            logger.warn("TTSEngine: kindle-gst-play hung, trying system gst-launch-0.10 fallback")
+                            local sys_pid, raw_file = engine:_trySystemGstLaunch(engine.current_audio_file)
+                            if sys_pid then
+                                engine._gst_play_pid = sys_pid
+                                engine._gst_system_raw_file = raw_file
+                                pid = sys_pid
+                                health_checked = false
+                                UIManager:scheduleIn(0.1, pollGstPlayDone)
+                                return
+                            end
+                            logger.warn("TTSEngine: system gst-launch-0.10 fallback also failed")
+                        end
+
                         engine._gst_play_pid = nil
                         engine._gst_play_broken = true
                         if engine.plugin then
@@ -2783,6 +2802,25 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                 if is_early_exit and has_error then
                     logger.err("TTSEngine: kindle-gst-play exited early (", elapsed_ms,
                         "ms) with error, expected ~", expected_ms, "ms")
+
+                    -- Try system gst-launch-0.10 fallback once (issue #32).
+                    if not engine._gst_play_system_fallback_tried then
+                        engine._gst_play_system_fallback_tried = true
+                        logger.warn("TTSEngine: kindle-gst-play exited early, trying system gst-launch-0.10 fallback")
+                        local sys_pid, raw_file = engine:_trySystemGstLaunch(engine.current_audio_file)
+                        if sys_pid then
+                            engine._gst_play_pid = sys_pid
+                            engine._gst_system_raw_file = raw_file
+                            pid = sys_pid
+                            -- Reset state and continue polling with system process
+                            engine.is_speaking = true
+                            engine.play_generation = my_gen
+                            UIManager:scheduleIn(0.1, pollGstPlayDone)
+                            return
+                        end
+                        logger.warn("TTSEngine: system gst-launch-0.10 fallback also failed")
+                    end
+
                     engine._gst_play_pid = nil
                     engine.is_speaking = false
                     engine.play_generation = (engine.play_generation or 0) + 1
@@ -2810,6 +2848,11 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                 end
                 logger.warn("TTSEngine: kindle-gst-play finished, polls=", poll_count)
                 engine._gst_play_pid = nil
+                -- Clean up system fallback raw PCM file if present
+                if engine._gst_system_raw_file then
+                    os.remove(engine._gst_system_raw_file)
+                    engine._gst_system_raw_file = nil
+                end
                 engine:onPlaybackComplete()
             end
         end
@@ -4138,7 +4181,13 @@ end
 -- cannot create a real pipeline.  This helper detects that case so we can
 -- fall back to WAV playback instead of a broken native TTS path.
 function TTSEngine:_checkIvonaApiAvailable()
+    -- KT5 firmware mounts /usr/lib/tts as a squashfs loop and places
+    -- libIvonaEInkAPI.so.1.0 there.  The system linker finds it via
+    -- /etc/ld.so.conf (which includes /usr/lib/tts), but the bundled
+    -- ld-linux wrapper does not read ld.so.conf.  We must check the
+    -- actual TTS library directory, not just standard paths.
     local paths = {
+        "/usr/lib/tts/libIvonaEInkAPI.so.1.0",
         "/usr/lib/libIvonaEInkAPI.so.1.0",
         "/lib/libIvonaEInkAPI.so.1.0",
         "/system/lib/libIvonaEInkAPI.so.1.0",
@@ -4210,6 +4259,100 @@ function TTSEngine:_probeKindleGstPlayWav(gst_play_cmd)
             "out=", out:gsub("\n", " "))
     end
     return false
+end
+
+--- Convert a WAV file to raw PCM and launch system gst-launch-0.10.
+-- Some Kindle firmwares (e.g. KT5 5.17.1.0.3) have a working system
+-- gst-launch-0.10 but the bundled gst-play helper hangs.  This fallback
+-- strips the WAV header and feeds raw S16LE PCM directly to mixersink.
+-- @param wav_file string  Path to the source WAV file
+-- @return number|nil  PID of the background gst-launch process, or nil on failure
+-- @return string|nil  Path to the generated raw PCM file (caller must clean up)
+function TTSEngine:_trySystemGstLaunch(wav_file)
+    if not self:commandExists("gst-launch-0.10") then
+        logger.warn("TTSEngine: system gst-launch-0.10 not available")
+        return nil, nil
+    end
+    if not self:commandExists("dd") then
+        logger.warn("TTSEngine: dd not available, cannot strip WAV header")
+        return nil, nil
+    end
+
+    -- Read WAV header to get format details
+    local fh = io.open(wav_file, "rb")
+    if not fh then
+        logger.warn("TTSEngine: cannot open WAV file for system gst-launch fallback:", wav_file)
+        return nil, nil
+    end
+
+    -- Read first 44 bytes (standard PCM WAV header)
+    local header = fh:read(44)
+    fh:close()
+
+    if not header or #header < 44 then
+        logger.warn("TTSEngine: WAV file too short for system gst-launch fallback")
+        return nil, nil
+    end
+
+    -- Verify RIFF/WAVE signature
+    if header:sub(1, 4) ~= "RIFF" or header:sub(9, 12) ~= "WAVE" then
+        logger.warn("TTSEngine: not a valid WAV file for system gst-launch fallback")
+        return nil, nil
+    end
+
+    -- Parse header fields (little-endian)
+    local function le_u16(offset)
+        return string.byte(header, offset) + string.byte(header, offset + 1) * 256
+    end
+    local function le_u32(offset)
+        return string.byte(header, offset)
+            + string.byte(header, offset + 1) * 256
+            + string.byte(header, offset + 2) * 65536
+            + string.byte(header, offset + 3) * 16777216
+    end
+
+    local channels = le_u16(23)
+    local rate = le_u32(25)
+    local bits = le_u16(35)
+
+    logger.warn("TTSEngine: system gst-launch fallback WAV format:",
+        "rate=", rate, "channels=", channels, "bits=", bits)
+
+    -- Generate raw PCM file by stripping header
+    local raw_file = "/tmp/.abgst_system_" .. os.time() .. ".raw"
+    local dd_cmd = string.format(
+        "dd if='%s' of='%s' bs=1 skip=44 2>/dev/null",
+        wav_file:gsub("'", "'\\''"), raw_file:gsub("'", "'\\''"))
+    local dd_rc = os.execute(dd_cmd)
+    if dd_rc ~= 0 and dd_rc ~= true then
+        logger.warn("TTSEngine: dd failed to strip WAV header, rc=", dd_rc)
+        os.remove(raw_file)
+        return nil, nil
+    end
+
+    -- Build gst-launch-0.10 command with proper caps
+    local caps = string.format(
+        "audio/x-raw-int,endianness=1234,signed=true,width=%d,depth=%d,rate=%d,channels=%d",
+        bits, bits, rate, channels)
+    local gst_log = "/tmp/.gst_system_last.log"
+    local cmd = string.format(
+        "gst-launch-0.10 filesrc location='%s' ! capsfilter caps='%s' ! mixersink >%s 2>&1 & echo $!",
+        raw_file:gsub("'", "'\\''"), caps, gst_log)
+
+    local h = io.popen(cmd)
+    local pid_str = h and h:read("*a") or ""
+    if h then h:close() end
+    local pid = tonumber(pid_str:match("(%d+)"))
+
+    if pid then
+        logger.warn("TTSEngine: system gst-launch-0.10 fallback launched, PID=", pid,
+            "rate=", rate, "channels=", channels)
+        return pid, raw_file
+    else
+        logger.warn("TTSEngine: system gst-launch-0.10 fallback failed to launch")
+        os.remove(raw_file)
+        return nil, nil
+    end
 end
 
 --[[--
