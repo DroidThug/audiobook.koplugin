@@ -1815,18 +1815,22 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             end
             local escaped_text = escapeForGst(text)
 
-            local pid_file = "/tmp/.ttssrc_pid_" .. my_gen
             local done_file = "/tmp/.ttssrc_done_" .. my_gen
             local gst_log = "/tmp/.ttssrc_fallback.log"
-            os.remove(pid_file)
             os.remove(done_file)
 
+            -- Simplified subshell: single background job writes exit code on
+            -- completion.  Avoids the complex double-background pattern that
+            -- may confuse minimal busybox shells (issue #35).
             local cmd = string.format(
-                "%s --ttssrc %s >%s 2>&1 & pid=$!; echo $pid > %s; (wait $pid; echo $? > %s) &",
+                "(%s --ttssrc %s >%s 2>&1; echo $? > %s) & echo $!",
                 self._kindle_gst_play_bin, shellEsc(escaped_text), gst_log,
-                pid_file, done_file
-            )
-            os.execute(cmd)
+                done_file)
+            local h = io.popen(cmd)
+            local pid_str = h and h:read("*a") or ""
+            if h then h:close() end
+            local pid = tonumber(pid_str:match("(%d+)"))
+            logger.warn("TTSEngine: kindle-gst-play --ttssrc launched, PID=", pid)
 
             self._audio_launched_at = UIManager:getTime()
             self:startTimingLoop()
@@ -1835,6 +1839,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             local poll_count = 0
             local max_polls = math.max(300, math.floor(dur_ms * 3 / 100))
             local startup_polls = 15
+            local has_retried = false
             local function pollTtsSrcDone()
                 if (engine.play_generation or 0) ~= my_gen then return end
                 if not engine.is_speaking then return end
@@ -1843,77 +1848,119 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                     return
                 end
                 poll_count = poll_count + 1
-                if poll_count > startup_polls then
+
+                -- Detect completion: process gone from /proc OR done file exists.
+                local proc_exists = pid and io.open("/proc/" .. pid .. "/status", "r")
+                if proc_exists then proc_exists:close() end
+
+                local done_ready = not proc_exists
+                if not done_ready and poll_count > startup_polls then
+                    local df = io.open(done_file, "r")
+                    if df then
+                        local rc = df:read("*a") or ""
+                        df:close()
+                        if rc:match("%d") then done_ready = true end
+                    end
+                end
+
+                if done_ready then
+                    local exit_code = 1
                     local df = io.open(done_file, "r")
                     if df then
                         local rc = df:read("*a") or ""
                         df:close()
                         os.remove(done_file)
-                        os.remove(pid_file)
-                        local exit_code = tonumber(rc:match("(%d+)")) or 1
-                        if exit_code == 0 then
-                            logger.warn("TTSEngine: kindle-gst-play --ttssrc completed")
-                            engine._ttssrc_consec_fails = 0
-                            engine:onPlaybackComplete()
-                            return
-                        else
-                            logger.err("TTSEngine: kindle-gst-play --ttssrc failed, code=", exit_code)
-                            -- Log stderr for diagnostics
-                            local log_fh = io.open("/tmp/.ttssrc_fallback.log", "r")
-                            if log_fh then
-                                local log_text = log_fh:read("*a") or ""
-                                log_fh:close()
-                                if log_text ~= "" then
-                                    logger.warn("TTSEngine: --ttssrc stderr:", log_text:sub(1, 500))
-                                end
-                            end
-                            -- Exit codes 126/127 mean the binary is not executable or not found.
-                            -- These are permanent configuration errors, not transient failures.
-                            -- Disable immediately instead of waiting for 2 failures (issue #22).
-                            if exit_code == 126 or exit_code == 127 then
-                                logger.warn("TTSEngine: --ttssrc binary not executable (code ", exit_code, "), disabling permanently")
-                                engine._kindle_gst_play_bin = nil
-                                engine._ttssrc_broken = true
-                                if engine.plugin then
-                                    engine.plugin:setSetting("_ttssrc_broken", true)
-                                    logger.warn("TTSEngine: persisted _ttssrc_broken=true")
-                                end
-                                engine.is_speaking = false
-                                engine.play_generation = (engine.play_generation or 0) + 1
-                                engine:cleanup()
-                                UIManager:show(InfoMessage:new{
-                                    text = _("Kindle native TTS failed.\n\nThe text-to-speech helper binary could not be executed. Please generate a bug report and share it on GitHub."),
-                                    timeout = 10,
-                                })
-                                return
-                            end
-                            engine._ttssrc_consec_fails = (engine._ttssrc_consec_fails or 0) + 1
-                            if engine._ttssrc_consec_fails >= 2 then
-                                engine._kindle_gst_play_bin = nil
-                                engine.is_speaking = false
-                                engine.play_generation = (engine.play_generation or 0) + 1
-                                engine:cleanup()
-                                UIManager:show(InfoMessage:new{
-                                    text = _("Kindle native TTS failed.\n\nThe text-to-speech engine could not produce audio. Please generate a bug report and share it on GitHub."),
-                                    timeout = 10,
-                                })
-                                return
-                            end
-                            engine:onPlaybackComplete()
+                        exit_code = tonumber(rc:match("(%d+)")) or 1
+                    end
+
+                    if exit_code == 0 then
+                        logger.warn("TTSEngine: kindle-gst-play --ttssrc completed")
+                        engine._ttssrc_consec_fails = 0
+                        engine:onPlaybackComplete()
+                        return
+                    end
+
+                    logger.err("TTSEngine: kindle-gst-play --ttssrc failed, code=", exit_code)
+
+                    -- Retry once without the bundled linker wrapper on
+                    -- 126/127.  Some Kindles (e.g. KT5) cannot execute the
+                    -- binary through the bundled ld-linux-armhf.so.3 but the
+                    -- system linker works fine (issue #35).
+                    if (exit_code == 126 or exit_code == 127) and not has_retried then
+                        local bare_bin = engine._kindle_gst_play_bin:match("(/%S-/gst%-play)$")
+                            or engine._kindle_gst_play_bin
+                        if bare_bin ~= engine._kindle_gst_play_bin then
+                            has_retried = true
+                            engine:_diagnoseGstPlayFailure(engine._kindle_gst_play_bin, gst_log)
+                            logger.warn("TTSEngine: retrying --ttssrc with bare binary:", bare_bin)
+                            os.remove(done_file)
+                            local retry_cmd = string.format(
+                                "('%s' --ttssrc %s >%s 2>&1; echo $? > %s) & echo $!",
+                                bare_bin, shellEsc(escaped_text), gst_log,
+                                done_file)
+                            local retry_h = io.popen(retry_cmd)
+                            local retry_pid_str = retry_h and retry_h:read("*a") or ""
+                            if retry_h then retry_h:close() end
+                            pid = tonumber(retry_pid_str:match("(%d+)"))
+                            poll_count = 0
+                            logger.warn("TTSEngine: retry PID=", pid)
+                            UIManager:scheduleIn(0.1, pollTtsSrcDone)
                             return
                         end
                     end
+
+                    -- Log stderr for diagnostics
+                    local log_fh = io.open(gst_log, "r")
+                    if log_fh then
+                        local log_text = log_fh:read("*a") or ""
+                        log_fh:close()
+                        if log_text ~= "" then
+                            logger.warn("TTSEngine: --ttssrc stderr:", log_text:sub(1, 500))
+                        end
+                    end
+
+                    -- Exit codes 126/127 mean the binary is not executable or
+                    -- not found.  Disable permanently after diagnostics.
+                    if exit_code == 126 or exit_code == 127 then
+                        logger.warn("TTSEngine: --ttssrc binary not executable (code ", exit_code, "), disabling permanently")
+                        engine:_diagnoseGstPlayFailure(engine._kindle_gst_play_bin, gst_log)
+                        engine._kindle_gst_play_bin = nil
+                        engine._ttssrc_broken = true
+                        if engine.plugin then
+                            engine.plugin:setSetting("_ttssrc_broken", true)
+                            logger.warn("TTSEngine: persisted _ttssrc_broken=true")
+                        end
+                        engine.is_speaking = false
+                        engine.play_generation = (engine.play_generation or 0) + 1
+                        engine:cleanup()
+                        UIManager:show(InfoMessage:new{
+                            text = _("Kindle native TTS failed.\n\nThe text-to-speech helper binary could not be executed. Please generate a bug report and share it on GitHub."),
+                            timeout = 10,
+                        })
+                        return
+                    end
+                    engine._ttssrc_consec_fails = (engine._ttssrc_consec_fails or 0) + 1
+                    if engine._ttssrc_consec_fails >= 2 then
+                        engine._kindle_gst_play_bin = nil
+                        engine.is_speaking = false
+                        engine.play_generation = (engine.play_generation or 0) + 1
+                        engine:cleanup()
+                        UIManager:show(InfoMessage:new{
+                            text = _("Kindle native TTS failed.\n\nThe text-to-speech engine could not produce audio. Please generate a bug report and share it on GitHub."),
+                            timeout = 10,
+                        })
+                        return
+                    end
+                    engine:onPlaybackComplete()
+                    return
                 end
+
                 if poll_count >= max_polls then
                     logger.warn("TTSEngine: kindle-gst-play --ttssrc timed out")
-                    local pf = io.open(pid_file, "r")
-                    local pid = pf and pf:read("*a"):match("%d+")
-                    if pf then pf:close() end
                     if pid then
                         os.execute("kill " .. pid .. " 2>/dev/null")
                     end
                     os.remove(done_file)
-                    os.remove(pid_file)
                     engine:onPlaybackComplete()
                 else
                     UIManager:scheduleIn(0.1, pollTtsSrcDone)
@@ -3986,6 +4033,67 @@ function TTSEngine:_kindleRescueProbe()
 
     logger.warn("TTSEngine: Kindle rescue probe exhausted — no audio path found")
     return nil
+end
+
+--- Diagnostic helper: log everything useful when gst-play fails.
+-- Called when --ttssrc exits with 126/127 or when the bare-binary retry
+-- also fails.  Captures file permissions, file type, memory state, and
+-- direct execution smoke tests so the bug report explains WHY the OS
+-- refused to run the binary (issue #35).
+function TTSEngine:_diagnoseGstPlayFailure(cmd, log_file)
+    logger.err("TTSEngine: ===== gst-play diagnostic block start =====")
+    -- Extract the bare gst-play path from a wrapped command.
+    local bare = cmd:match("(/%S-/gst%-play)$") or cmd
+    logger.err("TTSEngine: diagnostic bare path:", bare)
+    -- Binary existence and permissions
+    local ls_h = io.popen("ls -l '" .. bare .. "' 2>&1")
+    if ls_h then
+        logger.err("TTSEngine: diagnostic ls:", ls_h:read("*a"):gsub("%s+$", ""))
+        ls_h:close()
+    end
+    -- File type (architecture, static/dynamic) if `file` exists
+    local file_h = io.popen("file '" .. bare .. "' 2>&1")
+    if file_h then
+        local ft = file_h:read("*a") or ""
+        file_h:close()
+        if ft:match("%S") then
+            logger.err("TTSEngine: diagnostic file type:", ft:gsub("%s+$", ""))
+        end
+    end
+    -- Memory state at time of failure
+    local mem_h = io.popen("cat /proc/meminfo 2>/dev/null | grep -E 'MemFree|MemAvailable|Buffers'")
+    if mem_h then
+        logger.err("TTSEngine: diagnostic memory:", mem_h:read("*a"):gsub("%s+$", ""))
+        mem_h:close()
+    end
+    -- Direct execution smoke test (bare binary, no text)
+    local test_h = io.popen("'" .. bare .. "' --version 2>&1")
+    if test_h then
+        local test_out = test_h:read("*a") or ""
+        test_h:close()
+        logger.err("TTSEngine: diagnostic bare --version:", test_out:gsub("%s+$", ""))
+    end
+    -- Wrapped execution smoke test (same linker wrapper as real call)
+    if cmd ~= bare then
+        local wrap_h = io.popen(cmd .. " --version 2>&1")
+        if wrap_h then
+            local wrap_out = wrap_h:read("*a") or ""
+            wrap_h:close()
+            logger.err("TTSEngine: diagnostic wrapped --version:", wrap_out:gsub("%s+$", ""))
+        end
+    end
+    -- Log contents from the failed run
+    if log_file then
+        local log_h = io.open(log_file, "r")
+        if log_h then
+            local log_text = log_h:read("*a") or ""
+            log_h:close()
+            if log_text ~= "" then
+                logger.err("TTSEngine: diagnostic log:", log_text:sub(1, 500))
+            end
+        end
+    end
+    logger.err("TTSEngine: ===== gst-play diagnostic block end =====")
 end
 
 --[[--
