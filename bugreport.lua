@@ -1364,6 +1364,96 @@ cat /proc/asound/pcm 2>/dev/null || echo "not found"
 echo "=== amixer scontrols ==="
 amixer scontrols 2>&1 | head -10 || echo "amixer not available"
 ]], 8) or "n/a"
+
+        -- v0.1.x.x: Targeted diagnostics for missing libIvonaEInkAPI.so.1.0
+        -- (issue #32).  The TTS pipeline is intact except for this single
+        -- shared library.  If it exists anywhere on the device, a simple
+        -- LD_LIBRARY_PATH addition may restore audio.
+
+        -- 13) Search the entire device for Ivona and related audio libraries.
+        info.kindle_ivona_search = shellCapture([[echo "=== Ivona library search ==="
+find /usr /system /vendor /mnt /data /opt /lib -maxdepth 5 -name '*Ivona*' -o -name '*ivona*' 2>/dev/null | head -30 || echo "find not available or no matches"
+echo "=== ldd on libgstttssrc.so ==="
+ldd /usr/lib/gstreamer-0.10/libgstttssrc.so 2>/dev/null | head -20 || echo "ldd not available"
+echo "=== NEEDED entries (readelf) ==="
+readelf -d /usr/lib/gstreamer-0.10/libgstttssrc.so 2>/dev/null | grep -iE 'NEEDED|RPATH|RUNPATH' | head -15 || echo "readelf not available"
+echo "=== objdump NEEDED ==="
+objdump -p /usr/lib/gstreamer-0.10/libgstttssrc.so 2>/dev/null | grep -iE 'NEEDED|RPATH|RUNPATH' | head -15 || echo "objdump not available"
+echo "=== strings referencing Ivona ==="
+strings /usr/lib/gstreamer-0.10/libgstttssrc.so 2>/dev/null | grep -iE 'ivona|eink|tts' | head -20 || echo "strings not available"
+]], 15) or "n/a"
+
+        -- 14) Check common Android and alternate library paths for audio libs.
+        info.kindle_lib_paths = shellCapture([[echo "=== ld.so.cache ==="
+ldconfig -p 2>/dev/null | grep -iE 'ivona|audio|tts' | head -15 || echo "ldconfig not available"
+echo "=== ld.so.conf ==="
+cat /etc/ld.so.conf 2>/dev/null || echo "no ld.so.conf"
+ls -la /etc/ld.so.conf.d/ 2>/dev/null | head -5 || echo "no ld.so.conf.d"
+echo "=== System lib dirs ==="
+for d in /system/lib /system/lib64 /vendor/lib /vendor/lib64 /odm/lib /mnt/base-us/system/lib /usr/local/lib /lib; do
+  if [ -d "$d" ]; then
+    echo "--- $d ---"
+    ls -la "$d"/libIvona* "$d"/libivona* "$d"/libaudioClient* "$d"/libaudioShm* "$d"/libmixer* 2>/dev/null | head -5
+  fi
+done
+]], 10) or "n/a"
+
+        -- 15) Dump libaudioClient.so symbols for potential alternative path.
+        -- libaudioClient.so exists on this firmware and might expose a
+        -- simple audio playback API if the GStreamer path cannot be restored.
+        info.kindle_audio_client = shellCapture([[echo "=== libaudioClient.so ==="
+ls -la /usr/lib/libaudioClient.so* 2>/dev/null || echo "not found"
+echo "=== nm symbols (play/write/audio/track) ==="
+nm -D /usr/lib/libaudioClient.so.1.0 2>/dev/null | grep -iE 'play|write|audio|track|start|stop|create|init|open|close|pcm|stream' | head -25 || echo "nm not available"
+echo "=== readelf dynamic symbols ==="
+readelf -s /usr/lib/libaudioClient.so.1.0 2>/dev/null | grep -iE 'play|write|audio|track|start|stop|create|init|open|close|pcm|stream' | head -25 || echo "readelf not available"
+echo "=== ldd deps ==="
+ldd /usr/lib/libaudioClient.so.1.0 2>/dev/null | head -15 || echo "ldd not available"
+]], 10) or "n/a"
+
+        -- 16) Re-test raw PCM → mixersink WITH audiomgrd focus set first.
+        -- The previous test failed possibly because focus was not granted.
+        -- This test sets focus, generates a proper raw PCM file, and tries
+        -- both system gst-launch-0.10 and the bundled gst-play helper.
+        if not skip_intensive then
+            info.kindle_raw_pcm_focused = shellCapture([[trap 'rm -f /tmp/.pcm_focus_test.raw /tmp/.pcm_focus_test.wav' EXIT
+-- Generate 1-second 22050 Hz mono S16LE silence
+dd if=/dev/zero bs=44100 count=1 2>/dev/null | {
+  printf 'RIFF\x24\xac\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x22\x56\x00\x00\x44\xac\x00\x00\x02\x00\x10\x00data\x04\xac\x00\x00'
+  cat
+} > /tmp/.pcm_focus_test.wav
+dd if=/tmp/.pcm_focus_test.wav of=/tmp/.pcm_focus_test.raw bs=1 skip=44 2>/dev/null
+echo "raw_size=$(wc -c < /tmp/.pcm_focus_test.raw 2>/dev/null)"
+-- Set focus
+echo "--- setFocus tts ---"
+focus_rc=$(lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>&1)
+echo "focus_rc=$focus_rc"
+sleep 1 2>/dev/null || usleep 1000000 2>/dev/null
+-- Test 1: system gst-launch-0.10 with raw PCM + capsfilter
+echo "--- gst-launch-0.10 raw PCM ---"
+timeout 3 gst-launch-0.10 -v filesrc location=/tmp/.pcm_focus_test.raw ! capsfilter caps="audio/x-raw-int,endianness=1234,signed=true,width=16,depth=16,rate=22050,channels=1" ! mixersink 2>&1 | head -20
+echo "gst_exit=$?"
+-- Test 2: try without capsfilter (let mixersink negotiate)
+echo "--- gst-launch-0.10 raw PCM no capsfilter ---"
+timeout 3 gst-launch-0.10 -v filesrc location=/tmp/.pcm_focus_test.raw ! mixersink 2>&1 | head -15
+echo "gst2_exit=$?"
+rm -f /tmp/.pcm_focus_test.raw /tmp/.pcm_focus_test.wav
+]], 18) or "failed"
+        else
+            info.kindle_raw_pcm_focused = "skipped (/var nearly full)"
+        end
+
+        -- 17) Check if any library path environment variable or config
+        -- points to a location where Ivona libs might live.
+        info.kindle_env_paths = shellCapture([[echo "=== Env vars ==="
+echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
+echo "LD_PRELOAD=$LD_PRELOAD"
+echo "PATH=$PATH"
+echo "=== Mounted partitions ==="
+cat /proc/mounts 2>/dev/null | grep -v '^rootfs' | head -20 || echo "no mounts"
+echo "=== All .so files with 'audio' in name ==="
+find /usr /system /vendor /mnt /data -maxdepth 4 -name '*audio*.so*' 2>/dev/null | head -25 || echo "find not available"
+]], 10) or "n/a"
     end
 
     -- /tmp writable (needed for WAV files)
