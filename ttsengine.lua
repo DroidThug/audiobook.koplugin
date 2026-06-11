@@ -3234,13 +3234,12 @@ function TTSEngine:findAudioPlayer()
                 -- directly, bypassing the missing wavparse plugin.
                 -- Skip if we already know it hangs on this device (detected at
                 -- runtime during a previous playback attempt).
-                -- Also pre-emptively skip on Kindle Colorsoft where the
-                -- pipeline starts but cannot produce audio (issue #23).
+                -- On Kindle Colorsoft, playermgr is non-functional (issue #23).
+                -- We need either ttssrc (bypasses playermgr) or mixersink
+                -- (for raw PCM WAV playback).  Do NOT pre-emptively skip WAV
+                -- mode; earlier "known broken" assumptions were based on an
+                -- older gst-play binary and may no longer apply.
                 if is_colorsoft then
-                    logger.warn("TTSEngine: skipping kindle-gst-play WAV mode on Kindle Colorsoft (known broken)")
-                    -- v0.1.6.5: Keep kindle-gst-play for --ttssrc mode.
-                    -- ttssrc bypasses playermgr entirely (which is non-functional
-                    -- on Colorsoft) and routes text directly to the Ivona SDK.
                     local plugin_dir = Utils.normalizeDirPath(self.plugin_dir or ".")
                     local gst_play_bin = plugin_dir .. "/kindle/gst-play"
                     local gf = io.open(gst_play_bin, "r")
@@ -3253,28 +3252,47 @@ function TTSEngine:findAudioPlayer()
                                 self.espeak_linker, self.espeak_lib_path, gst_play_bin)
                         end
                         self._kindle_gst_play_bin = gst_play_cmd
-                        logger.warn("TTSEngine: kindle-gst-play available for --ttssrc mode")
-                        -- v0.1.9.7: On Colorsoft, playermgr is non-functional (issue #23).
-                        -- Verify ttssrc is available and use it directly instead of
-                        -- falling through to kindle-native-tts-fallback (which relies
-                        -- on playermgr and will silently fail).
                         if not self._ttssrc_broken then
                             local ph = io.popen(gst_play_cmd .. " --probe 2>&1")
                             if ph then
                                 local probe = ph:read("*a") or ""
                                 ph:close()
-                                if probe:match("ttssrc=found") and probe:match("mixersink=found") then
+                                local ttssrc_ok = probe:match("ttssrc=found")
+                                local ttssrc_broken = probe:match("ttssrc=broken")
+                                local mixersink_ok = probe:match("mixersink=found")
+                                local mixersink_broken = probe:match("mixersink=broken")
+                                if ttssrc_broken then
+                                    logger.warn("TTSEngine: Colorsoft ttssrc is broken (missing dependencies), disabling")
+                                    self._ttssrc_broken = true
+                                    if self.plugin then
+                                        self.plugin:setSetting("_ttssrc_broken", true)
+                                    end
+                                end
+                                if ttssrc_ok and mixersink_ok then
                                     self._ttssrc_available = true
                                     self.audio_player_type = "kindle-ttssrc"
                                     self._no_real_audio_output = false
                                     logger.warn("TTSEngine: Colorsoft ttssrc+mixersink confirmed, selecting kindle-ttssrc")
                                     return "kindle-ttssrc"
+                                elseif mixersink_ok and not self._gst_play_broken then
+                                    logger.warn("TTSEngine: Colorsoft ttssrc unavailable, falling back to kindle-gst-play WAV mode")
+                                    self.audio_player_type = "kindle-gst-play"
+                                    self._no_real_audio_output = false
+                                    return "kindle-gst-play"
+                                elseif mixersink_broken then
+                                    logger.warn("TTSEngine: Colorsoft mixersink is broken, no GStreamer audio path available")
                                 else
-                                    logger.warn("TTSEngine: Colorsoft ttssrc probe failed:", probe:gsub("\n", " "))
+                                    logger.warn("TTSEngine: Colorsoft probe failed:", probe:gsub("\n", " "))
                                 end
                             end
                         else
                             logger.warn("TTSEngine: kindle-ttssrc skipped (marked broken on this device)")
+                            if not self._gst_play_broken then
+                                logger.warn("TTSEngine: Colorsoft falling back to kindle-gst-play WAV mode")
+                                self.audio_player_type = "kindle-gst-play"
+                                self._no_real_audio_output = false
+                                return "kindle-gst-play"
+                            end
                         end
                     end
                 elseif not self._gst_play_broken then
@@ -3309,6 +3327,12 @@ function TTSEngine:findAudioPlayer()
                                 -- Device.model does not match "KindleColorSoft".
                                 if probe:match("ttssrc=found") then
                                     self._ttssrc_available = true
+                                elseif probe:match("ttssrc=broken") then
+                                    logger.warn("TTSEngine: ttssrc is broken on this device (missing dependencies), disabling")
+                                    self._ttssrc_broken = true
+                                    if self.plugin then
+                                        self.plugin:setSetting("_ttssrc_broken", true)
+                                    end
                                 end
                                 -- Preemptive skip on PW5-like stripped firmware:
                                 -- If wavparse, audioconvert, and audioresample are

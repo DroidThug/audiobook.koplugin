@@ -82,6 +82,7 @@ typedef void* (*fn_gst_bus_poll)(void *, int, int64_t);
 typedef void  (*fn_gst_message_parse_error)(void *, void **, char **);
 typedef void  (*fn_gst_object_unref)(void *);
 typedef void* (*fn_gst_element_factory_find)(const char *);
+typedef void* (*fn_gst_element_factory_make)(const char *, const char *);
 
 /* ---- Loaded symbols ---- */
 static fn_gst_init                  gst_init_;
@@ -92,6 +93,7 @@ static fn_gst_bus_poll              gst_bus_poll_;
 static fn_gst_message_parse_error   gst_message_parse_error_;
 static fn_gst_object_unref          gst_object_unref_;
 static fn_gst_element_factory_find  gst_element_factory_find_;
+static fn_gst_element_factory_make  gst_element_factory_make_;
 
 /* ---- Signal handling ---- */
 static volatile sig_atomic_t got_signal = 0;
@@ -168,6 +170,7 @@ static int load_gstreamer(void)
     gst_message_parse_error_  = dlsym(lib, "gst_message_parse_error");
     gst_object_unref_         = dlsym(lib, "gst_object_unref");
     gst_element_factory_find_ = dlsym(lib, "gst_element_factory_find");
+    gst_element_factory_make_ = dlsym(lib, "gst_element_factory_make");
 
     if (!gst_init_ || !gst_parse_launch_ || !gst_element_set_state_ ||
         !gst_element_get_bus_) {
@@ -219,7 +222,42 @@ static int do_probe(void)
     };
     for (int i = 0; elems[i]; i++) {
         void *f = gst_element_factory_find_(elems[i]);
-        printf("%s=%s\n", elems[i], f ? "found" : "not_found");
+        if (!f) {
+            printf("%s=not_found\n", elems[i]);
+            continue;
+        }
+        /* Factory exists, but the plugin .so may fail to load at runtime
+           due to missing dependencies (e.g. libIvonaEInkAPI.so.1.0 for
+           ttssrc on Colorsoft).  Try to actually instantiate the element. */
+        int can_make = 0;
+        if (gst_element_factory_make_) {
+            void *inst = gst_element_factory_make_(elems[i], "probe_test");
+            if (inst) {
+                can_make = 1;
+                gst_object_unref_(inst);
+            }
+        }
+        /* If make is unavailable, fall back to a minimal pipeline parse
+           for the elements we care most about (ttssrc, mixersink). */
+        if (!can_make && gst_parse_launch_ &&
+            (strcmp(elems[i], "ttssrc") == 0 || strcmp(elems[i], "mixersink") == 0)) {
+            char test_desc[128];
+            if (strcmp(elems[i], "ttssrc") == 0)
+                snprintf(test_desc, sizeof(test_desc), "ttssrc ! fakesink");
+            else
+                snprintf(test_desc, sizeof(test_desc), "fakesrc ! mixersink");
+            void *err = NULL;
+            void *test_pipe = gst_parse_launch_(test_desc, &err);
+            if (test_pipe) {
+                can_make = 1;
+                gst_object_unref_(test_pipe);
+            }
+        }
+        if (can_make) {
+            printf("%s=found\n", elems[i]);
+        } else {
+            printf("%s=broken\n", elems[i]);
+        }
     }
     return 0;
 }
