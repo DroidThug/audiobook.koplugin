@@ -2167,7 +2167,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                                 gf:close()
                                 if engine.espeak_linker then
                                     engine._kindle_gst_play_bin = string.format(
-                                        "%s --library-path %s:/usr/lib:/lib %s",
+                                        "%s --library-path %s:/usr/lib/tts:/usr/lib:/lib %s",
                                         engine.espeak_linker, engine.espeak_lib_path, gst_play_bin)
                                 else
                                     engine._kindle_gst_play_bin = gst_play_bin
@@ -3351,7 +3351,7 @@ function TTSEngine:findAudioPlayer()
                         local gst_play_cmd = gst_play_bin
                         if self.espeak_linker then
                             gst_play_cmd = string.format(
-                                "%s --library-path %s:/usr/lib:/lib %s",
+                                "%s --library-path %s:/usr/lib/tts:/usr/lib:/lib %s",
                                 self.espeak_linker, self.espeak_lib_path, gst_play_bin)
                         end
                         self._kindle_gst_play_bin = gst_play_cmd
@@ -3409,7 +3409,7 @@ function TTSEngine:findAudioPlayer()
                         local gst_play_cmd = gst_play_bin
                         if self.espeak_linker then
                             gst_play_cmd = string.format(
-                                "%s --library-path %s:/usr/lib:/lib %s",
+                                "%s --library-path %s:/usr/lib/tts:/usr/lib:/lib %s",
                                 self.espeak_linker, self.espeak_lib_path, gst_play_bin)
                         end
                         -- Run --probe to verify GStreamer loads and mixersink exists.
@@ -4201,6 +4201,13 @@ function TTSEngine:_checkIvonaApiAvailable()
             logger.warn("TTSEngine: libIvonaEInkAPI.so.1.0 found at", p)
             return true
         end
+        -- io.open may fail on binary files on some Kindle firmware even when
+        -- the file exists (observed on KT5).  Use shell fallback.
+        local rc = os.execute("test -f '" .. p .. "' 2>/dev/null")
+        if rc == 0 or rc == true then
+            logger.warn("TTSEngine: libIvonaEInkAPI.so.1.0 found at", p, "(via test -f)")
+            return true
+        end
     end
     -- Also ask the dynamic linker if the dependency is resolvable.
     local ldd_h = io.popen("ldd /usr/lib/gstreamer-0.10/libgstttssrc.so 2>/dev/null | grep libIvonaEInkAPI")
@@ -4240,11 +4247,15 @@ function TTSEngine:_probeKindleGstPlayWav(gst_play_cmd)
     local rc = tonumber(out:match("rc=(%d+)")) or 1
     logger.dbg("TTSEngine: gst-play WAV probe rc=", rc)
 
-    -- rc 124 means timeout fired while playback was in progress; treat as
-    -- success because the pipeline did not crash on startup.
-    if rc == 0 or rc == 124 then
-        logger.warn("TTSEngine: gst-play WAV probe succeeded (rc=", rc, ")")
+    -- rc 124 means timeout fired.  On some firmwares gst-play hangs in
+    -- mixersink state change (missing audiomgrd focus or incompatible
+    -- caps).  Do NOT treat timeout as success; a hung probe leads to a
+    -- broken kindle-gst-play selection that fails on every sentence.
+    if rc == 0 then
+        logger.warn("TTSEngine: gst-play WAV probe succeeded")
         return true
+    elseif rc == 124 then
+        logger.warn("TTSEngine: gst-play WAV probe timed out (hung?)")
     end
 
     local has_plugin_error = out:match("Failed to load plugin")
