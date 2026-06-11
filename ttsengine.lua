@@ -1911,11 +1911,24 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
 
                     -- Log stderr for diagnostics
                     local log_fh = io.open(gst_log, "r")
+                    local log_text = ""
                     if log_fh then
-                        local log_text = log_fh:read("*a") or ""
+                        log_text = log_fh:read("*a") or ""
                         log_fh:close()
                         if log_text ~= "" then
                             logger.warn("TTSEngine: --ttssrc stderr:", log_text:sub(1, 500))
+                        end
+                    end
+
+                    -- KT5 firmware omits libIvonaEInkAPI.so.1.0, so ttssrc loads
+                    -- in --probe but real pipelines fail.  Mark it broken so the
+                    -- next session uses WAV playback instead.
+                    if log_text:match("libIvonaEInkAPI%.so%.1%.0") then
+                        logger.warn("TTSEngine: ttssrc requires libIvonaEInkAPI.so.1.0 which is missing; disabling ttssrc")
+                        engine._ttssrc_broken = true
+                        if engine.plugin then
+                            engine.plugin:setSetting("_ttssrc_broken", true)
+                            logger.warn("TTSEngine: persisted _ttssrc_broken=true")
                         end
                     end
 
@@ -3388,9 +3401,31 @@ function TTSEngine:findAudioPlayer()
                                 local has_audioconvert = not probe:match("audioconvert=not_found")
                                 local has_audioresample = not probe:match("audioresample=not_found")
                                 if not has_wavparse and not has_audioconvert and not has_audioresample then
-                                    logger.warn("TTSEngine: PW5 signature detected (wavparse+audioconvert+audioresample missing), skipping kindle-gst-play WAV mode")
+                                    logger.warn("TTSEngine: PW5 signature detected (wavparse+audioconvert+audioresample missing)")
                                     -- Keep the binary reference for --ttssrc fallback
                                     self._kindle_gst_play_bin = gst_play_cmd
+                                    -- Kindle Basic 11th gen (KT5) and similar newer
+                                    -- firmware ship a newer TTS engine
+                                    -- (libtts_engine.so) and omit the old
+                                    -- libIvonaEInkAPI.so.1.0 that ttssrc needs.
+                                    -- --probe still reports ttssrc=found because
+                                    -- the plugin loads lazily, but real pipelines
+                                    -- fail. Test WAV playback instead of forcing
+                                    -- a broken native TTS fallback.
+                                    if not self:_checkIvonaApiAvailable() then
+                                        logger.warn("TTSEngine: Ivona API missing on stripped GStreamer firmware, testing WAV fallback")
+                                        self._ttssrc_broken = true
+                                        if self.plugin then
+                                            self.plugin:setSetting("_ttssrc_broken", true)
+                                        end
+                                        if self:_probeKindleGstPlayWav(gst_play_cmd) then
+                                            self.audio_player_type = "kindle-gst-play"
+                                            self._no_real_audio_output = false
+                                            logger.warn("TTSEngine: Selected kindle-gst-play WAV mode on stripped firmware (ttssrc unusable)")
+                                            return "kindle-gst-play"
+                                        end
+                                        logger.warn("TTSEngine: gst-play WAV mode also failed on stripped firmware")
+                                    end
                                     -- Flag that this Kindle cannot play WAV files produced by
                                     -- external TTS backends (Piper, espeak).  Used to show a
                                     -- clearer pre-synthesis warning in main.lua.
@@ -4094,6 +4129,87 @@ function TTSEngine:_diagnoseGstPlayFailure(cmd, log_file)
         end
     end
     logger.err("TTSEngine: ===== gst-play diagnostic block end =====")
+end
+
+--- Check whether the Ivona EInk API library is available on the device.
+-- ttssrc depends on libIvonaEInkAPI.so.1.0.  Newer Kindle firmware (e.g.
+-- Kindle Basic 11th gen, KT5) ships the newer libtts_engine.so voice engine
+-- but omits the old Ivona shared library, so ttssrc loads in --probe but
+-- cannot create a real pipeline.  This helper detects that case so we can
+-- fall back to WAV playback instead of a broken native TTS path.
+function TTSEngine:_checkIvonaApiAvailable()
+    local paths = {
+        "/usr/lib/libIvonaEInkAPI.so.1.0",
+        "/lib/libIvonaEInkAPI.so.1.0",
+        "/system/lib/libIvonaEInkAPI.so.1.0",
+        "/vendor/lib/libIvonaEInkAPI.so.1.0",
+        "/mnt/base-us/lib/libIvonaEInkAPI.so.1.0",
+    }
+    for _, p in ipairs(paths) do
+        local f = io.open(p, "r")
+        if f then
+            f:close()
+            logger.warn("TTSEngine: libIvonaEInkAPI.so.1.0 found at", p)
+            return true
+        end
+    end
+    -- Also ask the dynamic linker if the dependency is resolvable.
+    local ldd_h = io.popen("ldd /usr/lib/gstreamer-0.10/libgstttssrc.so 2>/dev/null | grep libIvonaEInkAPI")
+    if ldd_h then
+        local out = ldd_h:read("*a") or ""
+        ldd_h:close()
+        if out:find("=>") and not out:find("not found") then
+            logger.warn("TTSEngine: libIvonaEInkAPI.so.1.0 resolved by ldd")
+            return true
+        end
+    end
+    logger.warn("TTSEngine: libIvonaEInkAPI.so.1.0 not found; ttssrc likely broken")
+    return false
+end
+
+--- Probe whether the bundled gst-play can actually play a WAV file.
+-- Generates a short silence WAV and runs it through gst-play with a timeout.
+-- This is needed because --probe only reports element availability; on KT5
+-- mixersink exists but ttssrc is broken, so we want to know if WAV playback
+-- through mixersink works before selecting kindle-gst-play.
+function TTSEngine:_probeKindleGstPlayWav(gst_play_cmd)
+    local test_wav = "/tmp/.audiobook_gst_play_wav_test.wav"
+    local ok = WavUtils.generateSilence(test_wav, 200, 22050)
+    if not ok then
+        logger.warn("TTSEngine: could not generate test WAV for gst-play probe")
+        return false
+    end
+
+    local probe_cmd = string.format(
+        "timeout 3 %s '%s' 2>&1; echo rc=$?",
+        gst_play_cmd, test_wav)
+    local h = io.popen(probe_cmd)
+    local out = h and h:read("*a") or ""
+    if h then h:close() end
+    os.remove(test_wav)
+
+    local rc = tonumber(out:match("rc=(%d+)")) or 1
+    logger.dbg("TTSEngine: gst-play WAV probe rc=", rc)
+
+    -- rc 124 means timeout fired while playback was in progress; treat as
+    -- success because the pipeline did not crash on startup.
+    if rc == 0 or rc == 124 then
+        logger.warn("TTSEngine: gst-play WAV probe succeeded (rc=", rc, ")")
+        return true
+    end
+
+    local has_plugin_error = out:match("Failed to load plugin")
+        or out:match("undefined symbol")
+        or out:match("GStreamer%-WARNING")
+        or out:match("pipeline creation failed")
+    if has_plugin_error then
+        logger.warn("TTSEngine: gst-play WAV probe found plugin/symbol error:",
+            out:gsub("\n", " "))
+    else
+        logger.warn("TTSEngine: gst-play WAV probe failed, rc=", rc,
+            "out=", out:gsub("\n", " "))
+    end
+    return false
 end
 
 --[[--
