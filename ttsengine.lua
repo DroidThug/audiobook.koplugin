@@ -2723,14 +2723,18 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         -- the bundled binary only when the system pipeline cannot launch.
         local pid = nil
         if self:commandExists("gst-launch-0.10") then
+            -- Keep the A2DP datapath up across sentence boundaries so the
+            -- next stream starts instantly instead of losing its opening
+            -- to the datapath resume.
+            self:_ensureKindleKeepalive()
             local sys_pid, raw_file = self:_trySystemGstLaunch(file_path)
             if sys_pid then
                 pid = sys_pid
                 self._gst_system_raw_file = raw_file
-                -- The raw stream carries 0.5 s of lead-in silence (see
+                -- The raw stream carries 0.25 s of lead-in silence (see
                 -- _trySystemGstLaunch), so word highlighting must start
                 -- correspondingly later.
-                self.playback_latency_ms = 800
+                self.playback_latency_ms = 550
                 logger.warn("TTSEngine: kindle-gst-play using system gst-launch, PID=", pid)
             end
         end
@@ -4345,6 +4349,38 @@ function TTSEngine:_probeKindleGstPlayWav(gst_play_cmd)
     return false
 end
 
+--- Keep the Kindle A2DP datapath alive between sentences.
+-- audiomgrd suspends the BT datapath whenever the mixer goes idle, and the
+-- resume after the next sentence attaches takes a randomly-varying few
+-- hundred ms that swallows the start of the utterance (silence padding
+-- alone proved unreliable).  Parking an infinite silence stream
+-- (filesrc /dev/zero ! mixersink) in the mixer for the whole reading
+-- session keeps the datapath up so sentence streams start instantly.
+-- Verified on PW5: zero suspend_audio_datapath events while running.
+function TTSEngine:_ensureKindleKeepalive()
+    if self._keepalive_pid then
+        local f = io.open("/proc/" .. self._keepalive_pid .. "/status", "r")
+        if f then f:close() return end
+        self._keepalive_pid = nil
+    end
+    local h = io.popen(
+        "gst-launch-0.10 filesrc location=/dev/zero"
+        .. " ! 'audio/x-raw-int,rate=22050,channels=1,width=16,depth=16,signed=true,endianness=1234'"
+        .. " ! mixersink stream-type=Music sync=true >/dev/null 2>&1 & echo $!")
+    local pid_str = h and h:read("*a") or ""
+    if h then h:close() end
+    self._keepalive_pid = tonumber(pid_str:match("(%d+)"))
+    logger.warn("TTSEngine: kindle A2DP keepalive started, PID=", self._keepalive_pid)
+end
+
+function TTSEngine:_stopKindleKeepalive()
+    if self._keepalive_pid then
+        os.execute("kill " .. self._keepalive_pid .. " 2>/dev/null")
+        self._keepalive_pid = nil
+        logger.warn("TTSEngine: kindle A2DP keepalive stopped")
+    end
+end
+
 --- Convert a WAV file to raw PCM and launch system gst-launch-0.10.
 -- Some Kindle firmwares (e.g. KT5 5.17.1.0.3) have a working system
 -- gst-launch-0.10 but the bundled gst-play helper hangs.  This fallback
@@ -4404,12 +4440,11 @@ function TTSEngine:_trySystemGstLaunch(wav_file)
 
     -- Generate raw PCM file by stripping header
     local raw_file = "/tmp/.abgst_system_" .. os.time() .. ".raw"
-    -- Build the raw PCM file as: 0.5 s silence + payload + 1 s silence.
-    -- Lead-in: audiomgrd suspends the A2DP datapath between utterances and
-    -- resume takes a few hundred ms after the stream attaches, swallowing
-    -- the start of every sentence.  Tail: at EOS the pipeline tears down
-    -- while audiomgrd's shared-memory ring (~0.9 s deep at 22050 Hz) plus
-    -- the BT chain still hold the end of the audio.
+    -- Build the raw PCM file as: 0.25 s silence + payload + 0.3 s silence.
+    -- The A2DP keepalive stream (_ensureKindleKeepalive) keeps the mixer
+    -- and BT datapath running between sentences, so these pads only need
+    -- to cover scheduling jitter, not the full datapath resume (~0.5 s)
+    -- and ring/BT drain (~1 s) they previously absorbed.
     -- (bs=44 skip=1 skips exactly the 44-byte header in one block-sized
     -- step; bs=1 skip=44 would copy byte-by-byte, ~1000x slower here.)
     local pad_bytes = rate * channels * math.floor(bits / 8)
@@ -4417,9 +4452,9 @@ function TTSEngine:_trySystemGstLaunch(wav_file)
         "( dd if=/dev/zero bs=%d count=1 2>/dev/null;"
         .. " dd if='%s' bs=44 skip=1 2>/dev/null;"
         .. " dd if=/dev/zero bs=%d count=1 2>/dev/null ) > '%s'",
-        math.floor(pad_bytes / 2),
+        math.floor(pad_bytes / 4),
         wav_file:gsub("'", "'\\''"),
-        pad_bytes,
+        math.floor(pad_bytes / 3),
         raw_file:gsub("'", "'\\''"))
     local dd_rc = os.execute(dd_cmd)
     if dd_rc ~= 0 and dd_rc ~= true then
@@ -5306,6 +5341,9 @@ function TTSEngine:stop()
     -- updateTiming) exit immediately regardless of what state we were in.
     logger.dbg("TTSEngine: stop(), is_speaking=", self.is_speaking,
         "persistent=", self._persistent_pipeline)
+    -- End of the reading session: stop streaming keepalive silence so the
+    -- BT datapath can suspend and save battery.
+    self:_stopKindleKeepalive()
     self.is_speaking = false
     self.is_paused = false
     self.play_generation = (self.play_generation or 0) + 1
