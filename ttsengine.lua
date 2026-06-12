@@ -4412,6 +4412,15 @@ function TTSEngine:_trySystemGstLaunch(wav_file)
         return nil, nil
     end
 
+    -- Append 1 second of silence.  When gst-launch reaches EOS it tears the
+    -- pipeline down immediately, but audiomgrd's shared-memory ring (~0.9 s
+    -- deep at 22050 Hz) plus the BT A2DP chain still hold the tail of the
+    -- audio, which gets dropped — the end of every utterance was cut off.
+    local pad_bytes = rate * channels * math.floor(bits / 8)
+    os.execute(string.format(
+        "dd if=/dev/zero bs=%d count=1 >> '%s' 2>/dev/null",
+        pad_bytes, raw_file:gsub("'", "'\\''")))
+
     -- Build gst-launch-0.10 command with proper caps
     local caps = string.format(
         "audio/x-raw-int,endianness=1234,signed=true,width=%d,depth=%d,rate=%d,channels=%d",

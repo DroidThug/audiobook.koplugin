@@ -152,7 +152,31 @@ function MediaEngine:detectBackend()
         return self.backend, self.backend_cmd
     end
 
-    -- 3) ffmpeg pipe -- decodes any format ffmpeg supports (m4b, aac, ogg,
+    -- 3) Kindle backends FIRST on Kindle hardware: there is no ALSA and no
+    -- aplay, so the ffmpeg-pipe backend (which pipes WAV to aplay) can
+    -- never produce sound here; audio must go through Amazon's
+    -- mixersink → audiomgrd → BT pipeline.  The kindle-gst-play backend
+    -- decodes non-WAV formats by streaming bundled-ffmpeg output into the
+    -- system GStreamer (see _playSystemGstLaunch).
+    if self:_isKindle() then
+        local gst_play_detected = self:_detectKindleGstPlay()
+        if gst_play_detected then
+            self.backend = self.BACKENDS.KINDLE_GST_PLAY
+            self.backend_cmd = self._gst_play_cmd
+            logger.warn("MediaEngine: selected kindle-gst-play backend")
+            return self.backend, self.backend_cmd
+        end
+
+        local lipc_detected = self:_detectKindleLipc()
+        if lipc_detected then
+            self.backend = self.BACKENDS.KINDLE_LIPC
+            self.backend_cmd = "lipc"
+            logger.warn("MediaEngine: selected kindle-lipc backend")
+            return self.backend, self.backend_cmd
+        end
+    end
+
+    -- 4) ffmpeg pipe -- decodes any format ffmpeg supports (m4b, aac, ogg,
     -- flac, etc.) and pipes raw WAV to aplay.  Preferred over gst-play on
     -- devices where gstreamer lacks AAC decoders (common on Kobo).
     local ffmpeg_cmd = self:_findFfmpeg()
@@ -178,35 +202,6 @@ function MediaEngine:detectBackend()
         self.backend_cmd = "gst-launch-1.0"
         logger.warn("MediaEngine: selected gst-launch-1.0 backend")
         return self.backend, self.backend_cmd
-    end
-
-    -- 5) Kindle backends: LIPC playermgr (Amazon's audio service) or
-    -- bundled kindle/gst-play (raw PCM to mixersink → audiomgrd → BT).
-    -- Kindle devices have no standard audio tools (no aplay, no mpv, etc.)
-    -- and audio must go through Amazon's proprietary pipeline.
-    -- These are checked before aplay/wav-play because they can handle
-    -- any file format (playermgr uses GStreamer internally) and support
-    -- seeking via the lipc-get-prop PlayStatus mechanism.
-    if self:_isKindle() then
-        -- Try bundled gst-play first (most reliable on PW5/PW6/Colorsoft
-        -- where GStreamer is stripped and lacks wavparse).
-        local gst_play_detected = self:_detectKindleGstPlay()
-        if gst_play_detected then
-            self.backend = self.BACKENDS.KINDLE_GST_PLAY
-            self.backend_cmd = self._gst_play_cmd
-            logger.warn("MediaEngine: selected kindle-gst-play backend")
-            return self.backend, self.backend_cmd
-        end
-
-        -- Try LIPC playermgr (may work for non-WAV formats like MP3
-        -- which playermgr can decode natively via decodebin).
-        local lipc_detected = self:_detectKindleLipc()
-        if lipc_detected then
-            self.backend = self.BACKENDS.KINDLE_LIPC
-            self.backend_cmd = "lipc"
-            logger.warn("MediaEngine: selected kindle-lipc backend")
-            return self.backend, self.backend_cmd
-        end
     end
 
     -- 6) aplay -- WAV only, no seeking
@@ -974,7 +969,9 @@ function MediaEngine:_playSystemGstLaunch(gen)
     fh:close()
     if not header or #header < 44
         or header:sub(1, 4) ~= "RIFF" or header:sub(9, 12) ~= "WAVE" then
-        return nil
+        -- Not a plain PCM WAV (mp3/m4b/etc.): stream bundled-ffmpeg output
+        -- straight into the same mixersink pipeline.
+        return self:_playSystemGstLaunchFfmpeg(gen)
     end
     local function le_u16(off)
         return string.byte(header, off) + string.byte(header, off + 1) * 256
@@ -1010,6 +1007,12 @@ function MediaEngine:_playSystemGstLaunch(gen)
         os.remove(raw_file)
         return nil
     end
+    -- Append 1 second of silence: at EOS the pipeline tears down while
+    -- audiomgrd's ring buffer and the BT chain still hold the audio tail,
+    -- cutting off the end of the clip.
+    os.execute(string.format(
+        "dd if=/dev/zero bs=%d count=1 >> '%s' 2>/dev/null",
+        rate * frame_bytes, raw_file:gsub("'", "'\\''")))
     self._system_raw_file = raw_file
 
     -- Sweep shm stream files orphaned by pipelines killed mid-play
@@ -1042,6 +1045,73 @@ function MediaEngine:_playSystemGstLaunch(gen)
             pf:close()
             self.audio_pid = tonumber(pid_str)
             logger.warn("MediaEngine: system gst-launch PID =", self.audio_pid)
+        end
+        os.remove(pid_file)
+        self:_startPositionPoller(gen)
+        self:_startCompletionWatcher(gen)
+    end)
+
+    return true
+end
+
+--[[--
+Play a non-WAV file (mp3/m4b/aac/...) on Kindle by streaming bundled-ffmpeg
+output into the system GStreamer:
+
+    ffmpeg -ss <seek> -i file -f s16le -ar 22050 -ac 1 -af apad=pad_dur=1 -
+      | gst-launch-0.10 fdsrc ! caps ! mixersink stream-type=Music sync=true
+
+Verified on PW5 against Storyteller EPUB audio.  No temp files, instant
+start, seeking via ffmpeg -ss.  22050/mono is deliberate: audiomgrd's
+output record is mono and resamples to 48 kHz anyway, and the lower input
+rate keeps the decode cheap on this CPU.  apad appends the 1 s tail that
+would otherwise be swallowed by the ring/BT chain at EOS.
+
+@treturn boolean|nil true on launch, nil when ffmpeg or gst-launch are
+    unavailable (caller falls back to the bundled gst-play binary)
+--]]
+function MediaEngine:_playSystemGstLaunchFfmpeg(gen)
+    local ffmpeg = self:_findFfmpeg()
+    if not ffmpeg or not self:commandExists("gst-launch-0.10") then
+        return nil
+    end
+
+    os.execute("for f in /dev/shm/mstream*; do p=${f#/dev/shm/mstream}; p=${p%%_*};"
+        .. " [ -d /proc/$p ] || rm -f \"$f\"; done 2>/dev/null")
+    os.execute("lipc-set-prop com.lab126.audiomgrd setFocus 'Music' 2>/dev/null")
+
+    local seek = self._seek_offset or 0
+    local pipeline = string.format(
+        "%s -loglevel error -ss %.3f -i '%s' -f s16le -ar 22050 -ac 1"
+        .. " -af apad=pad_dur=1 - 2>/dev/null"
+        .. " | gst-launch-0.10 fdsrc"
+        .. " ! 'audio/x-raw-int,rate=22050,channels=1,width=16,depth=16,signed=true,endianness=1234'"
+        .. " ! mixersink stream-type=Music sync=true",
+        ffmpeg:gsub("'", "'\\''"), seek,
+        self.current_path:gsub("'", "'\\''"))
+    logger.warn("MediaEngine: system gst-launch (ffmpeg stream) gen=", gen,
+        "seek_offset=", seek)
+
+    local pid_file = self:_getTempDir() .. "/kindle-gst-pid-" .. gen
+    os.remove(pid_file)
+    -- setsid makes the wrapper shell a process-group leader so that
+    -- stop()'s kill(-pid) takes down ffmpeg AND gst-launch; without it
+    -- killing the shell would orphan the pipeline and audio would keep
+    -- playing.
+    local setsid = self:commandExists("setsid") and "setsid " or ""
+    local wrapper = string.format(
+        "%ssh -c 'echo $$ > %s; %s' >/dev/null 2>&1 &",
+        setsid, pid_file, pipeline:gsub("'", "'\\''"))
+    os.execute(wrapper)
+
+    UIManager:scheduleIn(0.3, function()
+        if self.play_generation ~= gen then return end
+        local pf = io.open(pid_file, "r")
+        if pf then
+            local pid_str = pf:read("*l")
+            pf:close()
+            self.audio_pid = tonumber(pid_str)
+            logger.warn("MediaEngine: ffmpeg-stream PID =", self.audio_pid)
         end
         os.remove(pid_file)
         self:_startPositionPoller(gen)

@@ -61,9 +61,23 @@ function EpubMediaOverlay:_simpleHash(str)
 end
 
 function EpubMediaOverlay:_parseTimeToSeconds(time_str)
-    -- SMIL time formats: "hh:mm:ss.ms", "mm:ss.ms", or "ss.ms"
+    -- SMIL clock values: "hh:mm:ss.ms", "mm:ss.ms", "ss.ms", or timecounts
+    -- with a metric suffix: "25.180s", "300ms", "2.5min", "1.5h"
+    -- (Storyteller emits the "...s" form for clipBegin/clipEnd).
     if not time_str then return 0 end
     time_str = time_str:gsub("^%s*", ""):gsub("%s*$", "")
+
+    -- Timecount with metric suffix
+    local num, suffix = time_str:match("^([%d%.]+)(m?s?i?n?h?)$")
+    if num and suffix and suffix ~= "" then
+        local n = tonumber(num)
+        if n then
+            if suffix == "s" then return n end
+            if suffix == "ms" then return n / 1000 end
+            if suffix == "min" then return n * 60 end
+            if suffix == "h" then return n * 3600 end
+        end
+    end
 
     -- ss.ms format
     local secs = tonumber(time_str:match("^([%d%.]+)$"))
@@ -134,8 +148,12 @@ function EpubMediaOverlay:_parseOpfManifest(opf_xml)
         return nil
     end
 
-    -- Parse each item in the manifest
-    for item_str in manifest_block:gmatch("<item([^/>]-)/>") do
+    -- Parse each item in the manifest.
+    -- The character class must allow '/' inside the capture: hrefs are
+    -- paths ("text/part0007.html", "MediaOverlays/part0007.smil"), and a
+    -- class of [^/>] silently dropped every such item, leaving the
+    -- overlay map empty ("no media overlays found") on real books.
+    for item_str in manifest_block:gmatch("<item([^>]-)/>") do
         local id = item_str:match('id%s*=%s*"([^"]+)"')
         local href = item_str:match('href%s*=%s*"([^"]+)"')
         local media_type = item_str:match('media%-type%s*=%s*"([^"]+)"')
@@ -186,14 +204,22 @@ function EpubMediaOverlay:_parseSmil(smil_xml, smil_base_path)
     --     </body>
     --   </smil>
     local timing_data = {}
-    local audio_base = smil_base_path:match("^(.*)/") or ""
+    -- smil_base_path is already the SMIL file's directory (the caller
+    -- strips the filename); taking another dirname here emptied the base
+    -- and broke every relative audio src.
+    local audio_base = smil_base_path or ""
 
-    -- Find all <par> elements (simplified: look for <par> ... </par> blocks)
-    for par_block in smil_xml:gmatch("<par([^>]*)>(.-)</par>") do
-        -- Extract text src
-        local text_src = par_block:match('src%s*=%s*"([^"]+)"')
-        -- Extract audio attributes
-        local audio_block = par_block:match("<audio([^/>]-)/>")
+    -- Find all <par> elements.  gmatch with two captures yields two loop
+    -- values; the old single-variable loop bound only the attribute
+    -- capture and threw away the body that holds <text>/<audio>.
+    for _par_attrs, par_block in smil_xml:gmatch("<par([^>]*)>(.-)</par>") do
+        -- Extract text src (match the <text> element specifically; a bare
+        -- src= match would also hit <audio src=...>)
+        local text_src = par_block:match('<text[^>]-src%s*=%s*"([^"]+)"')
+            or par_block:match('src%s*=%s*"([^"]+)"')
+        -- Extract audio attributes ('/' must stay allowed in the capture:
+        -- src paths contain slashes)
+        local audio_block = par_block:match("<audio([^>]-)/>")
         if not audio_block then
             audio_block = par_block:match("<audio(.-)</audio>")
         end
@@ -209,6 +235,16 @@ function EpubMediaOverlay:_parseSmil(smil_xml, smil_base_path)
                 if audio_src:sub(1, 1) ~= "/" and audio_base ~= "" then
                     resolved_audio = audio_base .. "/" .. audio_src
                 end
+                -- Collapse "dir/../" segments: SMIL audio srcs are written
+                -- relative to the SMIL dir ("../Audio/x.mp3"), but zip
+                -- member names ("Audio/x.mp3") contain no dot-dots, so
+                -- unzip would find nothing.
+                local prev
+                repeat
+                    prev = resolved_audio
+                    resolved_audio = resolved_audio:gsub("[^/]+/%.%./", "", 1)
+                until resolved_audio == prev
+                resolved_audio = resolved_audio:gsub("^%./", "")
 
                 local start_time = self:_parseTimeToSeconds(clip_begin)
                 local end_time = self:_parseTimeToSeconds(clip_end)
@@ -232,6 +268,17 @@ end
 -- ---------------------------------------------------------------------------
 
 function EpubMediaOverlay:_extractAudioFile(epub_path, internal_path, cache_dir)
+    -- unzip -d preserves directory structure, so the extracted file lives
+    -- at cache_dir/internal_path.  Check THAT path first: this function is
+    -- called once per SMIL par entry (thousands of times per book, with a
+    -- handful of distinct audio files), and the old check against only the
+    -- flattened name made every single entry re-extract its multi-MB audio
+    -- file from the zip.
+    local extracted = cache_dir .. "/" .. internal_path
+    if self:_fileExists(extracted) then
+        return extracted
+    end
+
     local cache_path = cache_dir .. "/" .. internal_path:gsub("/", "_")
     if self:_fileExists(cache_path) then
         return cache_path

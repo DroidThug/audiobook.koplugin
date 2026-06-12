@@ -326,6 +326,21 @@ static int do_play(const char *wav_path)
         total += n;
     }
     fclose(wf);
+
+    /* Append 1 second of silence: at EOS the pipeline tears down while
+     * audiomgrd's shared-memory ring (~0.9 s deep) and the BT A2DP chain
+     * still hold the tail of the audio, which would be cut off. */
+    {
+        uint32_t pad = rate * channels * (bits / 8);
+        char zeros[4096];
+        memset(zeros, 0, sizeof(zeros));
+        while (pad > 0) {
+            size_t chunk = pad < sizeof(zeros) ? pad : sizeof(zeros);
+            if (fwrite(zeros, 1, chunk, rf) != chunk)
+                break;
+            pad -= chunk;
+        }
+    }
     fclose(rf);
 
     if (total == 0) {
