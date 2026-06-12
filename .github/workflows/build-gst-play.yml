@@ -1,0 +1,36 @@
+name: build gst-play
+
+on:
+  push:
+    paths:
+      - 'kindle/gst-play.c'
+      - 'kindle/glibc_compat.map'
+      - '.github/workflows/build-gst-play.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ARM cross toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-linux-gnueabihf
+
+      - name: Build gst-play
+        run: |
+          arm-linux-gnueabihf-gcc -O2 -Wall \
+            -Wl,--version-script=kindle/glibc_compat.map \
+            -o kindle/gst-play \
+            kindle/gst-play.c \
+            -ldl
+          file kindle/gst-play
+          ls -lh kindle/gst-play
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gst-play-armv7l
+          path: kindle/gst-play
