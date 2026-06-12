@@ -484,7 +484,7 @@ static int do_ttssrc(const char *text)
         snprintf(desc, sizeof(desc),
             "ttssrc textsource=\"%s\" ! "
             "audio/x-raw-int,"
-            "rate=(int)24000,"
+            "rate=(int)22050,"
             "channels=(int)1,"
             "width=(int)16,"
             "depth=(int)16,"
@@ -496,7 +496,7 @@ static int do_ttssrc(const char *text)
             "ttssrc textsource=\"%s\" ! "
             "audio/x-raw,"
             "format=(string)S16LE,"
-            "rate=(int)24000,"
+            "rate=(int)22050,"
             "channels=(int)1,"
             "layout=(string)interleaved"
             " ! mixersink",
