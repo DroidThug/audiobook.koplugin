@@ -356,6 +356,33 @@ function Audiobook:addToMainMenu(menu_items)
                 end,
             },
             {
+                text_func = function()
+                    local off = self:getSetting("smil_sync_offset_ms", 0)
+                    return T(_("Overlay sync offset: %1 s"), string.format("%+.1f", off / 1000))
+                end,
+                keep_menu_open = true,
+                callback = function(touchmenu_instance)
+                    local SpinWidget = require("ui/widget/spinwidget")
+                    local cur = self:getSetting("smil_sync_offset_ms", 0)
+                    UIManager:show(SpinWidget:new{
+                        title_text = _("Overlay sync offset"),
+                        info_text = _("Positive values delay the highlight (use when the highlight runs ahead of the narration); negative values advance it."),
+                        value = cur / 1000,
+                        value_min = -60,
+                        value_max = 60,
+                        value_step = 0.5,
+                        value_hold_step = 5,
+                        precision = "%.1f",
+                        ok_text = _("Set"),
+                        callback = function(spin)
+                            self:setSetting("smil_sync_offset_ms", math.floor(spin.value * 1000))
+                            if touchmenu_instance then touchmenu_instance:updateItems() end
+                        end,
+                    })
+                end,
+                help_text = _("Shifts EPUB Media Overlay sentence highlighting relative to the audio. Some audiobooks (e.g. with publisher intros) have timing tables offset from the embedded audio."),
+            },
+            {
                 text = _("Open audiobook..."),
                 enabled_func = function()
                     return (self._init_ok and self.media_sync ~= nil) or false
@@ -1002,6 +1029,12 @@ function Audiobook:_startSmilPlayback(doc_path)
         end
     end
 
+    pcall(function()
+        if self:getSetting("bt_media_control", true) and BtMediaControl then
+            BtMediaControl.start(self)
+        end
+    end)
+
     self._smil_by_file = by_file
     local first = start_file or files[1]
     local started = self.media_sync:start(first, by_file[first].timing,
@@ -1119,6 +1152,11 @@ function Audiobook:_playAudioFile(file_path, playlist_files)
         local slot = self._smil_by_file[file_path]
         self.media_sync:start(file_path, slot.timing, slot.chapters, nil,
             playlist_files or self.media_sync.playlist_files, file_path)
+        pcall(function()
+            if self:getSetting("bt_media_control", true) and BtMediaControl then
+                BtMediaControl.start(self)
+            end
+        end)
         return
     end
 
