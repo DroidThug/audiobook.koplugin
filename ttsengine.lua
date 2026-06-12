@@ -2727,6 +2727,10 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             if sys_pid then
                 pid = sys_pid
                 self._gst_system_raw_file = raw_file
+                -- The raw stream carries 0.5 s of lead-in silence (see
+                -- _trySystemGstLaunch), so word highlighting must start
+                -- correspondingly later.
+                self.playback_latency_ms = 800
                 logger.warn("TTSEngine: kindle-gst-play using system gst-launch, PID=", pid)
             end
         end
@@ -4400,26 +4404,29 @@ function TTSEngine:_trySystemGstLaunch(wav_file)
 
     -- Generate raw PCM file by stripping header
     local raw_file = "/tmp/.abgst_system_" .. os.time() .. ".raw"
-    -- bs=44 skip=1 skips exactly the 44-byte header in one block-sized step;
-    -- bs=1 skip=44 would copy byte-by-byte (~1000x slower on this CPU).
+    -- Build the raw PCM file as: 0.5 s silence + payload + 1 s silence.
+    -- Lead-in: audiomgrd suspends the A2DP datapath between utterances and
+    -- resume takes a few hundred ms after the stream attaches, swallowing
+    -- the start of every sentence.  Tail: at EOS the pipeline tears down
+    -- while audiomgrd's shared-memory ring (~0.9 s deep at 22050 Hz) plus
+    -- the BT chain still hold the end of the audio.
+    -- (bs=44 skip=1 skips exactly the 44-byte header in one block-sized
+    -- step; bs=1 skip=44 would copy byte-by-byte, ~1000x slower here.)
+    local pad_bytes = rate * channels * math.floor(bits / 8)
     local dd_cmd = string.format(
-        "dd if='%s' of='%s' bs=44 skip=1 2>/dev/null",
-        wav_file:gsub("'", "'\\''"), raw_file:gsub("'", "'\\''"))
+        "( dd if=/dev/zero bs=%d count=1 2>/dev/null;"
+        .. " dd if='%s' bs=44 skip=1 2>/dev/null;"
+        .. " dd if=/dev/zero bs=%d count=1 2>/dev/null ) > '%s'",
+        math.floor(pad_bytes / 2),
+        wav_file:gsub("'", "'\\''"),
+        pad_bytes,
+        raw_file:gsub("'", "'\\''"))
     local dd_rc = os.execute(dd_cmd)
     if dd_rc ~= 0 and dd_rc ~= true then
         logger.warn("TTSEngine: dd failed to strip WAV header, rc=", dd_rc)
         os.remove(raw_file)
         return nil, nil
     end
-
-    -- Append 1 second of silence.  When gst-launch reaches EOS it tears the
-    -- pipeline down immediately, but audiomgrd's shared-memory ring (~0.9 s
-    -- deep at 22050 Hz) plus the BT A2DP chain still hold the tail of the
-    -- audio, which gets dropped — the end of every utterance was cut off.
-    local pad_bytes = rate * channels * math.floor(bits / 8)
-    os.execute(string.format(
-        "dd if=/dev/zero bs=%d count=1 >> '%s' 2>/dev/null",
-        pad_bytes, raw_file:gsub("'", "'\\''")))
 
     -- Build gst-launch-0.10 command with proper caps
     local caps = string.format(
