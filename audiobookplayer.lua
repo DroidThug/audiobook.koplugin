@@ -467,11 +467,57 @@ function AudiobookPlayer:setupUI()
         self._mini_time,
     }
 
+    -- Read-along: live sync-offset nudge buttons.  The sync loop reads the
+    -- setting every tick, so each press shifts the highlight immediately;
+    -- the new value flashes in the mini time display until the next
+    -- regular time update overwrites it.
+    local nudge_group = {}
+    if self.on_sync_nudge then
+        local function nudge(delta_ms)
+            local v = self.on_sync_nudge(delta_ms)
+            if v then
+                self._mini_time:setText(string.format("sync %+.1f s", v / 1000))
+                UIManager:setDirty(self, function()
+                    return "ui", self._minimized and self.dimen or nil
+                end)
+            end
+        end
+        self._mini_sync_minus = Button:new{
+            text = "−½",
+            width = mini_btn_size,
+            height = mini_btn_size,
+            text_font_size = 13,
+            callback = function() nudge(-500) end,
+            bordersize = 0,
+            show_parent = self,
+        }
+        self._mini_sync_plus = Button:new{
+            text = "+½",
+            width = mini_btn_size,
+            height = mini_btn_size,
+            text_font_size = 13,
+            callback = function() nudge(500) end,
+            bordersize = 0,
+            show_parent = self,
+        }
+        center_max_width = center_max_width - (mini_btn_size + spacing) * 2
+        nudge_group = {
+            self._mini_sync_minus,
+            HorizontalSpan:new{ width = spacing },
+            self._mini_sync_plus,
+            HorizontalSpan:new{ width = spacing },
+        }
+    end
+
     local mini_row = HorizontalGroup:new{
         align = "center",
         HorizontalSpan:new{ width = spacing },
         self._mini_play_pause,
         HorizontalSpan:new{ width = spacing },
+        nudge_group[1] or HorizontalSpan:new{ width = 0 },
+        nudge_group[2] or HorizontalSpan:new{ width = 0 },
+        nudge_group[3] or HorizontalSpan:new{ width = 0 },
+        nudge_group[4] or HorizontalSpan:new{ width = 0 },
         CenterContainer:new{
             dimen = Geom:new{ w = center_max_width, h = self._mini_height },
             mini_center,

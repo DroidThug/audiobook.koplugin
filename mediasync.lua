@@ -514,9 +514,26 @@ function MediaSync:_updateHighlightAtTime(pos)
                 start_pos = sentence.start_pos or 0,
                 end_pos = sentence.end_pos or #sentence.text,
             }
+            local hl_ok = false
             pcall(function()
-                self.highlight_manager:highlightSentence(sent_obj, {sentences = {sent_obj}})
+                hl_ok = self.highlight_manager:highlightSentence(sent_obj, {sentences = {sent_obj}})
             end)
+            -- Read-along page advancement: narration flows forward, so when
+            -- the next sequential sentence is not on the visible page it is
+            -- on the following one -- turn and retry once.  Only for
+            -- sequential advancement (not seeks), so a failed text match
+            -- can never page away from where the user is reading.
+            if not hl_ok and self.overlay_mode
+                and sent_idx == (self._last_hl_idx or 0) + 1 then
+                local ui = self.plugin and self.plugin.ui
+                if ui then
+                    pcall(function()
+                        ui:handleEvent(Event:new("GotoViewRel", 1))
+                        self.highlight_manager:highlightSentence(sent_obj, {sentences = {sent_obj}})
+                    end)
+                end
+            end
+            self._last_hl_idx = sent_idx
         end
     end
 
@@ -748,6 +765,13 @@ function MediaSync:showPlaybackBar()
         -- Read-along (EPUB overlay) mode: start minimized so the book page
         -- stays visible; highlighting and page-follow are the primary UI.
         start_minimized = self.overlay_mode or nil,
+        on_sync_nudge = self.overlay_mode and function(delta_ms)
+            local p = self.plugin
+            if not (p and p.getSetting) then return nil end
+            local v = (p:getSetting("smil_sync_offset_ms", 0) or 0) + delta_ms
+            p:setSetting("smil_sync_offset_ms", v)
+            return v
+        end or nil,
         show_shuffle = self.playlist_files and #self.playlist_files > 0,
         shuffle_active = self.is_shuffled,
         show_loop = self.playlist_files and #self.playlist_files > 0,
