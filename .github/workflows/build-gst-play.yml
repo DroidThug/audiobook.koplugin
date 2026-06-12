@@ -22,8 +22,8 @@ jobs:
 
       - name: Build gst-play
         run: |
-          arm-linux-gnueabihf-gcc -O2 -Wall \
-            -Wl,--version-script=kindle/glibc_compat.map \
+          arm-linux-gnueabihf-gcc -O2 -Wall -Wextra -Wno-unused-parameter \
+            -Wl,-E -Wl,--version-script=kindle/glibc_compat.map \
             -o kindle/gst-play \
             kindle/gst-play.c \
             -ldl
