@@ -454,7 +454,10 @@ function MediaSync:_startSyncLoop(gen)
             return
         end
 
-        self:_updateHighlightAtTime(pos)
+        -- Compensate for audio in flight (pads + mixer ring + BT chain):
+        -- the listener hears position pos - latency.
+        local lat = (self.media_engine and self.media_engine.position_latency_s) or 0
+        self:_updateHighlightAtTime(math.max(0, pos - lat))
 
         -- Check for sentence/chapter boundary advancement
         self:_checkAutoAdvance(pos)

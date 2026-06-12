@@ -1075,6 +1075,10 @@ function MediaEngine:_playSystemGstLaunch(gen)
         return nil
     end
     self._system_raw_file = raw_file
+    -- What the user hears lags wall-clock position by the lead-in pad plus
+    -- the mixer ring (~0.9 s) and BT chain (~0.3 s); the sync loop
+    -- subtracts this so highlights match the audible audio.
+    self.position_latency_s = 1.7
 
     -- Sweep shm stream files orphaned by pipelines killed mid-play
     -- (pause/seek), then take audio focus before the stream attaches.
@@ -1153,6 +1157,7 @@ function MediaEngine:_playSystemGstLaunchFfmpeg(gen)
         .. " ! mixersink stream-type=Music sync=true",
         ffmpeg:gsub("'", "'\\''"), seek,
         self.current_path:gsub("'", "'\\''"))
+    self.position_latency_s = 1.7  -- adelay 0.5 + ring/BT, see above
     logger.warn("MediaEngine: system gst-launch (ffmpeg stream) gen=", gen,
         "seek_offset=", seek)
 
