@@ -84,52 +84,12 @@ function BtUI.buildBluetoothMenu(plugin)
         return menu
     end
 
-    -- On Kindle, BT is managed by the Amazon firmware.
-    -- We can toggle power via lipc but cannot scan/pair/connect.
-    if bt:getStackType() == "kindle" then
-        local powered = bt:isPowered()
-        table.insert(menu, {
-            text = powered and _("Turn Bluetooth off") or _("Turn Bluetooth on"),
-            callback = function()
-                if powered then
-                    bt:powerOff()
-                    UIManager:show(InfoMessage:new{
-                        text = _("Bluetooth turned off."),
-                        timeout = 2,
-                    })
-                else
-                    bt:powerOn()
-                    UIManager:show(InfoMessage:new{
-                        text = bt:isPowered()
-                            and _("Bluetooth is on.\n\nPair your audio device through Kindle Settings.")
-                            or _("Could not turn Bluetooth on.\n\nTry enabling it from Kindle Settings."),
-                        timeout = 4,
-                    })
-                end
-            end,
-        })
-        table.insert(menu, {
-            text = _("How to connect Bluetooth audio:"),
-            enabled = false,
-        })
-        table.insert(menu, {
-            text = _("  1. Exit KOReader to Kindle Home"),
-            enabled = false,
-        })
-        table.insert(menu, {
-            text = _("  2. Tap Settings → Bluetooth"),
-            enabled = false,
-        })
-        table.insert(menu, {
-            text = _("  3. Pair and connect your audio device"),
-            enabled = false,
-        })
-        table.insert(menu, {
-            text = _("  4. Return to KOReader and start read-along"),
-            enabled = false,
-        })
-        return menu
-    end
+    -- On Kindle, BT is managed by the Amazon firmware through the
+    -- com.lab126.btfd LIPC service.  BTManager implements scan, pair,
+    -- connect, disconnect and forget on top of it, so Kindle now uses
+    -- the same device-list menu as every other platform (below).  The
+    -- only Kindle-specific extra is a settings hint for pairing flows
+    -- that need an on-screen confirmation dialog from the firmware.
 
     local powered = bt:isPowered()
     local menu = {}
@@ -397,14 +357,6 @@ end
 
 function BtUI.btScanAndShow(plugin)
     local bt = plugin.bt_manager
-
-    if bt:getStackType() == "kindle" then
-        UIManager:show(InfoMessage:new{
-            text = _("Bluetooth scanning is not available on Kindle.\n\nPair your audio device through Kindle Settings."),
-            timeout = 5,
-        })
-        return
-    end
 
     -- Ensure powered
     if not bt:isPowered() then

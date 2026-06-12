@@ -1037,10 +1037,63 @@ end
 -- Discovery (scanning)
 -----------------------------------------------------------------------
 
+-- ── Kindle (btfd LIPC) device operations ────────────────────────────────
+-- The Amazon firmware exposes full BT device management on the
+-- com.lab126.btfd service:
+--   ListPaired / ListConnected / ListDiscovered   (lipc-hash-prop)
+--   Connect / Disconnect / Bond / Unbond          (lipc-set-prop, MAC arg)
+--   triggerBTscan                                 (lipc-set-prop, int)
+-- audioOutputConnected on com.lab126.audiomgrd reports whether the A2DP
+-- audio route is actually up (BT-level "connected" is not enough for
+-- sound to come out).  Verified on PW5 firmware (2025-04).
+
+local function kindleHashProp(prop)
+    local h = io.popen("lipc-hash-prop com.lab126.btfd " .. prop .. " 2>/dev/null")
+    if not h then return {} end
+    local out = h:read("*a") or ""
+    h:close()
+    local entries = {}
+    local cur = nil
+    for line in out:gmatch("[^\n]+") do
+        if line:match("^Hash Index:") then
+            if cur then table.insert(entries, cur) end
+            cur = {}
+        elseif cur then
+            local k, v = line:match('^%s*([%w_]+)%s*=%s*"(.-)"')
+            if not k then
+                local ik, iv = line:match("^%s*([%w_]+)%s*=%s*%((%-?%d+)%)")
+                if ik then k, v = ik, tonumber(iv) end
+            end
+            if k then cur[k] = v end
+        end
+    end
+    if cur then table.insert(entries, cur) end
+    return entries
+end
+
+local function kindleSetProp(prop, value)
+    local rc = os.execute(string.format(
+        "lipc-set-prop com.lab126.btfd %s '%s' 2>/dev/null", prop, value))
+    return rc == 0 or rc == true
+end
+
+local function kindleAudioRouteUp()
+    local h = io.popen("lipc-get-prop com.lab126.audiomgrd audioOutputConnected 2>/dev/null")
+    if not h then return false end
+    local v = h:read("*a") or ""
+    h:close()
+    return v:match("^%s*1") ~= nil
+end
+
 --- Start BT device discovery.
 -- @treturn bool success
 function BTManager:startDiscovery()
-    if bt_stack == "kindle" then return false end
+    if bt_stack == "kindle" then
+        logger.warn("BTManager: kindle triggerBTscan")
+        os.execute("lipc-set-prop com.lab126.btfd triggerBTscan 1 2>/dev/null")
+        self._kindle_scan_until = os.time() + 12
+        return true
+    end
     logger.dbg("BTManager: starting discovery")
     local _, ok = dbus(dbus_cmd(ADAPTER_PATH, ADAPTER_IFACE .. ".StartDiscovery"))
     return ok
@@ -1049,7 +1102,10 @@ end
 --- Stop BT device discovery.
 -- @treturn bool success
 function BTManager:stopDiscovery()
-    if bt_stack == "kindle" then return true end
+    if bt_stack == "kindle" then
+        self._kindle_scan_until = nil
+        return true
+    end
     logger.dbg("BTManager: stopping discovery")
     local _, ok = dbus(dbus_cmd(ADAPTER_PATH, ADAPTER_IFACE .. ".StopDiscovery"))
     return ok
@@ -1058,7 +1114,10 @@ end
 --- Check whether discovery is active.
 -- @treturn bool
 function BTManager:isDiscovering()
-    if bt_stack == "kindle" then return false end
+    if bt_stack == "kindle" then
+        return self._kindle_scan_until ~= nil
+            and os.time() < self._kindle_scan_until
+    end
     local out = get_property(ADAPTER_PATH, ADAPTER_IFACE, "Discovering")
     return out:match("boolean true") ~= nil
 end
@@ -1071,7 +1130,35 @@ end
 -- Parses the output of ObjectManager.GetManagedObjects.
 -- @treturn table array of {path, address, name, paired, connected, icon}
 function BTManager:listDevices()
-    if bt_stack == "kindle" then return {} end
+    if bt_stack == "kindle" then
+        local byaddr, devices = {}, {}
+        local function absorb(list, force_connected)
+            for _, e in ipairs(list) do
+                local addr = e.bd_address
+                if addr and addr ~= "" then
+                    local d = byaddr[addr]
+                    if not d then
+                        d = {
+                            address = addr,
+                            name = "",
+                            icon = "audio-headphones",
+                            paired = false,
+                            connected = false,
+                        }
+                        byaddr[addr] = d
+                        table.insert(devices, d)
+                    end
+                    if e.bd_name and e.bd_name ~= "" then d.name = e.bd_name end
+                    if e.is_paired == 1 then d.paired = true end
+                    if e.is_connected == 1 or force_connected then d.connected = true end
+                end
+            end
+        end
+        absorb(kindleHashProp("ListPaired"))
+        absorb(kindleHashProp("ListConnected"), true)
+        absorb(kindleHashProp("ListDiscovered"))
+        return devices
+    end
     local cmd = dbus_cmd(ROOT_PATH, OBJMGR_IFACE .. ".GetManagedObjects")
     local output, ok = dbus(cmd)
     if not ok then return {} end
@@ -1202,7 +1289,20 @@ function BTManager:pair(address)
     logger.warn("BTManager: pairing with", address)
 
     if bt_stack == "kindle" then
-        return false, "Pair through Kindle Settings"
+        -- Bond via btfd; the firmware may show a confirmation dialog on
+        -- the Kindle UI for devices that require it (headsets usually
+        -- pair without one).
+        kindleSetProp("Bond", address)
+        for _ = 1, 10 do
+            os.execute("sleep 1")
+            for _, e in ipairs(kindleHashProp("ListPaired")) do
+                if e.bd_address == address then
+                    logger.warn("BTManager: kindle paired", address)
+                    return true
+                end
+            end
+        end
+        return false, "Pairing timed out. If the Kindle shows a confirmation dialog, accept it and retry; otherwise pair via Kindle Settings."
     end
 
     local path = mac_to_path(address)
@@ -1328,7 +1428,25 @@ function BTManager:connect(address)
     self:clearAudioDeviceCache()
     detectStack()
     if bt_stack == "kindle" then
-        return false, "Connect through Kindle Settings"
+        logger.warn("BTManager: kindle connect", address)
+        kindleSetProp("Connect", address)
+        for _ = 1, 6 do
+            os.execute("sleep 1")
+            if kindleAudioRouteUp() then return true end
+        end
+        -- The device can be BT-connected while the A2DP audio route is
+        -- stale (acsbtfd then refuses to re-attach the sink: "Device
+        -- already connected ... not attempting a2dp sink connection").
+        -- A Disconnect/Connect cycle re-arms the route reliably.
+        logger.warn("BTManager: kindle audio route down, cycling connection")
+        kindleSetProp("Disconnect", address)
+        os.execute("sleep 3")
+        kindleSetProp("Connect", address)
+        for _ = 1, 8 do
+            os.execute("sleep 1")
+            if kindleAudioRouteUp() then return true end
+        end
+        return false, "Could not establish the audio route. Is the headset powered on?"
     end
     logger.warn("BTManager: connecting to", address)
     local path = mac_to_path(address)
@@ -1437,6 +1555,9 @@ end
 function BTManager:disconnect(address)
     self:clearAudioDeviceCache()
     logger.dbg("BTManager: disconnecting", address)
+    if bt_stack == "kindle" then
+        return kindleSetProp("Disconnect", address)
+    end
     local path = mac_to_path(address)
     local _, ok = dbus(dbus_cmd(path, DEVICE_IFACE .. ".Disconnect"))
     return ok
@@ -1448,6 +1569,9 @@ end
 function BTManager:remove(address)
     self:clearAudioDeviceCache()
     logger.dbg("BTManager: removing", address)
+    if bt_stack == "kindle" then
+        return kindleSetProp("Unbond", address)
+    end
     local path = mac_to_path(address)
     local _, ok = dbus(dbus_cmd(ADAPTER_PATH, ADAPTER_IFACE .. ".RemoveDevice",
         string.format('objpath:"%s"', path)))
