@@ -917,29 +917,23 @@ function Audiobook:_startSmilPlayback(doc_path)
         return
     end
 
-    -- Build chapter list from timing_data if no separate chapters
-    local chapters = {}
-    if timing_data[1] and timing_data[1].audio_path then
-        local ext = timing_data[1].audio_path:match("%.([^.]+)$") or ""
-        if ext:lower() == "m4b" then
-            local ok_m4b, M4bParser = pcall(dofile, PLUGIN_PATH .. "m4bparser.lua")
-            if ok_m4b and M4bParser then
-                local m4b = M4bParser:new()
-                chapters = m4b:parse(timing_data[1].audio_path)
-            end
-        end
-    end
-
-    -- Find the first audio file with a real path
-    local audio_path = nil
+    -- Group timing entries by audio file, preserving narrative order.
+    -- Clip times restart at zero for every audio file, so each file plays
+    -- with its own timing slice; the playlist mechanism chains the files
+    -- and _playAudioFile installs the matching slice on every switch.
+    local files, by_file = {}, {}
     for _, entry in ipairs(timing_data) do
-        if entry.audio_path then
-            audio_path = entry.audio_path
-            break
+        local p = entry.audio_path
+        if p then
+            if not by_file[p] then
+                by_file[p] = { timing = {}, chapters = {} }
+                table.insert(files, p)
+            end
+            table.insert(by_file[p].timing, entry)
         end
     end
 
-    if not audio_path then
+    if #files == 0 then
         UIManager:show(InfoMessage:new{
             text = _("Could not extract audio from EPUB."),
             timeout = 3,
@@ -947,7 +941,36 @@ function Audiobook:_startSmilPlayback(doc_path)
         return
     end
 
-    self.media_sync:start(audio_path, timing_data, chapters)
+    -- Chapters: a boundary wherever the source content document changes,
+    -- titled from the NCX when available.
+    local titles = parser._chapter_titles or {}
+    for _, p in ipairs(files) do
+        local slot = by_file[p]
+        local last_doc = nil
+        for _, e in ipairs(slot.timing) do
+            if e.text_doc and e.text_doc ~= last_doc then
+                last_doc = e.text_doc
+                local base = e.text_doc:match("([^/]+)$") or e.text_doc
+                table.insert(slot.chapters, {
+                    title = titles[base] or base,
+                    start_time = e.start_time,
+                })
+            end
+        end
+    end
+
+    local playlist = {}
+    for _, p in ipairs(files) do
+        local slot = by_file[p]
+        local nm = (slot.chapters[1] and slot.chapters[1].title)
+            or p:match("([^/]+)$") or p
+        table.insert(playlist, { name = nm, path = p })
+    end
+
+    self._smil_by_file = by_file
+    local first = files[1]
+    self.media_sync:start(first, by_file[first].timing, by_file[first].chapters,
+        nil, playlist, first)
 end
 
 function Audiobook:_findMatchingAudiobook(doc_path)
@@ -1045,6 +1068,16 @@ end
 
 function Audiobook:_playAudioFile(file_path, playlist_files)
     if not file_path or not self.media_sync then return end
+
+    -- EPUB Media Overlay playlist transition: install this file's timing
+    -- slice and chapters directly, skipping the resume prompt so chained
+    -- chapter files flow without interruption.
+    if self._smil_by_file and self._smil_by_file[file_path] then
+        local slot = self._smil_by_file[file_path]
+        self.media_sync:start(file_path, slot.timing, slot.chapters, nil,
+            playlist_files or self.media_sync.playlist_files, file_path)
+        return
+    end
 
     -- Check for saved position and prompt to resume
     local saved_pos, saved_time = self:_getSavedPosition(file_path)

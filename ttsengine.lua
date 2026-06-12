@@ -4453,7 +4453,10 @@ function TTSEngine:_trySystemGstLaunch(wav_file)
     -- 11025 bytes — odd).
     local frame_bytes = channels * math.floor(bits / 8)
     local lead_bytes = math.floor(rate / 4) * frame_bytes   -- ~0.25 s
-    local tail_bytes = math.floor(rate / 3) * frame_bytes   -- ~0.33 s
+    -- Full second of tail: the shm ring holds up to ~0.9 s when the
+    -- pipeline tears down at EOS and its fill level varies, so a shorter
+    -- pad clips the ending intermittently even with the keepalive up.
+    local tail_bytes = rate * frame_bytes                   -- 1 s
     local dd_cmd = string.format(
         "( dd if=/dev/zero bs=%d count=1 2>/dev/null;"
         .. " dd if='%s' bs=44 skip=1 2>/dev/null;"

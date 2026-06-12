@@ -476,6 +476,23 @@ function MediaSync:_updateHighlightAtTime(pos)
     if sent_idx ~= self._current_sentence_idx then
         self._current_sentence_idx = sent_idx
         self._current_word_idx = 1
+        -- EPUB Media Overlay: keep the book view following the narration.
+        -- The SMIL fragment id resolves as a "#id" xpointer in crengine;
+        -- turn the page before highlighting so the text-matching
+        -- highlighter can find the sentence on the visible page.
+        if sentence.fragment_id then
+            local ui = self.plugin and self.plugin.ui
+            if ui and ui.rolling and ui.document then
+                pcall(function()
+                    local xp = "#" .. sentence.fragment_id
+                    local target = ui.document:getPageFromXPointer(xp)
+                    local cur = ui.document:getCurrentPage()
+                    if target and target > 0 and target ~= cur then
+                        ui.rolling:onGotoXPointer(xp)
+                    end
+                end)
+            end
+        end
         if self.highlight_manager and sentence.text then
             -- Build a synthetic sentence object for HighlightManager
             local sent_obj = {
