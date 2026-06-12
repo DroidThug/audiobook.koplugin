@@ -1504,7 +1504,11 @@ function MediaEngine:pause()
             end
         end
     elseif self.audio_pid and ffi.C.kill then
-        ffi.C.kill(self.audio_pid, 19) -- SIGSTOP
+        -- Signal the whole process group: for the ffmpeg|gst-launch
+        -- pipeline audio_pid is a setsid'd wrapper shell, and stopping
+        -- only the shell leaves both pipeline halves playing.
+        ffi.C.kill(-self.audio_pid, 19) -- SIGSTOP group
+        ffi.C.kill(self.audio_pid, 19)  -- SIGSTOP pid (non-leader case)
     end
 end
 
@@ -1538,12 +1542,14 @@ function MediaEngine:resume()
         or self.backend == self.BACKENDS.KINDLE_GST_PLAY then
         -- After a paused seek the process was killed; restart it.
         if self.audio_pid and ffi.C.kill then
-            ffi.C.kill(self.audio_pid, 18) -- SIGCONT
+            ffi.C.kill(-self.audio_pid, 18) -- SIGCONT group
+        ffi.C.kill(self.audio_pid, 18)  -- SIGCONT pid
         else
             self:play(self._on_complete, self._on_fail)
         end
     elseif self.audio_pid and ffi.C.kill then
-        ffi.C.kill(self.audio_pid, 18) -- SIGCONT
+        ffi.C.kill(-self.audio_pid, 18) -- SIGCONT group
+        ffi.C.kill(self.audio_pid, 18)  -- SIGCONT pid
     end
 end
 

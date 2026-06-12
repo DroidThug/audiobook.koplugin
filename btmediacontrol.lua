@@ -77,6 +77,14 @@ Tries evdev first, falls back to D-Bus polling.
 function BtMediaControl.start(plugin)
     BtMediaControl._plugin = plugin
 
+    -- Kindle: AVRCP passthrough commands surface as LIPC events on
+    -- com.lab126.btfd (no evdev device exists on this firmware).
+    local Device = require("device")
+    if Device:isKindle() then
+        BtMediaControl._startLipcPolling()
+        return true
+    end
+
     -- Try evdev approach first
     local found = BtMediaControl._tryEvdevApproach()
     if found then
@@ -96,7 +104,72 @@ Stop listening for BT media button events.
 function BtMediaControl.stop()
     BtMediaControl._stopEvdev()
     BtMediaControl._stopDbusPolling()
+    BtMediaControl._stopLipcPolling()
     BtMediaControl._plugin = nil
+end
+
+-- ── Kindle LIPC approach ─────────────────────────────────────────────
+--
+-- acsbtfd fires a BTavrcpCommand LIPC event for every AVRCP passthrough
+-- press.  Command enum captured on PW5 (AVRCP key id in parentheses):
+--   0 = play (68), 1 = pause (70), 2 = stop (69, presumed),
+--   3 = next (75), 4 = previous (76)
+-- A detached lipc-wait-event appends events to a log file which a
+-- UIManager timer tails; lipc has no non-blocking Lua binding here.
+
+local LIPC_EVENT_LOG = "/tmp/.abk_btmedia_events"
+
+local LIPC_CMD_TO_EVENT = {
+    [0] = "MediaPlay",
+    [1] = "MediaPause",
+    [2] = "MediaStop",
+    [3] = "MediaNext",
+    [4] = "MediaPrev",
+}
+
+function BtMediaControl._startLipcPolling()
+    if BtMediaControl._lipc_polling_active then return end
+    os.remove(LIPC_EVENT_LOG)
+    -- [B] keeps the pkill pattern in stop() from matching this wrapper.
+    os.execute(string.format(
+        "lipc-wait-event -m -s 0 com.lab126.btfd BTavrcpCommand >> %s 2>/dev/null &",
+        LIPC_EVENT_LOG))
+    BtMediaControl._lipc_polling_active = true
+    BtMediaControl._lipc_log_size = 0
+    logger.warn("BtMediaControl: Kindle LIPC AVRCP listener started")
+
+    local UIManager = require("ui/uimanager")
+    local function poll()
+        if not BtMediaControl._lipc_polling_active then return end
+        local f = io.open(LIPC_EVENT_LOG, "r")
+        if f then
+            local size = f:seek("end")
+            if size > (BtMediaControl._lipc_log_size or 0) then
+                f:seek("set", BtMediaControl._lipc_log_size)
+                local chunk = f:read("*a") or ""
+                BtMediaControl._lipc_log_size = size
+                for line in chunk:gmatch("[^\n]+") do
+                    local cmd = tonumber(line:match("(%d+)%s*$"))
+                    local ev = cmd and LIPC_CMD_TO_EVENT[cmd]
+                    logger.warn("BtMediaControl: LIPC AVRCP line:", line, "->", ev)
+                    if ev then
+                        BtMediaControl._dispatchMediaEvent(ev)
+                    end
+                end
+            end
+            f:close()
+        end
+        UIManager:scheduleIn(0.5, poll)
+    end
+    UIManager:scheduleIn(0.5, poll)
+end
+
+function BtMediaControl._stopLipcPolling()
+    if not BtMediaControl._lipc_polling_active then return end
+    BtMediaControl._lipc_polling_active = false
+    os.execute("pkill -f 'lipc-wait-event -m -s 0 com.lab126.btfd BTavrcpComman[d]' 2>/dev/null")
+    os.remove(LIPC_EVENT_LOG)
+    logger.warn("BtMediaControl: Kindle LIPC AVRCP listener stopped")
 end
 
 -- ── evdev approach ───────────────────────────────────────────────────

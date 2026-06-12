@@ -42,6 +42,18 @@ function Audiobook:init()
         InfoMessage = require("ui/widget/infomessage")
         T = require("ffi/util").template
 
+        -- Kill audio pipelines orphaned by a previous KOReader instance.
+        -- Playback (and the A2DP keepalive, which is infinite) runs as
+        -- detached background processes: if KOReader is killed or crashes
+        -- they keep playing, and the next session's audio mixes on top.
+        -- The patterns are specific to this plugin's pipelines.
+        if Device:isKindle() then
+            -- [c]/[f] character classes keep the pattern from matching the
+            -- pkill wrapper shell's own cmdline.
+            os.execute("pkill -f 'mixersink stream-type=Musi[c]' 2>/dev/null")
+            os.execute("pkill -f 'audiobook.koplugin/bin/[f]fmpeg' 2>/dev/null")
+        end
+
         -- Resolve plugin directory from self.path (set by KOReader's plugin
         -- loader) with a debug.getinfo fallback for dev/testing.
         local _utils_dir = self.path and (self.path .. "/")

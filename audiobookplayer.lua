@@ -575,6 +575,11 @@ function AudiobookPlayer:setPlaying(is_playing)
         self.play_pause_button:setText(txt, self.play_pause_button.width)
         self._mini_play_pause:setText(txt, self._mini_play_pause.width)
         UIManager:setDirty(self, function()
+            -- When minimized only the mini bar is on screen; its area is
+            -- exactly self.dimen (shrunk by onMinimize).
+            if self._minimized then
+                return "ui", self.dimen
+            end
             return "ui", self.play_pause_button.dimen
         end)
     end

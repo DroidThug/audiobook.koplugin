@@ -490,7 +490,11 @@ function MediaSync:_updateHighlightAtTime(pos)
                     local xp = "#" .. sentence.fragment_id
                     local target = ui.document:getPageFromXPointer(xp)
                     local cur = ui.document:getCurrentPage()
-                    if target and target > 0 and target ~= cur then
+                    logger.dbg("MediaSync: page-follow", xp, "->", target, "cur", cur)
+                    -- target == 1 is almost always a failed "#id" lookup
+                    -- (crengine falls back to the start of the book, i.e.
+                    -- the cover) -- never auto-turn there.
+                    if target and target > 1 and target ~= cur then
                         ui.rolling:onGotoXPointer(xp)
                     end
                 end)
