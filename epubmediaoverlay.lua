@@ -406,6 +406,17 @@ function EpubMediaOverlay:loadFromEpub(epub_path, plugin_dir)
     local all_timing_data = {}
     local opf_base = opf_path:match("^(.*)/") or ""
     self._chapter_titles = self:_loadChapterTitles(epub_path, opf_xml, opf_base)
+    -- Spine order: crengine numbers DocFragments in spine order, so this
+    -- maps the reader's current position to a content document (used to
+    -- start narration from the page the user is on).
+    self._spine_hrefs = {}
+    local spine_block = opf_xml:match("<spine[^>]*>(.-)</spine>") or ""
+    for idref in spine_block:gmatch('<itemref[^>]-idref="([^"]+)"') do
+        local it = manifest_items[idref]
+        if it and it.href then
+            table.insert(self._spine_hrefs, it.href:match("([^/]+)$") or it.href)
+        end
+    end
     local html_text_cache = {}
 
     for _, overlay_info in ipairs(ordered_overlays) do

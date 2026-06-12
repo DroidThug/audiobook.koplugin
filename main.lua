@@ -967,10 +967,41 @@ function Audiobook:_startSmilPlayback(doc_path)
         table.insert(playlist, { name = nm, path = p })
     end
 
+    -- Start from the reader's current position: map the current crengine
+    -- DocFragment index through the spine to a content document, then to
+    -- that document's first timing entry (scanning forward past front
+    -- matter that has no narration).
+    local start_file, start_time
+    local cur_xp = self.ui and self.ui.document
+        and self.ui.document:getXPointer()
+    local frag_idx = cur_xp and tonumber(cur_xp:match("DocFragment%[(%d+)%]"))
+    local spine = parser._spine_hrefs or {}
+    if frag_idx and spine[frag_idx] then
+        for si = frag_idx, #spine do
+            local base = spine[si]
+            for _, e in ipairs(timing_data) do
+                if e.audio_path and e.text_doc
+                    and (e.text_doc:match("([^/]+)$") == base) then
+                    start_file, start_time = e.audio_path, e.start_time
+                    break
+                end
+            end
+            if start_file then break end
+        end
+    end
+
     self._smil_by_file = by_file
-    local first = files[1]
-    self.media_sync:start(first, by_file[first].timing, by_file[first].chapters,
-        nil, playlist, first)
+    local first = start_file or files[1]
+    local started = self.media_sync:start(first, by_file[first].timing,
+        by_file[first].chapters, nil, playlist, first)
+    if started and start_time and start_time > 1 then
+        local ms = self.media_sync
+        UIManager:scheduleIn(1.5, function()
+            if ms.state == "playing" then
+                ms:seekToTime(start_time)
+            end
+        end)
+    end
 end
 
 function Audiobook:_findMatchingAudiobook(doc_path)

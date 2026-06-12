@@ -74,6 +74,16 @@ function MediaEngine:commandExists(cmd)
     return result ~= nil and result ~= ""
 end
 
+--- Take audiomgrd 'Music' focus once per KOReader session.
+-- Every setFocus makes audiomgrd re-ramp gain to its stored level, which
+-- resets the headset volume on each call -- so seeks and track switches
+-- must not re-issue it.  New streams inherit focus from audiomgrd's cache.
+function MediaEngine._takeMusicFocusOnce()
+    if MediaEngine._focus_taken then return end
+    os.execute("lipc-set-prop com.lab126.audiomgrd setFocus 'Music' 2>/dev/null")
+    MediaEngine._focus_taken = true
+end
+
 --[[--
 Build an ffmpeg atempo filter string for the given playback speed.
 atempo accepts 0.5..2.0; chain multiple filters for speeds outside that range.
@@ -1070,7 +1080,7 @@ function MediaEngine:_playSystemGstLaunch(gen)
     -- (pause/seek), then take audio focus before the stream attaches.
     os.execute("for f in /dev/shm/mstream*; do p=${f#/dev/shm/mstream}; p=${p%%_*};"
         .. " [ -d /proc/$p ] || rm -f \"$f\"; done 2>/dev/null")
-    os.execute("lipc-set-prop com.lab126.audiomgrd setFocus 'Music' 2>/dev/null")
+    MediaEngine._takeMusicFocusOnce()
 
     local caps = string.format(
         "audio/x-raw-int,endianness=1234,signed=true,width=%d,depth=%d,rate=%d,channels=%d",
@@ -1129,7 +1139,7 @@ function MediaEngine:_playSystemGstLaunchFfmpeg(gen)
 
     os.execute("for f in /dev/shm/mstream*; do p=${f#/dev/shm/mstream}; p=${p%%_*};"
         .. " [ -d /proc/$p ] || rm -f \"$f\"; done 2>/dev/null")
-    os.execute("lipc-set-prop com.lab126.audiomgrd setFocus 'Music' 2>/dev/null")
+    MediaEngine._takeMusicFocusOnce()
 
     local seek = self._seek_offset or 0
     -- adelay=500: lead-in silence absorbing the A2DP datapath resume

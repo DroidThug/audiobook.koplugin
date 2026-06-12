@@ -79,6 +79,9 @@ function MediaSync:start(audio_path, timing_data, chapters, cover_path, playlist
     self.timing_data = timing_data
     self.chapters = chapters or {}
     self.cover_path = cover_path
+    -- EPUB Media Overlay entries carry SMIL fragment ids; their presence
+    -- switches the UI into read-along mode (minimized player, page-follow).
+    self.overlay_mode = (timing_data[1] and timing_data[1].fragment_id) and true or false
 
     -- Detect same-playlist BEFORE overwriting self.playlist_files,
     -- otherwise same_playlist is always true on first load and
@@ -731,6 +734,9 @@ function MediaSync:showPlaybackBar()
         title = title,
         output_name = output_name,
         cover_image_path = self.cover_path,
+        -- Read-along (EPUB overlay) mode: start minimized so the book page
+        -- stays visible; highlighting and page-follow are the primary UI.
+        start_minimized = self.overlay_mode or nil,
         show_shuffle = self.playlist_files and #self.playlist_files > 0,
         shuffle_active = self.is_shuffled,
         show_loop = self.playlist_files and #self.playlist_files > 0,

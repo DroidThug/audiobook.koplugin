@@ -488,6 +488,13 @@ function AudiobookPlayer:setupUI()
         padding = 0,
         mini_row,
     }
+
+    -- EPUB read-along mode: stay on the book page (highlights + page
+    -- follow are the UI) with only the mini bar for transport control,
+    -- instead of covering the text with the full-screen player.
+    if self.start_minimized then
+        self:onMinimize()
+    end
 end
 
 -- Callback handlers
