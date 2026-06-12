@@ -3508,28 +3508,32 @@ function TTSEngine:findAudioPlayer()
                                     logger.warn("TTSEngine: PW5 signature detected (wavparse+audioconvert+audioresample missing)")
                                     -- Keep the binary reference for --ttssrc fallback
                                     self._kindle_gst_play_bin = gst_play_cmd
-                                    -- Kindle Basic 11th gen (KT5) and similar newer
-                                    -- firmware ship a newer TTS engine
-                                    -- (libtts_engine.so) and omit the old
-                                    -- libIvonaEInkAPI.so.1.0 that ttssrc needs.
-                                    -- --probe still reports ttssrc=found because
-                                    -- the plugin loads lazily, but real pipelines
-                                    -- fail. Test WAV playback instead of forcing
-                                    -- a broken native TTS fallback.
-                                    if not self:_checkIvonaApiAvailable() then
-                                        logger.warn("TTSEngine: Ivona API missing on stripped GStreamer firmware, testing WAV fallback")
-                                        self._ttssrc_broken = true
-                                        if self.plugin then
-                                            self.plugin:setSetting("_ttssrc_broken", true)
-                                        end
-                                        if self:_probeKindleGstPlayWav(gst_play_cmd) then
-                                            self.audio_player_type = "kindle-gst-play"
-                                            self._no_real_audio_output = false
-                                            logger.warn("TTSEngine: Selected kindle-gst-play WAV mode on stripped firmware (ttssrc unusable)")
-                                            return "kindle-gst-play"
-                                        end
-                                        logger.warn("TTSEngine: gst-play WAV mode also failed on stripped firmware")
+                                    -- On this firmware family WAV playback through
+                                    -- mixersink works (stream-type=Music sync=true
+                                    -- with audiomgrd focused on 'Music'), while the
+                                    -- native ttssrc path does NOT, even when
+                                    -- libIvonaEInkAPI.so.1.0 is present on disk:
+                                    -- the underlying libtts_engine.so is the neural
+                                    -- engine that exports no tts_engine_create, so
+                                    -- every ttssrc pipeline fails after a ~5s stall.
+                                    -- (Gating on the lib's presence used to strand
+                                    -- PW5 on a permanently dead native-tts player.)
+                                    -- Always select WAV mode here; fall through to
+                                    -- native TTS only if WAV provably cannot work.
+                                    os.execute("lipc-set-prop com.lab126.audiomgrd setFocus 'Music' 2>/dev/null")
+                                    if self:commandExists("gst-launch-0.10") then
+                                        self.audio_player_type = "kindle-gst-play"
+                                        self._no_real_audio_output = false
+                                        logger.warn("TTSEngine: Selected kindle-gst-play (system gst-launch pipeline) on PW5-signature firmware")
+                                        return "kindle-gst-play"
                                     end
+                                    if self:_probeKindleGstPlayWav(gst_play_cmd) then
+                                        self.audio_player_type = "kindle-gst-play"
+                                        self._no_real_audio_output = false
+                                        logger.warn("TTSEngine: Selected kindle-gst-play WAV mode on stripped firmware")
+                                        return "kindle-gst-play"
+                                    end
+                                    logger.warn("TTSEngine: gst-play WAV mode failed on stripped firmware")
                                     -- Flag that this Kindle cannot play WAV files produced by
                                     -- external TTS backends (Piper, espeak).  Used to show a
                                     -- clearer pre-synthesis warning in main.lua.
@@ -4296,6 +4300,10 @@ function TTSEngine:_probeKindleGstPlayWav(gst_play_cmd)
         logger.warn("TTSEngine: could not generate test WAV for gst-play probe")
         return false
     end
+
+    -- Without audiomgrd focus on 'Music' the mixer never consumes the
+    -- stream and the probe times out even when playback would work.
+    os.execute("lipc-set-prop com.lab126.audiomgrd setFocus 'Music' 2>/dev/null")
 
     local probe_cmd = string.format(
         "timeout 3 %s '%s' 2>&1; echo rc=$?",

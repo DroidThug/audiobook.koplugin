@@ -47,11 +47,15 @@ function EpubMediaOverlay:_ensureCacheDir(plugin_dir, epub_path)
 end
 
 function EpubMediaOverlay:_simpleHash(str)
-    -- DJB2 hash -> hex string
+    -- DJB2 hash -> hex string.
+    -- hash * 33 == (hash << 5) + hash, written arithmetically because
+    -- LuaJIT is Lua 5.1: the 5.3 bitwise operators do not parse and a
+    -- bare `<<` makes this whole module fail to load ("Failed to load
+    -- EPUB Media Overlay parser").  Doubles stay exact here: hash is
+    -- kept below 2^32, so hash*33 + byte < 2^38, well under 2^53.
     local hash = 5381
     for i = 1, #str do
-        hash = ((hash << 5) + hash) + str:byte(i)
-        hash = hash % 4294967296
+        hash = (hash * 33 + str:byte(i)) % 4294967296
     end
     return string.format("%08x", hash)
 end
@@ -104,14 +108,14 @@ function EpubMediaOverlay:_findOpfPath(epub_path)
     end
 
     -- Parse container.xml for full-path attribute
-    local opf_path = container_xml:match('full%-path%s*=\s*"([^"]+)"')
+    local opf_path = container_xml:match('full%-path%s*=%s*"([^"]+)"')
     if not opf_path then
         -- Try without escaping the hyphen
-        opf_path = container_xml:match('full%-path%s*=\s*"([^"]+)"')
+        opf_path = container_xml:match('full%-path%s*=%s*"([^"]+)"')
     end
     if not opf_path then
         -- Fallback: look for any .opf reference
-        opf_path = container_xml:match('href%s*=\s*"([^"]-%.opf)"')
+        opf_path = container_xml:match('href%s*=%s*"([^"]-%.opf)"')
     end
 
     return opf_path
@@ -132,10 +136,10 @@ function EpubMediaOverlay:_parseOpfManifest(opf_xml)
 
     -- Parse each item in the manifest
     for item_str in manifest_block:gmatch("<item([^/>]-)/>") do
-        local id = item_str:match('id%s*=\s*"([^"]+)"')
-        local href = item_str:match('href%s*=\s*"([^"]+)"')
-        local media_type = item_str:match('media%-type%s*=\s*"([^"]+)"')
-        local media_overlay = item_str:match('media%-overlay%s*=\s*"([^"]+)"')
+        local id = item_str:match('id%s*=%s*"([^"]+)"')
+        local href = item_str:match('href%s*=%s*"([^"]+)"')
+        local media_type = item_str:match('media%-type%s*=%s*"([^"]+)"')
+        local media_overlay = item_str:match('media%-overlay%s*=%s*"([^"]+)"')
 
         if id and href then
             manifest_items[id] = {
@@ -187,7 +191,7 @@ function EpubMediaOverlay:_parseSmil(smil_xml, smil_base_path)
     -- Find all <par> elements (simplified: look for <par> ... </par> blocks)
     for par_block in smil_xml:gmatch("<par([^>]*)>(.-)</par>") do
         -- Extract text src
-        local text_src = par_block:match('src%s*=\s*"([^"]+)"')
+        local text_src = par_block:match('src%s*=%s*"([^"]+)"')
         -- Extract audio attributes
         local audio_block = par_block:match("<audio([^/>]-)/>")
         if not audio_block then
@@ -195,9 +199,9 @@ function EpubMediaOverlay:_parseSmil(smil_xml, smil_base_path)
         end
 
         if audio_block then
-            local audio_src = audio_block:match('src%s*=\s*"([^"]+)"')
-            local clip_begin = audio_block:match('clipBegin%s*=\s*"([^"]+)"')
-            local clip_end = audio_block:match('clipEnd%s*=\s*"([^"]+)"')
+            local audio_src = audio_block:match('src%s*=%s*"([^"]+)"')
+            local clip_begin = audio_block:match('clipBegin%s*=%s*"([^"]+)"')
+            local clip_end = audio_block:match('clipEnd%s*=%s*"([^"]+)"')
 
             if audio_src then
                 -- Resolve relative paths
