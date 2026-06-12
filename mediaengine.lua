@@ -1053,7 +1053,9 @@ function MediaEngine:_playSystemGstLaunch(gen)
         "( dd if=/dev/zero bs=%d count=1 2>/dev/null;"
         .. " tail -c +%d '%s';"
         .. " dd if=/dev/zero bs=%d count=1 2>/dev/null ) > '%s' 2>/dev/null",
-        math.floor(rate * frame_bytes / 2),
+        -- whole frames only: a non-frame-aligned pad byte count shifts all
+        -- following 16-bit samples and turns the payload into white noise
+        math.floor(rate / 2) * frame_bytes,
         skip + 1,
         self.current_path:gsub("'", "'\\''"),
         rate * frame_bytes,

@@ -4447,14 +4447,20 @@ function TTSEngine:_trySystemGstLaunch(wav_file)
     -- and ring/BT drain (~1 s) they previously absorbed.
     -- (bs=44 skip=1 skips exactly the 44-byte header in one block-sized
     -- step; bs=1 skip=44 would copy byte-by-byte, ~1000x slower here.)
-    local pad_bytes = rate * channels * math.floor(bits / 8)
+    -- Pad sizes MUST be whole frames (channels * bytes-per-sample): an odd
+    -- byte count shifts every following 16-bit sample by one byte and the
+    -- payload comes out as white noise (pad_bytes/4 at 22050 Hz mono was
+    -- 11025 bytes — odd).
+    local frame_bytes = channels * math.floor(bits / 8)
+    local lead_bytes = math.floor(rate / 4) * frame_bytes   -- ~0.25 s
+    local tail_bytes = math.floor(rate / 3) * frame_bytes   -- ~0.33 s
     local dd_cmd = string.format(
         "( dd if=/dev/zero bs=%d count=1 2>/dev/null;"
         .. " dd if='%s' bs=44 skip=1 2>/dev/null;"
         .. " dd if=/dev/zero bs=%d count=1 2>/dev/null ) > '%s'",
-        math.floor(pad_bytes / 4),
+        lead_bytes,
         wav_file:gsub("'", "'\\''"),
-        math.floor(pad_bytes / 3),
+        tail_bytes,
         raw_file:gsub("'", "'\\''"))
     local dd_rc = os.execute(dd_cmd)
     if dd_rc ~= 0 and dd_rc ~= true then
