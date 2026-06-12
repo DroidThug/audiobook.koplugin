@@ -950,7 +950,118 @@ end
 -- Kindle-specific playback methods
 -- ---------------------------------------------------------------------------
 
+--[[--
+Play a WAV through the system gst-launch-0.10 with the pipeline verified
+working on PW5/PW6 firmware:
+
+    filesrc ! caps ! mixersink stream-type=Music sync=true
+
+mixersink needs stream-type=Music (the only playback stream type audiomgrd
+accepts) and sync=true: with the element's default sync=false the commit
+vfunc is handed mismatched in/out sample counts, rejects every buffer
+("MixerSink:Commit:in != out" in syslog) and the pipeline hangs silently.
+audiomgrd must also be focused on 'Music' before the stream attaches.
+
+Seeking is done by skipping bytes when stripping the WAV header.
+
+@treturn boolean|nil true on launch, nil if the file is not a plain PCM WAV
+    (caller should fall back to the bundled gst-play binary)
+--]]
+function MediaEngine:_playSystemGstLaunch(gen)
+    local fh = io.open(self.current_path, "rb")
+    if not fh then return nil end
+    local header = fh:read(44)
+    fh:close()
+    if not header or #header < 44
+        or header:sub(1, 4) ~= "RIFF" or header:sub(9, 12) ~= "WAVE" then
+        return nil
+    end
+    local function le_u16(off)
+        return string.byte(header, off) + string.byte(header, off + 1) * 256
+    end
+    local function le_u32(off)
+        return le_u16(off) + le_u16(off + 2) * 65536
+    end
+    local fmt = le_u16(21)
+    local channels = le_u16(23)
+    local rate = le_u32(25)
+    local bits = le_u16(35)
+    if fmt ~= 1 or channels < 1 or channels > 2 or rate == 0
+        or (bits ~= 8 and bits ~= 16) then
+        return nil
+    end
+
+    -- Strip header (+ seek offset) into a raw PCM temp file.
+    -- tail -c +N is 1-indexed; frame-align the seek so we never start
+    -- mid-sample.
+    local frame_bytes = channels * (bits / 8)
+    local seek_frames = math.floor((self._seek_offset or 0) * rate)
+    local skip = 44 + seek_frames * frame_bytes
+    if self._system_raw_file then
+        os.remove(self._system_raw_file)
+    end
+    local raw_file = self:_getTempDir() .. "/kindle-gst-raw-" .. gen .. ".pcm"
+    local rc = os.execute(string.format(
+        "tail -c +%d '%s' > '%s' 2>/dev/null",
+        skip + 1,
+        self.current_path:gsub("'", "'\\''"),
+        raw_file:gsub("'", "'\\''")))
+    if rc ~= 0 and rc ~= true then
+        os.remove(raw_file)
+        return nil
+    end
+    self._system_raw_file = raw_file
+
+    -- Sweep shm stream files orphaned by pipelines killed mid-play
+    -- (pause/seek), then take audio focus before the stream attaches.
+    os.execute("for f in /dev/shm/mstream*; do p=${f#/dev/shm/mstream}; p=${p%%_*};"
+        .. " [ -d /proc/$p ] || rm -f \"$f\"; done 2>/dev/null")
+    os.execute("lipc-set-prop com.lab126.audiomgrd setFocus 'Music' 2>/dev/null")
+
+    local caps = string.format(
+        "audio/x-raw-int,endianness=1234,signed=true,width=%d,depth=%d,rate=%d,channels=%d",
+        bits, bits, rate, channels)
+    local cmd = string.format(
+        "gst-launch-0.10 filesrc location='%s' ! capsfilter caps='%s'"
+        .. " ! mixersink stream-type=Music sync=true",
+        raw_file:gsub("'", "'\\''"), caps)
+    logger.warn("MediaEngine: system gst-launch gen=", gen,
+        "rate=", rate, "ch=", channels, "seek_offset=", self._seek_offset or 0)
+
+    local pid_file = self:_getTempDir() .. "/kindle-gst-pid-" .. gen
+    os.remove(pid_file)
+    local wrapper = string.format("sh -c 'echo $$ > %s; exec %s' >/dev/null 2>&1 &",
+        pid_file, cmd)
+    os.execute(wrapper)
+
+    UIManager:scheduleIn(0.3, function()
+        if self.play_generation ~= gen then return end
+        local pf = io.open(pid_file, "r")
+        if pf then
+            local pid_str = pf:read("*l")
+            pf:close()
+            self.audio_pid = tonumber(pid_str)
+            logger.warn("MediaEngine: system gst-launch PID =", self.audio_pid)
+        end
+        os.remove(pid_file)
+        self:_startPositionPoller(gen)
+        self:_startCompletionWatcher(gen)
+    end)
+
+    return true
+end
+
 function MediaEngine:_playKindleGstPlay(gen)
+    -- Prefer the system gst-launch-0.10 pipeline (verified working on
+    -- PW5/PW6, see _playSystemGstLaunch).  The bundled gst-play binary
+    -- sets neither stream-type nor sync on mixersink and hangs on these
+    -- firmwares.  Fall back to it only for non-PCM-WAV input or when
+    -- gst-launch-0.10 is missing.
+    if self:commandExists("gst-launch-0.10") then
+        local ok = self:_playSystemGstLaunch(gen)
+        if ok then return ok end
+    end
+
     -- kindle/gst-play: a custom binary that feeds raw PCM to GStreamer's
     -- mixersink element, bypassing the missing wavparse on stripped firmware.
     -- The binary reads WAV files, strips the header, and pipes PCM to
@@ -1326,6 +1437,12 @@ function MediaEngine:stop()
             end)
         end
         self.audio_pid = nil
+    end
+
+    -- Remove the raw PCM temp file created by _playSystemGstLaunch
+    if self._system_raw_file then
+        os.remove(self._system_raw_file)
+        self._system_raw_file = nil
     end
 
     -- For mplayer, also send quit command

@@ -343,7 +343,18 @@ static int do_play(const char *wav_path)
     int argc = 0;
     gst_init_(&argc, NULL);
 
-    /* -- Build pipeline description -- */
+    /* -- Build pipeline description --
+     *
+     * mixersink needs stream-type=Music (the only playback stream type
+     * audiomgrd accepts; without it the mixer stream never opens) and
+     * sync=true (with the element's default sync=false the commit vfunc
+     * receives mismatched in/out sample counts, rejects every buffer with
+     * "MixerSink:Commit:in != out" in syslog, and the pipeline hangs
+     * silently).  audiomgrd must also hold focus on 'Music'; the caller
+     * (ttsengine.lua/mediaengine.lua) runs
+     *   lipc-set-prop com.lab126.audiomgrd setFocus Music
+     * before launching us.  Verified on PW5 firmware 5.x (2025-04).
+     */
     char desc[512];
     if (gst_version_minor == 10) {
         /* GStreamer 0.10: audio/x-raw-int with explicit field types */
@@ -356,7 +367,7 @@ static int do_play(const char *wav_path)
             "depth=(int)%u,"
             "signed=(boolean)%s,"
             "endianness=(int)1234"
-            " ! mixersink",
+            " ! mixersink stream-type=Music sync=true",
             raw_path, rate, channels, bits, bits,
             bits == 16 ? "true" : "false");
     } else {
@@ -369,7 +380,7 @@ static int do_play(const char *wav_path)
             "rate=(int)%u,"
             "channels=(int)%u,"
             "layout=(string)interleaved"
-            " ! mixersink",
+            " ! mixersink stream-type=Music sync=true",
             raw_path, format, rate, channels);
     }
 

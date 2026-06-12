@@ -131,6 +131,20 @@ function TTSEngine:new(o)
             os.execute(": > /proc/" .. am_pid .. "/fd/2 2>/dev/null")
         end
     end
+    -- On Kindle, /usr/lib/tts is in ld.so.conf so the system linker resolves
+    -- libIvonaEInkAPI.so.1.0, but the bundled ld-linux used to run gst-play
+    -- only honours --library-path and LD_LIBRARY_PATH, not ld.so.conf.
+    -- Detect the library at startup and cache the path so every gst-play
+    -- --ttssrc invocation prepends it to LD_LIBRARY_PATH unconditionally.
+    if Device:isKindle() then
+        local ivona_lib = "/usr/lib/tts/libIvonaEInkAPI.so.1.0"
+        local ivona_f = io.open(ivona_lib, "r")
+        if ivona_f then
+            ivona_f:close()
+            o._ttssrc_ivona_lib_path = "/usr/lib/tts"
+            logger.warn("TTSEngine: libIvonaEInkAPI.so.1.0 found, will set LD_LIBRARY_PATH=/usr/lib/tts for ttssrc")
+        end
+    end
     o:detectBackend()
     return o
 end
@@ -1822,9 +1836,17 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             -- Simplified subshell: single background job writes exit code on
             -- completion.  Avoids the complex double-background pattern that
             -- may confuse minimal busybox shells (issue #35).
+            -- If libIvonaEInkAPI.so.1.0 was found at a non-default path on a
+            -- previous attempt, prepend it to LD_LIBRARY_PATH so GStreamer can
+            -- load the ttssrc plugin successfully (PW5/PW6 firmware).
+            local ivona_env = ""
+            if self._ttssrc_ivona_lib_path then
+                ivona_env = "LD_LIBRARY_PATH=" .. self._ttssrc_ivona_lib_path .. ":$LD_LIBRARY_PATH "
+                logger.warn("TTSEngine: kindle-gst-play --ttssrc using LD_LIBRARY_PATH=", self._ttssrc_ivona_lib_path)
+            end
             local cmd = string.format(
-                "(%s --ttssrc %s >%s 2>&1; echo $? > %s) & echo $!",
-                self._kindle_gst_play_bin, shellEsc(escaped_text), gst_log,
+                "(%s%s --ttssrc %s >%s 2>&1; echo $? > %s) & echo $!",
+                ivona_env, self._kindle_gst_play_bin, shellEsc(escaped_text), gst_log,
                 done_file)
             local h = io.popen(cmd)
             local pid_str = h and h:read("*a") or ""
@@ -1921,14 +1943,27 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                     end
 
                     -- KT5 firmware omits libIvonaEInkAPI.so.1.0, so ttssrc loads
-                    -- in --probe but real pipelines fail.  Mark it broken so the
-                    -- next session uses WAV playback instead.
+                    -- in --probe but real pipelines fail.  On PW5/PW6 the library
+                    -- exists at /usr/lib/tts/ but that path is not in the default
+                    -- LD_LIBRARY_PATH so GStreamer cannot find it at plugin load time.
+                    -- Check before giving up: if the library is present on disk we
+                    -- can retry with LD_LIBRARY_PATH set; only mark broken if it is
+                    -- genuinely absent.
                     if log_text:match("libIvonaEInkAPI%.so%.1%.0") then
-                        logger.warn("TTSEngine: ttssrc requires libIvonaEInkAPI.so.1.0 which is missing; disabling ttssrc")
-                        engine._ttssrc_broken = true
-                        if engine.plugin then
-                            engine.plugin:setSetting("_ttssrc_broken", true)
-                            logger.warn("TTSEngine: persisted _ttssrc_broken=true")
+                        local ivona_lib = "/usr/lib/tts/libIvonaEInkAPI.so.1.0"
+                        local ivona_f = io.open(ivona_lib, "r")
+                        if ivona_f then
+                            ivona_f:close()
+                            logger.warn("TTSEngine: libIvonaEInkAPI.so.1.0 found at /usr/lib/tts but not on LD_LIBRARY_PATH; will retry with path set")
+                            engine._ttssrc_ivona_lib_path = "/usr/lib/tts"
+                            -- do NOT mark broken -- next launch will use the path
+                        else
+                            logger.warn("TTSEngine: libIvonaEInkAPI.so.1.0 genuinely absent; disabling ttssrc")
+                            engine._ttssrc_broken = true
+                            if engine.plugin then
+                                engine.plugin:setSetting("_ttssrc_broken", true)
+                                logger.warn("TTSEngine: persisted _ttssrc_broken=true")
+                            end
                         end
                     end
 
@@ -2255,9 +2290,16 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         -- Shell-safe single-quote escaping
         local function shellEsc(s) return "'" .. s:gsub("'", "'\\''") .. "'" end
         local gst_log = "/tmp/.gst_play_last.log"
+        -- If libIvonaEInkAPI.so.1.0 was found at a non-default path, prepend it
+        -- to LD_LIBRARY_PATH so GStreamer can load ttssrc (PW5/PW6 firmware).
+        local ivona_env = ""
+        if self._ttssrc_ivona_lib_path then
+            ivona_env = "LD_LIBRARY_PATH=" .. self._ttssrc_ivona_lib_path .. ":$LD_LIBRARY_PATH "
+            logger.warn("TTSEngine: kindle-ttssrc using LD_LIBRARY_PATH=", self._ttssrc_ivona_lib_path)
+        end
         local cmd = string.format(
-            '%s --ttssrc %s >%s 2>&1 & echo $!',
-            self._kindle_gst_play_bin, shellEsc(text), gst_log)
+            '%s%s --ttssrc %s >%s 2>&1 & echo $!',
+            ivona_env, self._kindle_gst_play_bin, shellEsc(text), gst_log)
         local h = io.popen(cmd)
         local pid_str = h and h:read("*a") or ""
         if h then h:close() end
@@ -2669,21 +2711,40 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         local file_path = self.current_audio_file
         logger.warn("TTSEngine: kindle-gst-play:", file_path,
             "dur=", self._expected_play_duration_ms, "ms")
-        -- Request audio focus from audiomgrd (same as kindle-lipc path)
-        os.execute("lipc-set-prop com.lab126.audiomgrd setFocus 'tts' 2>/dev/null")
-        -- Launch gst-play in background, capture PID.
-        -- Capture stderr to a log file for diagnostics (was previously
-        -- discarded, making it impossible to debug silent failures).
-        local gst_log = "/tmp/.gst_play_last.log"
-        local cmd = string.format(
-            '%s "%s" >%s 2>&1 & echo $!',
-            self._kindle_gst_play_bin, file_path, gst_log)
-        local h = io.popen(cmd)
-        local pid_str = h and h:read("*a") or ""
-        if h then h:close() end
-        local pid = tonumber(pid_str:match("(%d+)"))
+        -- Request audio focus from audiomgrd.  'Music' is the only input
+        -- stream type audiomgrd accepts on PW5/PW6 (verified against the
+        -- binary: valid types are Music/micAsr/micHfp/micRaw/playOut); the
+        -- previously used 'tts' is silently ignored and the stream never
+        -- gets focused, so the mixer never consumes it.
+        os.execute("lipc-set-prop com.lab126.audiomgrd setFocus 'Music' 2>/dev/null")
+        -- Prefer the system gst-launch-0.10 pipeline: on PW5/PW6 the working
+        -- recipe is mixersink stream-type=Music sync=true (the bundled
+        -- gst-play binary sets neither and hangs in commit).  Fall back to
+        -- the bundled binary only when the system pipeline cannot launch.
+        local pid = nil
+        if self:commandExists("gst-launch-0.10") then
+            local sys_pid, raw_file = self:_trySystemGstLaunch(file_path)
+            if sys_pid then
+                pid = sys_pid
+                self._gst_system_raw_file = raw_file
+                logger.warn("TTSEngine: kindle-gst-play using system gst-launch, PID=", pid)
+            end
+        end
+        if not pid then
+            -- Launch gst-play in background, capture PID.
+            -- Capture stderr to a log file for diagnostics (was previously
+            -- discarded, making it impossible to debug silent failures).
+            local gst_log = "/tmp/.gst_play_last.log"
+            local cmd = string.format(
+                '%s "%s" >%s 2>&1 & echo $!',
+                self._kindle_gst_play_bin, file_path, gst_log)
+            local h = io.popen(cmd)
+            local pid_str = h and h:read("*a") or ""
+            if h then h:close() end
+            pid = tonumber(pid_str:match("(%d+)"))
+            logger.warn("TTSEngine: kindle-gst-play launched, PID=", pid)
+        end
         self._gst_play_pid = pid
-        logger.warn("TTSEngine: kindle-gst-play launched, PID=", pid)
         self._audio_launched_at = UIManager:getTime()
         self:startTimingLoop()
         -- Poll /proc/<pid> for process completion.
@@ -4331,8 +4392,10 @@ function TTSEngine:_trySystemGstLaunch(wav_file)
 
     -- Generate raw PCM file by stripping header
     local raw_file = "/tmp/.abgst_system_" .. os.time() .. ".raw"
+    -- bs=44 skip=1 skips exactly the 44-byte header in one block-sized step;
+    -- bs=1 skip=44 would copy byte-by-byte (~1000x slower on this CPU).
     local dd_cmd = string.format(
-        "dd if='%s' of='%s' bs=1 skip=44 2>/dev/null",
+        "dd if='%s' of='%s' bs=44 skip=1 2>/dev/null",
         wav_file:gsub("'", "'\\''"), raw_file:gsub("'", "'\\''"))
     local dd_rc = os.execute(dd_cmd)
     if dd_rc ~= 0 and dd_rc ~= true then
@@ -4345,9 +4408,22 @@ function TTSEngine:_trySystemGstLaunch(wav_file)
     local caps = string.format(
         "audio/x-raw-int,endianness=1234,signed=true,width=%d,depth=%d,rate=%d,channels=%d",
         bits, bits, rate, channels)
+    -- Sweep shared-memory stream files left behind by pipelines that were
+    -- killed mid-play (pause/stop sends SIGTERM and gst-launch does not
+    -- always close its mixer stream).  Only files whose creator PID is dead
+    -- are removed; audiomgrd's own live streams are untouched.
+    os.execute("for f in /dev/shm/mstream*; do p=${f#/dev/shm/mstream}; p=${p%%_*};"
+        .. " [ -d /proc/$p ] || rm -f \"$f\"; done 2>/dev/null")
+
+    -- mixersink needs stream-type=Music (the only playback type audiomgrd
+    -- accepts) and sync=true: with the element's default sync=false the
+    -- commit vfunc is handed mismatched in/out sample counts, rejects every
+    -- buffer ("MixerSink:Commit:in != out" in syslog) and the pipeline hangs
+    -- silently.  Verified working on PW5 firmware 5.x (2025-04).
+    os.execute("lipc-set-prop com.lab126.audiomgrd setFocus 'Music' 2>/dev/null")
     local gst_log = "/tmp/.gst_system_last.log"
     local cmd = string.format(
-        "gst-launch-0.10 filesrc location='%s' ! capsfilter caps='%s' ! mixersink >%s 2>&1 & echo $!",
+        "gst-launch-0.10 filesrc location='%s' ! capsfilter caps='%s' ! mixersink stream-type=Music sync=true >%s 2>&1 & echo $!",
         raw_file:gsub("'", "'\\''"), caps, gst_log)
 
     local h = io.popen(cmd)
