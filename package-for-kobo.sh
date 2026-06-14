@@ -47,11 +47,19 @@ rm -rf "$BUNDLE_DIR"
 mkdir -p "$ESPEAK_DEST/bin" "$ESPEAK_DEST/lib" "$ESPEAK_DEST/share/espeak-ng-data/lang/gmw" "$ESPEAK_DEST/share/espeak-ng-data/voices"
 
 # Plugin Lua files first
-for f in main.lua textparser.lua ttsengine.lua highlightmanager.lua synccontroller.lua playbackbar.lua menubuilder.lua btmanager.lua btui.lua btmediacontrol.lua utils.lua wavutils.lua piperqueue.lua bugreport.lua androidtts.lua benchmarkrunner.lua updater.lua downloader.lua _meta.lua; do
+for f in absbrowse.lua abscache.lua absclient.lua abssync.lua androidtts.lua audiobookplayer.lua benchmarkrunner.lua btmanager.lua btmediacontrol.lua btui.lua bugreport.lua downloader.lua epubmediaoverlay.lua highlightmanager.lua m4bparser.lua main.lua mediaaligner.lua mediaengine.lua mediasync.lua menubuilder.lua _meta.lua piperqueue.lua playbackbar.lua synccontroller.lua textparser.lua transcoder.lua ttsengine.lua updater.lua utils.lua wavutils.lua; do
     if [ -f "$SCRIPT_DIR/$f" ]; then
         cp "$SCRIPT_DIR/$f" "$PLUGIN_DEST/"
     fi
 done
+
+# ffmpeg binary for audio file decoding (ARMv7l, tracked in git)
+if [ -f "$SCRIPT_DIR/bin/ffmpeg" ]; then
+    mkdir -p "$PLUGIN_DEST/bin"
+    cp "$SCRIPT_DIR/bin/ffmpeg" "$PLUGIN_DEST/bin/"
+    chmod +x "$PLUGIN_DEST/bin/ffmpeg"
+    echo "Bundled bin/ffmpeg"
+fi
 
 # Standalone bug report script (for users who cannot access the plugin menu)
 if [ -f "$SCRIPT_DIR/generate-report.sh" ]; then
@@ -372,7 +380,7 @@ du -sh "$PLUGIN_DEST"
 # on first run (see ttsengine.lua detectBackend).
 echo ""
 echo "=== Renaming ELF binaries to .bin (Windows extraction workaround) ==="
-for elf in "$ESPEAK_DEST/bin/espeak-ng" "$PIPER_DEST/piper" "$PIPER_DEST/piper_phonemize" "$PIPER_DEST/espeak-ng" "$BLUEALSA_DEST/bin/bluealsa" "$PLUGIN_DEST/wav-play/wav-play"; do
+for elf in "$ESPEAK_DEST/bin/espeak-ng" "$PIPER_DEST/piper" "$PIPER_DEST/piper_phonemize" "$PIPER_DEST/espeak-ng" "$BLUEALSA_DEST/bin/bluealsa" "$PLUGIN_DEST/wav-play/wav-play" "$PLUGIN_DEST/bin/ffmpeg"; do
     if [ -f "$elf" ]; then
         mv "$elf" "${elf}.bin"
         echo "  $(basename "$elf") -> $(basename "$elf").bin"
