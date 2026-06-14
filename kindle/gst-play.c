@@ -508,7 +508,7 @@ static int do_ttssrc(const char *text)
     char desc[1024];
     if (gst_version_minor == 10) {
         snprintf(desc, sizeof(desc),
-            "ttssrc text=\"%s\" ! "
+            "ttssrc textsource=\"%s\" ! "
             "audio/x-raw-int,"
             "rate=(int)22050,"
             "channels=(int)1,"
@@ -519,7 +519,7 @@ static int do_ttssrc(const char *text)
             text);
     } else {
         snprintf(desc, sizeof(desc),
-            "ttssrc text=\"%s\" ! "
+            "ttssrc textsource=\"%s\" ! "
             "audio/x-raw,"
             "format=(string)S16LE,"
             "rate=(int)22050,"
