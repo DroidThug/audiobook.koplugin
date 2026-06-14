@@ -61,9 +61,29 @@ jobs:
 
       - name: Verify bundle
         run: |
+          PLUGIN_DIR="kobo-tts-bundle/audiobook.koplugin"
+          EXPECTED_LUA_COUNT=30
+
           echo "=== Lua files ==="
-          ls -la kobo-tts-bundle/audiobook.koplugin/*.lua
+          ls -la "$PLUGIN_DIR"/*.lua
+          LUA_COUNT=$(ls -1 "$PLUGIN_DIR"/*.lua 2>/dev/null | wc -l)
+          echo "Lua file count: $LUA_COUNT (expected $EXPECTED_LUA_COUNT)"
+          if [ "$LUA_COUNT" -ne "$EXPECTED_LUA_COUNT" ]; then
+              echo "ERROR: Expected $EXPECTED_LUA_COUNT Lua files, found $LUA_COUNT"
+              exit 1
+          fi
           echo ""
+
+          echo "=== ffmpeg binary ==="
+          if [ -f "$PLUGIN_DIR/bin/ffmpeg" ] || [ -f "$PLUGIN_DIR/bin/ffmpeg.bin" ]; then
+              ls -la "$PLUGIN_DIR/bin/ffmpeg"* 2>/dev/null || true
+              echo "ffmpeg: OK"
+          else
+              echo "ERROR: bin/ffmpeg missing"
+              exit 1
+          fi
+          echo ""
+
           echo "=== espeak-ng binary + MBROLA ==="
           ls -la kobo-tts-bundle/audiobook.koplugin/espeak-ng/bin/
           echo ""
