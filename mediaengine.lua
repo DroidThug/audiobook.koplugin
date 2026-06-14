@@ -59,6 +59,15 @@ function MediaEngine:new(o)
     -- Kindle-specific state
     o._gst_play_cmd = nil
     o._lipc_fallback_tried = false
+    -- Persistent GStreamer pipeline state (MTK Bluetooth path)
+    o._use_persistent_pipeline = false
+    o._persistent_pipeline_active = false
+    o._pipeline_gst_pid = nil
+    o._pipeline_wrapper_pid = nil
+    o._media_ctrl_dir = "/tmp/audiobook_media_ctrl"
+    o._media_fifo = "/tmp/audiobook_media_fifo"
+    o._media_script = "/tmp/audiobook_media_pipeline.sh"
+    o._current_pcm_file = nil
     return o
 end
 
@@ -98,6 +107,8 @@ end
 
 --[[--
 Probe for ffmpeg in the plugin's bin/ directory or PATH.
+The release zip may ship ELF binaries with a .bin extension so they survive
+Windows zip extractors; rename .bin back to the original name if needed.
 @return string|nil  absolute path to ffmpeg binary, or nil
 --]]
 function MediaEngine:_findFfmpeg()
@@ -107,6 +118,22 @@ function MediaEngine:_findFfmpeg()
         if f then
             f:close()
             return plugin_ffmpeg
+        end
+        -- Release zip ships ffmpeg as ffmpeg.bin; rename on first use.
+        local bin_path = plugin_ffmpeg .. ".bin"
+        local b = io.open(bin_path, "r")
+        if b then
+            b:close()
+            os.remove(plugin_ffmpeg)
+            local ok, err = os.rename(bin_path, plugin_ffmpeg)
+            if ok then
+                logger.warn("MediaEngine: renamed", bin_path, "to", plugin_ffmpeg)
+                return plugin_ffmpeg
+            else
+                logger.warn("MediaEngine: failed to rename", bin_path, ":", err)
+                -- Return the .bin path as a fallback so playback can still work.
+                return bin_path
+            end
         end
     end
     local h = io.popen("command -v ffmpeg 2>/dev/null")
@@ -125,6 +152,21 @@ end
 function MediaEngine:_nextGeneration()
     self.play_generation = self.play_generation + 1
     return self.play_generation
+end
+
+--[[--
+Detect whether the MTK Bluetooth audio sink is available.
+This sink holds an exclusive abstract socket, so we must use a persistent
+pipeline instead of killing and restarting the player on seek/pause.
+@return boolean true if mtkbtmwrpcaudiosink is available
+--]]
+function MediaEngine:_hasMtkSink()
+    if not self:commandExists("gst-launch-1.0") then return false end
+    local h = io.popen("gst-inspect-1.0 mtkbtmwrpcaudiosink >/dev/null 2>&1 && echo yes || echo no")
+    if not h then return false end
+    local result = h:read("*l") == "yes"
+    h:close()
+    return result
 end
 
 -- ---------------------------------------------------------------------------
@@ -183,7 +225,12 @@ function MediaEngine:detectBackend()
     if ffmpeg_cmd then
         self.backend = self.BACKENDS.FFMPEG_PIPE
         self.backend_cmd = ffmpeg_cmd
-        logger.warn("MediaEngine: selected ffmpeg-pipe backend")
+        if self:_hasMtkSink() then
+            self._use_persistent_pipeline = true
+            logger.warn("MediaEngine: selected ffmpeg-pipe backend with persistent pipeline (MTK)")
+        else
+            logger.warn("MediaEngine: selected ffmpeg-pipe backend")
+        end
         return self.backend, self.backend_cmd
     end
 
@@ -192,7 +239,12 @@ function MediaEngine:detectBackend()
     if self:commandExists("gst-play-1.0") then
         self.backend = self.BACKENDS.GST_PLAY
         self.backend_cmd = "gst-play-1.0"
-        logger.warn("MediaEngine: selected gst-play-1.0 backend")
+        if self:_hasMtkSink() then
+            self._use_persistent_pipeline = true
+            logger.warn("MediaEngine: selected gst-play-1.0 backend with persistent pipeline (MTK)")
+        else
+            logger.warn("MediaEngine: selected gst-play-1.0 backend")
+        end
         return self.backend, self.backend_cmd
     end
 
@@ -200,7 +252,12 @@ function MediaEngine:detectBackend()
     if self:commandExists("gst-launch-1.0") then
         self.backend = self.BACKENDS.GST_PIPELINE
         self.backend_cmd = "gst-launch-1.0"
-        logger.warn("MediaEngine: selected gst-launch-1.0 backend")
+        if self:_hasMtkSink() then
+            self._use_persistent_pipeline = true
+            logger.warn("MediaEngine: selected gst-launch-1.0 backend with persistent pipeline (MTK)")
+        else
+            logger.warn("MediaEngine: selected gst-launch-1.0 backend")
+        end
         return self.backend, self.backend_cmd
     end
 
@@ -647,6 +704,14 @@ function MediaEngine:load(path)
         return false
     end
 
+    -- Pre-start the persistent pipeline on MTK so play() has no latency.
+    if self._use_persistent_pipeline then
+        if not self:_startPersistentPipeline() then
+            logger.warn("MediaEngine: persistent pipeline failed on load, falling back")
+            self._use_persistent_pipeline = false
+        end
+    end
+
     self.current_path = path
     self.current_duration = self:probeDuration(path)
     self.is_playing = false
@@ -676,6 +741,13 @@ function MediaEngine:play(on_complete, on_fail)
     self._play_start_time = UIManager:getTime()
     self._pause_start_time = nil
     self._total_pause_ms = 0
+
+    if self._use_persistent_pipeline then
+        local ok = self:_playPersistentPipeline(gen)
+        if ok then return true end
+        logger.warn("MediaEngine: persistent pipeline play failed, falling back to standard backend")
+        self._use_persistent_pipeline = false
+    end
 
     if self.backend == self.BACKENDS.MPV then
         return self:_playMpv(gen)
@@ -1175,6 +1247,242 @@ function MediaEngine:_playSystemGstLaunchFfmpeg(gen)
     return true
 end
 
+-- ---------------------------------------------------------------------------
+-- Persistent GStreamer pipeline for MTK Bluetooth (Kobo)
+-- Keeps gst-launch alive across seeks and pause/resume so the exclusive
+-- mtkbtmwrpcaudiosink abstract socket is never torn down.
+-- ---------------------------------------------------------------------------
+
+function MediaEngine:_writePersistentPipelineScript()
+    local sr = 44100
+    local channels = 2
+    local silence_samples = math.floor(sr * 0.05)
+    local silence_bytes = silence_samples * channels * 2
+    local script = string.format([=[
+#!/bin/sh
+CTRL="%s"
+FIFO="%s"
+mkdir -p "$CTRL"
+rm -f "$CTRL/stop" "$CTRL/play" "$CTRL/done" "$CTRL/gst_pid" "$CTRL/pipeline_stderr"
+rm -f "$FIFO"
+mkfifo "$FIFO"
+# Silence chunk: ~50ms at %dHz 16-bit stereo = %d bytes
+dd if=/dev/zero bs=%d count=1 of="$CTRL/s.raw" 2>/dev/null
+gst-launch-1.0 filesrc location="$FIFO" \
+  ! rawaudioparse use-sink-caps=false format=pcm pcm-format=s16le sample-rate=%d num-channels=%d \
+  ! audioconvert ! audioresample \
+  ! "audio/x-raw,format=S16LE,rate=48000,channels=2" \
+  ! queue max-size-time=500000000 max-size-bytes=131072 \
+  ! mtkbtmwrpcaudiosink sync=false >/dev/null 2>"$CTRL/pipeline_stderr" &
+GST_PID=$!
+exec 3>"$FIFO"
+echo $GST_PID > "$CTRL/gst_pid"
+cleanup() { exec 3>&- 2>/dev/null; kill $GST_PID 2>/dev/null; rm -f "$FIFO" "$CTRL/s.raw" "$CTRL/gst_pid" "$CTRL/pipeline_stderr"; }
+trap cleanup EXIT TERM
+CURRENT_FFMPEG_PID=""
+while kill -0 $GST_PID 2>/dev/null && [ ! -f "$CTRL/stop" ]; do
+  if [ -f "$CTRL/play" ]; then
+    FILE=$(sed -n '1p' "$CTRL/play")
+    OFFSET=$(sed -n '2p' "$CTRL/play")
+    FILT=$(sed -n '3p' "$CTRL/play")
+    rm -f "$CTRL/play" "$CTRL/done"
+    if [ -n "$CURRENT_FFMPEG_PID" ]; then
+      kill $CURRENT_FFMPEG_PID 2>/dev/null || true
+      wait $CURRENT_FFMPEG_PID 2>/dev/null || true
+      CURRENT_FFMPEG_PID=""
+    fi
+    if [ -n "$FILT" ]; then
+      ffmpeg -ss "$OFFSET" -i "$FILE" -filter:a "$FILT" -f s16le -ar 44100 -ac 2 - >&3 2>/dev/null &
+    else
+      ffmpeg -ss "$OFFSET" -i "$FILE" -f s16le -ar 44100 -ac 2 - >&3 2>/dev/null &
+    fi
+    CURRENT_FFMPEG_PID=$!
+  fi
+  if [ -z "$CURRENT_FFMPEG_PID" ] || ! kill -0 $CURRENT_FFMPEG_PID 2>/dev/null; then
+    CURRENT_FFMPEG_PID=""
+    cat "$CTRL/s.raw" >&3
+  fi
+  usleep 1000
+done
+if [ -n "$CURRENT_FFMPEG_PID" ]; then
+  kill $CURRENT_FFMPEG_PID 2>/dev/null || true
+  wait $CURRENT_FFMPEG_PID 2>/dev/null || true
+fi
+]=], self._media_ctrl_dir, self._media_fifo, sr, silence_bytes, silence_bytes, sr, channels)
+    local f = io.open(self._media_script, "w")
+    if not f then return false end
+    f:write(script)
+    f:close()
+    os.execute("chmod +x " .. self._media_script)
+    return true
+end
+
+function MediaEngine:_startPersistentPipeline()
+    self:_stopPersistentPipeline("restart")
+
+    -- Wait for the exclusive MTK socket to be released.
+    for attempt = 1, 5 do
+        local pf = io.open("/proc/net/unix", "r")
+        if pf then
+            local content = pf:read("*a")
+            pf:close()
+            if not content:find("@kobo:mtkbtmwrpc") then
+                break
+            end
+            logger.warn("MediaEngine: mtkbtmwrpc socket still held, attempt", attempt)
+            os.execute("killall -9 gst-launch-1.0 2>/dev/null")
+            os.execute("usleep 200000")
+        else
+            break
+        end
+    end
+
+    if not self:_writePersistentPipelineScript() then
+        logger.err("MediaEngine: cannot write persistent pipeline script")
+        return false
+    end
+
+    os.execute("rm -f " .. self._media_ctrl_dir .. "/stop " .. self._media_ctrl_dir .. "/play " .. self._media_ctrl_dir .. "/done")
+
+    local h = io.popen(self._media_script .. " >/dev/null 2>/dev/null & echo $!")
+    local pid_str = h and h:read("*a") or ""
+    if h then h:close() end
+    self._pipeline_wrapper_pid = tonumber(pid_str:match("(%d+)"))
+
+    local gst_pid = nil
+    for iter = 1, 60 do
+        local pf = io.open(self._media_ctrl_dir .. "/gst_pid", "r")
+        if pf then
+            local pid = pf:read("*a")
+            pf:close()
+            gst_pid = tonumber((pid or ""):match("(%d+)"))
+            if gst_pid then break end
+        end
+        os.execute("usleep 50000")
+    end
+
+    self._pipeline_gst_pid = gst_pid
+    self.audio_pid = gst_pid
+    self._persistent_pipeline_active = true
+    -- Conservative pipe-buffer delay: assume 64KB FIFO at 44100Hz stereo 16-bit (~371ms).
+    self._pipe_buffer_delay_ms = 400
+
+    if gst_pid then
+        logger.warn("MediaEngine: persistent pipeline started, wrapper=", self._pipeline_wrapper_pid, "gst=", gst_pid)
+        return true
+    end
+
+    logger.err("MediaEngine: persistent pipeline failed to start")
+    self:_stopPersistentPipeline("start_failed")
+    return false
+end
+
+function MediaEngine:_stopPersistentPipeline(reason)
+    reason = reason or "unknown"
+    logger.warn("MediaEngine: _stopPersistentPipeline, reason=", reason, "gst_pid=", self._pipeline_gst_pid)
+
+    local sf = io.open(self._media_ctrl_dir .. "/stop", "w")
+    if sf then sf:write("1"); sf:close() end
+
+    if self._pipeline_gst_pid then
+        os.execute("kill -9 " .. self._pipeline_gst_pid .. " 2>/dev/null")
+    end
+    if self._pipeline_wrapper_pid then
+        os.execute("kill -9 " .. self._pipeline_wrapper_pid .. " 2>/dev/null")
+    end
+    os.execute("killall -9 gst-launch-1.0 2>/dev/null")
+
+    if self._pipeline_wrapper_pid then
+        for _ = 1, 20 do
+            local pf = io.open("/proc/" .. self._pipeline_wrapper_pid .. "/status", "r")
+            if not pf then break end
+            pf:close()
+            os.execute("usleep 50000")
+        end
+    end
+
+    os.execute("rm -rf " .. self._media_ctrl_dir)
+    os.execute("rm -f " .. self._media_fifo .. " " .. self._media_script)
+
+    self._pipeline_gst_pid = nil
+    self._pipeline_wrapper_pid = nil
+    self._persistent_pipeline_active = false
+end
+
+function MediaEngine:_playPersistentPipeline(gen)
+    if not self._persistent_pipeline_active then
+        if not self:_startPersistentPipeline() then
+            logger.err("MediaEngine: persistent pipeline unavailable, disabling for this session")
+            self._use_persistent_pipeline = false
+            return false
+        end
+    end
+
+    local filter_arg = self:_atempoFilterString(self._playback_speed or 1.0)
+    local filter_chain = filter_arg:match('-filter:a%s*"(.-)"') or ""
+
+    os.remove(self._media_ctrl_dir .. "/done")
+    local f = io.open(self._media_ctrl_dir .. "/play", "w")
+    if not f then
+        logger.err("MediaEngine: cannot write play control file")
+        return false
+    end
+    f:write(self.current_path .. "\n")
+    f:write(tostring(self._seek_offset or 0) .. "\n")
+    f:write(filter_chain .. "\n")
+    f:close()
+
+    self._play_start_time = UIManager:getTime()
+    self._pause_start_time = nil
+    self._total_pause_ms = 0
+    self.is_playing = true
+    self.is_paused = false
+
+    self:_startPositionPoller(gen)
+    if self.current_duration and self.current_duration > 0 then
+        self:_startPersistentCompletionWatcher(gen, self.current_duration)
+    else
+        logger.warn("MediaEngine: unknown duration, skipping completion watcher for persistent pipeline")
+    end
+
+    return true
+end
+
+function MediaEngine:_startPersistentCompletionWatcher(gen, duration)
+    duration = duration or 0
+    local pipe_delay_ms = self._pipe_buffer_delay_ms or 400
+    local engine = self
+    local function check()
+        if engine.play_generation ~= gen then return end
+        if not engine.is_playing then return end
+        if engine.is_paused then
+            UIManager:scheduleIn(0.5, check)
+            return
+        end
+        if engine._play_start_time then
+            local wall_ms = time.to_ms(UIManager:getTime() - engine._play_start_time)
+            local real_ms = wall_ms - (engine._total_pause_ms or 0)
+            local needed_ms = duration * 1000 + pipe_delay_ms + 500
+            if real_ms < needed_ms then
+                local wait_s = (needed_ms - real_ms) / 1000
+                if wait_s < 0.2 then wait_s = 0.2 end
+                UIManager:scheduleIn(wait_s, check)
+                return
+            end
+        end
+        logger.warn("MediaEngine: persistent pipeline playback complete")
+        engine.is_playing = false
+        engine.is_paused = false
+        if engine._on_complete then
+            local cb = engine._on_complete
+            engine._on_complete = nil
+            cb()
+        end
+    end
+    local initial_delay_s = duration + (pipe_delay_ms / 1000) + 0.5
+    UIManager:scheduleIn(initial_delay_s, check)
+end
+
 function MediaEngine:_playKindleGstPlay(gen)
     -- Prefer the system gst-launch-0.10 pipeline (verified working on
     -- PW5/PW6, see _playSystemGstLaunch).  The bundled gst-play binary
@@ -1479,6 +1787,14 @@ function MediaEngine:pause()
     self.is_paused = true
     self._pause_start_time = UIManager:getTime()
 
+    if self._persistent_pipeline_active then
+        if self._pipeline_gst_pid and ffi.C.kill then
+            ffi.C.kill(self._pipeline_gst_pid, 19) -- SIGSTOP on gst-launch only
+            logger.warn("MediaEngine: paused persistent pipeline, gst=", self._pipeline_gst_pid)
+        end
+        return
+    end
+
     if self.backend == self.BACKENDS.MPV then
         if self:_hasLuaSocket() and self._socket_path then
             self:_mpvSendIpc({command = {"set_property", "pause", true}})
@@ -1504,6 +1820,14 @@ function MediaEngine:resume()
     if self._pause_start_time then
         self._total_pause_ms = self._total_pause_ms + time.to_ms(UIManager:getTime() - self._pause_start_time)
         self._pause_start_time = nil
+    end
+
+    if self._persistent_pipeline_active then
+        if self._pipeline_gst_pid and ffi.C.kill then
+            ffi.C.kill(self._pipeline_gst_pid, 18) -- SIGCONT on gst-launch only
+            logger.warn("MediaEngine: resumed persistent pipeline, gst=", self._pipeline_gst_pid)
+        end
+        return
     end
 
     if self.backend == self.BACKENDS.MPV then
@@ -1547,6 +1871,9 @@ function MediaEngine:stop()
         self._position_timer = nil
     end
 
+    if self._persistent_pipeline_active then
+        self:_stopPersistentPipeline("stop")
+    end
 
     -- Kill audio process (for most backends).
     -- Kill the process group first so ffmpeg/gst-launch children inside
@@ -1659,13 +1986,49 @@ function MediaEngine:seek(seconds, mode)
         or self.backend == self.BACKENDS.GST_PIPELINE
         or self.backend == self.BACKENDS.KINDLE_GST_PLAY
         or self.backend == self.BACKENDS.FFMPEG_PIPE then
-        -- Seek via process restart with time offset.
         -- For relative seeks, compute target from current position.
         local target = seconds
         if mode == "relative" then
             target = self:getPosition() + seconds
         end
         target = math.max(0, target)
+
+        if self._persistent_pipeline_active then
+            logger.warn("MediaEngine: persistent-pipeline seek mode=", mode,
+                "req=", seconds, "current=", self:getPosition(),
+                "target=", target, "was_playing=", was_playing)
+            self._seek_offset = target
+            self._play_start_time = UIManager:getTime()
+            self._total_pause_ms = 0
+            self._pause_start_time = nil
+            -- Cancel old completion watcher.
+            self:_nextGeneration()
+            local new_gen = self.play_generation
+            -- Write new play control with the target offset.
+            local filter_arg = self:_atempoFilterString(self._playback_speed or 1.0)
+            local filter_chain = filter_arg:match('-filter:a%s*"(.-)"') or ""
+            os.remove(self._media_ctrl_dir .. "/done")
+            local f = io.open(self._media_ctrl_dir .. "/play", "w")
+            if f then
+                f:write(self.current_path .. "\n")
+                f:write(tostring(target) .. "\n")
+                f:write(filter_chain .. "\n")
+                f:close()
+            end
+            -- Preserve paused state.
+            if not was_playing then
+                self.is_playing = true
+                self.is_paused = true
+                self._pause_start_time = UIManager:getTime()
+            else
+                self.is_playing = true
+                self.is_paused = false
+            end
+            self:_startPersistentCompletionWatcher(new_gen, self.current_duration)
+            return true
+        end
+
+        -- Seek via process restart with time offset.
         logger.warn("MediaEngine: seek-by-restart mode=", mode, "req=", seconds,
             "current=", self:getPosition(), "target=", target,
             "was_playing=", was_playing, "backend=", self.backend)
@@ -1852,17 +2215,19 @@ function MediaEngine:setSpeed(speed)
                 f:close()
             end
         end
-    elseif self.backend == self.BACKENDS.FFMPEG_PIPE then
-        -- ffmpeg-pipe supports speed only via the atempo filter, so restart
-        -- the pipeline at the current position when speed changes.
+    elseif self.backend == self.BACKENDS.FFMPEG_PIPE
+        or self.backend == self.BACKENDS.GST_PLAY
+        or self.backend == self.BACKENDS.GST_PIPELINE then
+        -- ffmpeg-pipe and the persistent MTK pipeline support speed only via
+        -- the atempo filter, so restart at the current position when speed changes.
         if math.abs(speed - old_speed) >= 0.01 then
             local pos = self:getPosition() or 0
-            logger.warn("MediaEngine: restarting ffmpeg-pipe for speed change",
+            logger.warn("MediaEngine: restarting pipeline for speed change",
                 old_speed, "->", speed, "at pos", pos)
             self:seek(pos, "absolute")
         end
     end
-    -- gst-play / gst-pipeline / aplay / wav-play do not support speed control
+    -- aplay / wav-play / Kindle do not support speed control
 end
 
 function MediaEngine:getSpeed()
